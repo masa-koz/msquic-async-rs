@@ -4,12 +4,11 @@ use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Condvar, Mutex};
-use std::task::{Context, Poll, Waker};
+use std::task::{ready, Context, Poll, Waker};
 
 use bytes::Bytes;
 
-use futures::io::{AsyncRead, AsyncWrite};
-use futures::ready;
+use futures_io::{AsyncRead, AsyncWrite};
 
 use libc::c_void;
 
