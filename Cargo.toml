@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 msquic = { path = "../msquic" }
-bytes = "1"
+bytes = "1.5.0"
 futures-io = "0.3.30"
 libc = "0.2.0"
 once_cell = "1.19.0"
