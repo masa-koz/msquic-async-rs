@@ -1,4 +1,5 @@
 use crate::connection::Connection;
+use crate::MSQUIC_API;
 
 use std::collections::VecDeque;
 use std::future::Future;
@@ -77,7 +78,7 @@ impl Listener {
         let mut exclusive = self.0.exclusive.lock().unwrap();
         match exclusive.state {
             ListenerState::Open | ListenerState::ShutdownComplete => {}
-            ListenerState::StartComplete | ListenerState::Shutdown  => {
+            ListenerState::StartComplete | ListenerState::Shutdown => {
                 return Err(ListenError::AlreadyStarted);
             }
         }
@@ -117,21 +118,28 @@ impl Listener {
     }
 
     pub fn poll_stop(&self, cx: &mut Context<'_>) -> Poll<Result<(), ListenError>> {
-        let mut exclusive = self.0.exclusive.lock().unwrap();
+        let mut msquic_listener_handle = None;
+        {
+            let mut exclusive = self.0.exclusive.lock().unwrap();
 
-        match exclusive.state {
-            ListenerState::Open => {
-                return Poll::Ready(Err(ListenError::NotStarted));
+            match exclusive.state {
+                ListenerState::Open => {
+                    return Poll::Ready(Err(ListenError::NotStarted));
+                }
+                ListenerState::StartComplete => {
+                    msquic_listener_handle = Some(exclusive.msquic_listener.handle);
+                    exclusive.state = ListenerState::Shutdown;
+                }
+                ListenerState::Shutdown => {}
+                ListenerState::ShutdownComplete => {
+                    return Poll::Ready(Ok(()));
+                }
             }
-            ListenerState::StartComplete => {
-                exclusive.state = ListenerState::Shutdown;    
-            }
-            ListenerState::Shutdown => {}
-            ListenerState::ShutdownComplete => {
-                return Poll::Ready(Ok(()));
-            }
+            exclusive.shutdown_complete_waiters.push(cx.waker().clone());
         }
-        exclusive.shutdown_complete_waiters.push(cx.waker().clone());
+        if let Some(msquic_listener_handle) = msquic_listener_handle {
+            MSQUIC_API.listener_stop(msquic_listener_handle);
+        }
         Poll::Pending
     }
 

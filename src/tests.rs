@@ -1,4 +1,4 @@
-use super::{Connection, CredentialConfigCertFile, Listener, MSQUIC_API};
+use super::{Connection, ConnectionError, CredentialConfigCertFile, Listener, ListenError, MSQUIC_API};
 
 use std::io::Write;
 use std::pin::Pin;
@@ -43,6 +43,85 @@ async fn connect_and_accept() {
     let client_task = tokio::spawn(async move {
         let res = conn.start(&configuration, "127.0.0.1", 8443).await;
         assert!(res.is_ok());
+        Ok::<_, anyhow::Error>(())
+    });
+
+    let res = tokio::try_join!(server_task, client_task);
+    assert!(res.is_ok());
+}
+
+#[tokio::test]
+async fn connect_and_no_accept() {
+    let registration = msquic::Registration::new(&*MSQUIC_API, ptr::null());
+    let configuration = msquic::Configuration::new(
+        &registration,
+        &[msquic::Buffer::from("test")],
+        msquic::Settings::new()
+            .set_peer_bidi_stream_count(100)
+            .set_peer_unidi_stream_count(3),
+    );
+    let mut cred_config = msquic::CredentialConfig::new_client();
+    cred_config.cred_flags |= msquic::CREDENTIAL_FLAG_NO_CERTIFICATE_VALIDATION;
+    configuration.load_credential(&cred_config);
+    let conn = Connection::new(msquic::Connection::new(&registration), &registration);
+    if let Err(ConnectionError::ShutdownByTransport(_, _)) = conn.start(&configuration, "127.0.0.1", 8443).await {
+        assert!(true, "ConnectionError::ShutdownByTransport");
+    } else {
+        assert!(false, "ConnectionError::ShutdownByTransport");
+    }
+}
+
+#[tokio::test]
+async fn connect_and_accept_and_stop() {
+    let registration = msquic::Registration::new(&*MSQUIC_API, ptr::null());
+    let (listener, _cred_config) = new_server(&registration).expect("new_server");
+    let addr = msquic::Addr::ipv4(
+        msquic::ADDRESS_FAMILY_INET,
+        8443u16.swap_bytes(),
+        u32::from_be_bytes([127, 0, 0, 1]).swap_bytes(),
+    );
+    listener
+        .start(&[msquic::Buffer::from("test")], &addr)
+        .expect("listener start");
+
+    let server_task = tokio::spawn(async move {
+        let res = listener.accept().await;
+        assert!(res.is_ok());
+        let res = listener.stop().await;
+        assert!(res.is_ok());
+        if let Err(ListenError::Finished) = listener.accept().await {
+            assert!(true, "ListenError::Finished");
+        } else {
+            assert!(false, "ListenError::Finished");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+        Ok::<_, anyhow::Error>(())
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+    let configuration = msquic::Configuration::new(
+        &registration,
+        &[msquic::Buffer::from("test")],
+        msquic::Settings::new()
+            .set_peer_bidi_stream_count(100)
+            .set_peer_unidi_stream_count(3),
+    );
+    let mut cred_config = msquic::CredentialConfig::new_client();
+    cred_config.cred_flags |= msquic::CREDENTIAL_FLAG_NO_CERTIFICATE_VALIDATION;
+    configuration.load_credential(&cred_config);
+    let conn = Connection::new(msquic::Connection::new(&registration), &registration);
+    let conn1 = Connection::new(msquic::Connection::new(&registration), &registration);
+    let client_task = tokio::spawn(async move {
+        let res = conn.start(&configuration, "127.0.0.1", 8443).await;
+        assert!(res.is_ok());
+        std::mem::drop(conn);
+        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+        if let Err(ConnectionError::ShutdownByTransport(_, _)) = conn1.start(&configuration, "127.0.0.1", 8443).await {
+            assert!(true, "ConnectionError::ShutdownByTransport");
+        } else {
+            assert!(false, "ConnectionError::ShutdownByTransport");
+        }
+    
         Ok::<_, anyhow::Error>(())
     });
 
