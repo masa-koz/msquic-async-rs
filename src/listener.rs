@@ -1,9 +1,11 @@
 use crate::connection::Connection;
 
-use libc::c_void;
 use std::collections::VecDeque;
+use std::future::Future;
 use std::sync::Mutex;
 use std::task::{Context, Poll, Waker};
+
+use libc::c_void;
 
 use thiserror::Error;
 
@@ -19,6 +21,7 @@ struct ListenerInnerExclusive {
     state: ListenerState,
     new_connections: VecDeque<Connection>,
     new_connection_waiters: Vec<Waker>,
+    shutdown_complete_waiters: Vec<Waker>,
 }
 unsafe impl Sync for ListenerInnerExclusive {}
 unsafe impl Send for ListenerInnerExclusive {}
@@ -26,11 +29,14 @@ unsafe impl Send for ListenerInnerExclusive {}
 struct ListenerInnerShared {
     configuration: msquic::Configuration,
 }
+unsafe impl Sync for ListenerInnerShared {}
+unsafe impl Send for ListenerInnerShared {}
 
 #[derive(Debug, Clone, PartialEq)]
 enum ListenerState {
     Open,
     StartComplete,
+    Shutdown,
     ShutdownComplete,
 }
 
@@ -46,6 +52,7 @@ impl Listener {
                 state: ListenerState::Open,
                 new_connections: VecDeque::new(),
                 new_connection_waiters: Vec::new(),
+                shutdown_complete_waiters: Vec::new(),
             }),
             shared: ListenerInnerShared {
                 configuration,
@@ -69,12 +76,9 @@ impl Listener {
     ) -> Result<(), ListenError> {
         let mut exclusive = self.0.exclusive.lock().unwrap();
         match exclusive.state {
-            ListenerState::Open => {}
-            ListenerState::StartComplete => {
+            ListenerState::Open | ListenerState::ShutdownComplete => {}
+            ListenerState::StartComplete | ListenerState::Shutdown  => {
                 return Err(ListenError::AlreadyStarted);
-            }
-            ListenerState::ShutdownComplete => {
-                return Err(ListenError::Finished);
             }
         }
         exclusive
@@ -84,32 +88,51 @@ impl Listener {
         Ok(())
     }
 
+    pub fn accept(&self) -> Accept {
+        Accept(self)
+    }
+
+    pub fn stop(&self) -> Stop {
+        Stop(self)
+    }
+
     pub fn poll_accept(&self, cx: &mut Context<'_>) -> Poll<Result<Connection, ListenError>> {
         let mut exclusive = self.0.exclusive.lock().unwrap();
+
+        if !exclusive.new_connections.is_empty() {
+            return Poll::Ready(Ok(exclusive.new_connections.pop_front().unwrap()));
+        }
+
         match exclusive.state {
             ListenerState::Open => {
                 return Poll::Ready(Err(ListenError::NotStarted));
             }
-            ListenerState::StartComplete => {}
+            ListenerState::StartComplete | ListenerState::Shutdown => {}
             ListenerState::ShutdownComplete => {
                 return Poll::Ready(Err(ListenError::Finished));
             }
-        }
-        if !exclusive.new_connections.is_empty() {
-            return Poll::Ready(Ok(exclusive.new_connections.pop_front().unwrap()));
         }
         exclusive.new_connection_waiters.push(cx.waker().clone());
         Poll::Pending
     }
 
-    pub fn close(&self) {
+    pub fn poll_stop(&self, cx: &mut Context<'_>) -> Poll<Result<(), ListenError>> {
         let mut exclusive = self.0.exclusive.lock().unwrap();
-        exclusive.msquic_listener.close();
-        exclusive.state = ListenerState::ShutdownComplete;
-        exclusive
-            .new_connection_waiters
-            .drain(..)
-            .for_each(|waker| waker.wake());
+
+        match exclusive.state {
+            ListenerState::Open => {
+                return Poll::Ready(Err(ListenError::NotStarted));
+            }
+            ListenerState::StartComplete => {
+                exclusive.state = ListenerState::Shutdown;    
+            }
+            ListenerState::Shutdown => {}
+            ListenerState::ShutdownComplete => {
+                return Poll::Ready(Ok(()));
+            }
+        }
+        exclusive.shutdown_complete_waiters.push(cx.waker().clone());
+        Poll::Pending
     }
 
     fn handle_event_new_connection(
@@ -130,6 +153,26 @@ impl Listener {
         0
     }
 
+    fn handle_event_stop_complete(
+        inner: &ListenerInner,
+        _payload: &msquic::ListenerEventStopComplete,
+    ) -> u32 {
+        println!("stop complete");
+        let mut exclusive = inner.exclusive.lock().unwrap();
+        exclusive.state = ListenerState::ShutdownComplete;
+
+        exclusive
+            .new_connection_waiters
+            .drain(..)
+            .for_each(|waker| waker.wake());
+
+        exclusive
+            .shutdown_complete_waiters
+            .drain(..)
+            .for_each(|waker| waker.wake());
+        0
+    }
+
     extern "C" fn native_callback(
         _listener: msquic::Handle,
         context: *mut c_void,
@@ -140,6 +183,10 @@ impl Listener {
             msquic::LISTENER_EVENT_NEW_CONNECTION => {
                 Self::handle_event_new_connection(inner, unsafe { &event.payload.new_connection })
             }
+            msquic::LISTENER_EVENT_STOP_COMPLETE => {
+                Self::handle_event_stop_complete(inner, unsafe { &event.payload.stop_complete })
+            }
+
             _ => {
                 println!("Other callback {}", event.event_type);
                 0
@@ -147,15 +194,24 @@ impl Listener {
         }
     }
 }
-impl Drop for Listener {
-    fn drop(&mut self) {
-        println!("Listener dropped");
-        {
-            let exclusive = self.0.exclusive.lock().unwrap();
-            if exclusive.state != ListenerState::ShutdownComplete {
-                exclusive.msquic_listener.close();
-            }
-        }
+
+pub struct Accept<'a>(&'a Listener);
+
+impl Future for Accept<'_> {
+    type Output = Result<Connection, ListenError>;
+
+    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.0.poll_accept(cx)
+    }
+}
+
+pub struct Stop<'a>(&'a Listener);
+
+impl Future for Stop<'_> {
+    type Output = Result<(), ListenError>;
+
+    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.0.poll_stop(cx)
     }
 }
 

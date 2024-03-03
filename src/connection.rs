@@ -152,7 +152,8 @@ impl Connection {
         inner: &ConnectionInner,
         _payload: &msquic::ConnectionEventConnected,
     ) -> u32 {
-        println!("Connected");
+        println!("msquic-async::Connection({:p}) Connected", inner);
+
         let mut exclusive = inner.exclusive.lock().unwrap();
         exclusive.state = ConnectionState::Connected;
         exclusive
@@ -166,7 +167,8 @@ impl Connection {
         inner: &ConnectionInner,
         payload: &msquic::ConnectionEventConnectionShutdownByTransport,
     ) -> u32 {
-        println!("Transport shutdown 0x{:x}", payload.status);
+        println!("msquic-async::Connection({:p}) Transport shutdown 0x{:x}", inner, payload.status);
+
         let mut exclusive = inner.exclusive.lock().unwrap();
         exclusive.state = ConnectionState::Shutdown;
         exclusive.error = Some(ConnectionError::ShutdownByTransport(
@@ -188,7 +190,8 @@ impl Connection {
         inner: &ConnectionInner,
         payload: &msquic::ConnectionEventConnectionShutdownByPeer,
     ) -> u32 {
-        println!("App shutdown {}", payload.error_code);
+        println!("msquic-async::Connection({:p}) App shutdown {}", inner, payload.error_code);
+
         let mut exclusive = inner.exclusive.lock().unwrap();
         exclusive.state = ConnectionState::Shutdown;
         exclusive.error = Some(ConnectionError::ShutdownByPeer(payload.error_code));
@@ -207,7 +210,8 @@ impl Connection {
         inner: &ConnectionInner,
         _payload: &msquic::ConnectionEventShutdownComplete,
     ) -> u32 {
-        println!("Connection Shutdown complete");
+        println!("msquic-async::Connection({:p}) Connection Shutdown complete", inner);
+
         {
             let mut exclusive = inner.exclusive.lock().unwrap();
             exclusive.state = ConnectionState::ShutdownComplete;
@@ -233,7 +237,8 @@ impl Connection {
         inner: &ConnectionInner,
         payload: &msquic::ConnectionEventPeerStreamStarted,
     ) -> u32 {
-        println!("Peer stream started");
+        println!("msquic-async::Connection({:p}) Peer stream started", inner);
+
         let stream_type = if (payload.flags & msquic::STREAM_OPEN_FLAG_UNIDIRECTIONAL) != 0 {
             StreamType::Unidirectional
         } else {
@@ -256,7 +261,6 @@ impl Connection {
         context: *mut c_void,
         event: &msquic::ConnectionEvent,
     ) -> u32 {
-        //println!("Connection event 0x{:x}", event.event_type);
         let inner = unsafe { &mut *(context as *mut ConnectionInner) };
         match event.event_type {
             msquic::CONNECTION_EVENT_CONNECTED => {
@@ -283,7 +287,7 @@ impl Connection {
                 })
             }
             _ => {
-                println!("Other callback {}", event.event_type);
+                println!("msquic-async::Connection({:p}) Other callback {}", inner, event.event_type);
                 0
             }
         }
@@ -292,21 +296,23 @@ impl Connection {
 
 impl Drop for Connection {
     fn drop(&mut self) {
-        println!("Connection dropped");
+        println!("msquic-async::Connection({:p}) dropping", &self.0);
         {
             let exclusive = self.0.exclusive.lock().unwrap();
             if exclusive.state != ConnectionState::ShutdownComplete {
+                println!("msquic-async::Connection({:p}) do shutdown", self);
                 exclusive
                     .msquic_conn
                     .shutdown(msquic::CONNECTION_SHUTDOWN_FLAG_NONE, 0);
             }
         }
+        println!("msquic-async::Connection({:p}) wait for shutdown complete", self);
         let (lock, cvar) = &*self.0.shared.shutdown_complete;
         let mut shutdown_complete = lock.lock().unwrap();
         while !*shutdown_complete {
             shutdown_complete = cvar.wait(shutdown_complete).unwrap();
         }
-        println!("Connection shutdown complete finished");
+        println!("msquic-async::Connection({:p}) after shutdown complete", self);
     }
 }
 
