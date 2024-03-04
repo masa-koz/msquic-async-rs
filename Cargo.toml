@@ -11,6 +11,7 @@ bytes = "1.5.0"
 futures-io = "0.3.30"
 libc = "0.2.0"
 once_cell = "1.19.0"
+socket2 = "0.5.6"
 thiserror = "1.0.57"
 
 [dev-dependencies]

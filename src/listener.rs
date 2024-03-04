@@ -3,10 +3,13 @@ use crate::MSQUIC_API;
 
 use std::collections::VecDeque;
 use std::future::Future;
+use std::net::SocketAddr;
 use std::sync::Mutex;
 use std::task::{Context, Poll, Waker};
 
-use libc::c_void;
+use libc::{c_void, sockaddr};
+
+use socket2::SockAddr;
 
 use thiserror::Error;
 
@@ -73,7 +76,7 @@ impl Listener {
     pub fn start<T: AsRef<[msquic::Buffer]>>(
         &self,
         alpn: &T,
-        local_address: &msquic::Addr,
+        local_address: Option<SocketAddr>,
     ) -> Result<(), ListenError> {
         let mut exclusive = self.0.exclusive.lock().unwrap();
         match exclusive.state {
@@ -82,6 +85,8 @@ impl Listener {
                 return Err(ListenError::AlreadyStarted);
             }
         }
+        let local_address: Option<SockAddr> = local_address.map(|x| x.into());
+        let local_address: Option<*const sockaddr> = local_address.as_ref().map(|x| x.as_ptr() as _);
         exclusive
             .msquic_listener
             .start(alpn.as_ref(), local_address);

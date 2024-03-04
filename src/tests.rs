@@ -1,6 +1,7 @@
 use super::{Connection, ConnectionError, CredentialConfigCertFile, Listener, ListenError, MSQUIC_API};
 
 use std::io::Write;
+use std::net::SocketAddr;
 use std::pin::Pin;
 use std::ptr;
 
@@ -11,14 +12,10 @@ use tempfile::{NamedTempFile, TempPath};
 #[tokio::test]
 async fn connect_and_accept() {
     let registration = msquic::Registration::new(&*MSQUIC_API, ptr::null());
-    let (listener, _cred_config) = new_server(&registration).expect("new_server");
-    let addr = msquic::Addr::ipv4(
-        msquic::ADDRESS_FAMILY_INET,
-        8443u16.swap_bytes(),
-        u32::from_be_bytes([127, 0, 0, 1]).swap_bytes(),
-    );
+    let listener = new_server(&registration).expect("new_server");
+    let addr: SocketAddr = "127.0.0.1:8443".parse().unwrap();
     listener
-        .start(&[msquic::Buffer::from("test")], &addr)
+        .start(&[msquic::Buffer::from("test")], Some(addr))
         .expect("listener start");
 
     let server_task = tokio::spawn(async move {
@@ -74,14 +71,10 @@ async fn connect_and_no_accept() {
 #[tokio::test]
 async fn connect_and_accept_and_stop() {
     let registration = msquic::Registration::new(&*MSQUIC_API, ptr::null());
-    let (listener, _cred_config) = new_server(&registration).expect("new_server");
-    let addr = msquic::Addr::ipv4(
-        msquic::ADDRESS_FAMILY_INET,
-        8443u16.swap_bytes(),
-        u32::from_be_bytes([127, 0, 0, 1]).swap_bytes(),
-    );
+    let listener = new_server(&registration).expect("new_server");
+    let addr: SocketAddr = "127.0.0.1:8443".parse().unwrap();
     listener
-        .start(&[msquic::Buffer::from("test")], &addr)
+        .start(&[msquic::Buffer::from("test")], Some(addr))
         .expect("listener start");
 
     let server_task = tokio::spawn(async move {
@@ -131,7 +124,7 @@ async fn connect_and_accept_and_stop() {
 
 fn new_server(
     registration: &msquic::Registration,
-) -> Result<(Listener, SelfSignedCredentialConfig)> {
+) -> Result<Listener> {
     let alpn = [msquic::Buffer::from("test")];
     let configuration = msquic::Configuration::new(
         registration,
@@ -147,7 +140,7 @@ fn new_server(
         registration,
         configuration,
     );
-    Ok((listener, cred_config))
+    Ok(listener)
 }
 
 struct SelfSignedCredentialConfig {
