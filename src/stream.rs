@@ -28,7 +28,6 @@ struct StreamInner {
 }
 
 struct StreamInnerExclusive {
-    msquic_stream: msquic::Stream,
     state: StreamState,
     start_status: Option<u32>,
     recv_state: StreamRecvState,
@@ -48,7 +47,10 @@ unsafe impl Send for StreamInnerExclusive {}
 
 struct StreamInnerShared {
     stream_type: StreamType,
+    msquic_stream: msquic::Stream,
 }
+unsafe impl Sync for StreamInnerShared {}
+unsafe impl Send for StreamInnerShared {}
 
 #[derive(Debug, PartialEq)]
 enum StreamState {
@@ -85,7 +87,6 @@ impl Stream {
         };
         let inner = Arc::new(StreamInner {
             exclusive: Mutex::new(StreamInnerExclusive {
-                msquic_stream,
                 state: StreamState::Open,
                 start_status: None,
                 recv_state: StreamRecvState::Closed,
@@ -100,12 +101,12 @@ impl Stream {
                 write_shutdown_waiters: Vec::new(),
             }),
             shared: StreamInnerShared {
+                msquic_stream,
                 stream_type,
             },
         });
         {
-            let exclusive = inner.exclusive.lock().unwrap();
-            exclusive.msquic_stream.open(
+            inner.shared.msquic_stream.open(
                 msquic_conn,
                 flags,
                 Self::native_callback,
@@ -126,7 +127,6 @@ impl Stream {
         };
         let inner = Arc::new(StreamInner {
             exclusive: Mutex::new(StreamInnerExclusive {
-                msquic_stream,
                 state: StreamState::StartComplete,
                 start_status: None,
                 recv_state: StreamRecvState::StartComplete,
@@ -141,12 +141,12 @@ impl Stream {
                 write_shutdown_waiters: Vec::new(),
             }),
             shared: StreamInnerShared {
+                msquic_stream,
                 stream_type,
             },
         });
         {
-            let exclusive = inner.exclusive.lock().unwrap();
-            exclusive.msquic_stream.set_callback_handler(
+            inner.shared.msquic_stream.set_callback_handler(
                 Self::native_callback,
                 Arc::into_raw(inner.clone()) as *const c_void,
             );
@@ -163,7 +163,7 @@ impl Stream {
         let mut exclusive = self.0.exclusive.lock().unwrap();
         match exclusive.state {
             StreamState::Open => {
-                exclusive.msquic_stream.start(
+                self.0.shared.msquic_stream.start(
                     msquic::STREAM_START_FLAG_SHUTDOWN_ON_FAIL
                         | msquic::STREAM_START_FLAG_INDICATE_PEER_ACCEPT
                         | if failed_on_block {
@@ -201,11 +201,6 @@ impl Stream {
         }
         exclusive.start_waiters.push(cx.waker().clone());
         Poll::Pending
-    }
-
-    pub fn close(&self) {
-        let exclusive = self.0.exclusive.lock().unwrap();
-        exclusive.msquic_stream.close();
     }
 
     pub fn poll_read(
@@ -367,7 +362,7 @@ impl Stream {
         let (buffer, buffer_count) = write_buf.get_buffer();
         match status {
             WriteStatus::Writable(val) | WriteStatus::Blocked(Some(val)) => {
-                exclusive.msquic_stream.send(
+                self.0.shared.msquic_stream.send(
                     buffer,
                     buffer_count,
                     msquic::SEND_FLAG_NONE,
@@ -377,7 +372,7 @@ impl Stream {
             }
             WriteStatus::Blocked(None) => unreachable!(),
             WriteStatus::Finished(val) => {
-                exclusive.msquic_stream.send(
+                self.0.shared.msquic_stream.send(
                     buffer,
                     buffer_count,
                     msquic::SEND_FLAG_FIN,
@@ -396,7 +391,8 @@ impl Stream {
                 return Poll::Pending;
             }
             StreamSendState::StartComplete => {
-                exclusive
+                self.0
+                    .shared
                     .msquic_stream
                     .shutdown(msquic::STREAM_SHUTDOWN_FLAG_GRACEFUL, 0);
                 exclusive.send_state = StreamSendState::Shutdown;
@@ -433,7 +429,8 @@ impl Stream {
                 return Poll::Pending;
             }
             StreamSendState::StartComplete => {
-                exclusive
+                self.0
+                    .shared
                     .msquic_stream
                     .shutdown(msquic::STREAM_SHUTDOWN_FLAG_ABORT_SEND, error_code);
                 exclusive.send_state = StreamSendState::Shutdown;
@@ -470,7 +467,8 @@ impl Stream {
                 return Poll::Pending;
             }
             StreamRecvState::StartComplete => {
-                exclusive
+                self.0
+                    .shared
                     .msquic_stream
                     .shutdown(msquic::STREAM_SHUTDOWN_FLAG_ABORT_RECEIVE, error_code);
                 exclusive.recv_state = StreamRecvState::ShutdownComplete;
@@ -765,29 +763,22 @@ impl Stream {
 impl Drop for Stream {
     fn drop(&mut self) {
         println!("msquic-async::Stream({:p}) Dropping", &*self.0);
-        {
-            let mut exclusive = self.0.exclusive.lock().unwrap();
-            exclusive.recv_buffers.clear();
-            match exclusive.state {
-                StreamState::Open => {
-                    unsafe {
-                        Arc::from_raw(Arc::as_ptr(&self.0));
-                    }
-                }
-                StreamState::Start | StreamState::StartComplete => {
-                    println!(
-                        "msquic-async::Stream({:p}) Abort immediately",
-                        &*self.0
-                    );
-                    exclusive.msquic_stream.shutdown(
-                        msquic::STREAM_SHUTDOWN_FLAG_ABORT_SEND
-                            | msquic::STREAM_SHUTDOWN_FLAG_ABORT_RECEIVE
-                            | msquic::STREAM_SHUTDOWN_FLAG_IMMEDIATE,
-                        0,
-                    );
-                }
-                StreamState::ShutdownComplete => {}
+        let mut exclusive = self.0.exclusive.lock().unwrap();
+        exclusive.recv_buffers.clear();
+        match exclusive.state {
+            StreamState::Open => unsafe {
+                Arc::from_raw(Arc::as_ptr(&self.0));
+            },
+            StreamState::Start | StreamState::StartComplete => {
+                println!("msquic-async::Stream({:p}) Abort immediately", &*self.0);
+                self.0.shared.msquic_stream.shutdown(
+                    msquic::STREAM_SHUTDOWN_FLAG_ABORT_SEND
+                        | msquic::STREAM_SHUTDOWN_FLAG_ABORT_RECEIVE
+                        | msquic::STREAM_SHUTDOWN_FLAG_IMMEDIATE,
+                    0,
+                );
             }
+            StreamState::ShutdownComplete => {}
         }
     }
 }

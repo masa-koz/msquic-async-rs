@@ -14,11 +14,10 @@ pub struct Connection(Arc<ConnectionInner>);
 
 struct ConnectionInner {
     exclusive: Mutex<ConnectionInnerExclusive>,
-    _shared: ConnectionInnerShared,
+    shared: ConnectionInnerShared,
 }
 
 struct ConnectionInnerExclusive {
-    msquic_conn: msquic::Connection,
     state: ConnectionState,
     error: Option<ConnectionError>,
     start_waiters: Vec<Waker>,
@@ -29,25 +28,25 @@ unsafe impl Sync for ConnectionInnerExclusive {}
 unsafe impl Send for ConnectionInnerExclusive {}
 
 struct ConnectionInnerShared {
+    msquic_conn: msquic::Connection,
 }
+unsafe impl Sync for ConnectionInnerShared {}
+unsafe impl Send for ConnectionInnerShared {}
 
 impl Connection {
     pub fn new(msquic_conn: msquic::Connection, registration: &msquic::Registration) -> Self {
         let inner = Arc::new(ConnectionInner {
             exclusive: Mutex::new(ConnectionInnerExclusive {
-                msquic_conn,
                 state: ConnectionState::Open,
                 error: None,
                 start_waiters: Vec::new(),
                 inbound_stream_waiters: Vec::new(),
                 inbound_streams: VecDeque::new(),
             }),
-            _shared: ConnectionInnerShared {
-            },
+            shared: ConnectionInnerShared { msquic_conn },
         });
         {
-            let exclusive = inner.exclusive.lock().unwrap();
-            exclusive.msquic_conn.open(
+            inner.shared.msquic_conn.open(
                 registration,
                 Self::native_callback,
                 Arc::into_raw(inner.clone()) as *const c_void,
@@ -61,19 +60,16 @@ impl Connection {
         let msquic_conn = msquic::Connection::from_parts(conn, &*crate::MSQUIC_API);
         let inner = Arc::new(ConnectionInner {
             exclusive: Mutex::new(ConnectionInnerExclusive {
-                msquic_conn,
                 state: ConnectionState::Connected,
                 error: None,
                 start_waiters: Vec::new(),
                 inbound_stream_waiters: Vec::new(),
                 inbound_streams: VecDeque::new(),
             }),
-            _shared: ConnectionInnerShared {
-            },
+            shared: ConnectionInnerShared { msquic_conn },
         });
         {
-            let exclusive = inner.exclusive.lock().unwrap();
-            exclusive.msquic_conn.set_callback_handler(
+            inner.shared.msquic_conn.set_callback_handler(
                 Self::native_callback,
                 Arc::into_raw(inner.clone()) as *const c_void,
             );
@@ -89,16 +85,42 @@ impl Connection {
         port: u16,
     ) -> ConnectionStart<'a> {
         ConnectionStart {
-            conn: &self.0,
+            conn: &self,
             configuration,
             host,
             port,
         }
     }
 
+    fn poll_start(
+        &self,
+        cx: &mut Context<'_>,
+        configuration: &msquic::Configuration,
+        host: &str,
+        port: u16,
+    ) -> Poll<Result<(), ConnectionError>> {
+        let mut exclusive = self.0.exclusive.lock().unwrap();
+        match exclusive.state {
+            ConnectionState::Open => {
+                self.0.shared.msquic_conn.start(configuration, host, port);
+                exclusive.state = ConnectionState::Connecting;
+            }
+            ConnectionState::Connecting => {}
+            ConnectionState::Connected => return Poll::Ready(Ok(())),
+            ConnectionState::Shutdown | ConnectionState::ShutdownComplete => {
+                if let Some(error) = &exclusive.error {
+                    return Poll::Ready(Err(error.clone()));
+                } else {
+                    return Poll::Ready(Err(ConnectionError::ConnectionClosed));
+                }
+            }
+        }
+        exclusive.start_waiters.push(cx.waker().clone());
+        Poll::Pending
+    }
+
     pub(crate) fn set_configuration(&self, configuration: &msquic::Configuration) {
-        let exclusive = self.0.exclusive.lock().unwrap();
-        exclusive.msquic_conn.set_configuration(configuration);
+        self.0.shared.msquic_conn.set_configuration(configuration);
     }
 
     pub fn open_outbound_stream(
@@ -309,9 +331,14 @@ impl Drop for Connection {
         {
             let exclusive = self.0.exclusive.lock().unwrap();
             match exclusive.state {
-                ConnectionState::Open | ConnectionState::Connecting | ConnectionState::Connected => {
+                ConnectionState::Open
+                | ConnectionState::Connecting
+                | ConnectionState::Connected => {
                     println!("msquic-async::Connection({:p}) do shutdown", &*self.0);
-                    exclusive.msquic_conn.shutdown(msquic::CONNECTION_SHUTDOWN_FLAG_NONE, 0);
+                    self.0
+                        .shared
+                        .msquic_conn
+                        .shutdown(msquic::CONNECTION_SHUTDOWN_FLAG_NONE, 0);
                 }
                 ConnectionState::Shutdown | ConnectionState::ShutdownComplete => {}
             }
@@ -347,7 +374,7 @@ pub enum ConnectionError {
 }
 
 pub struct ConnectionStart<'a> {
-    conn: &'a ConnectionInner,
+    conn: &'a Connection,
     configuration: &'a msquic::Configuration,
     host: &'a str,
     port: u16,
@@ -357,27 +384,7 @@ impl Future for ConnectionStart<'_> {
     type Output = Result<(), ConnectionError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.get_mut();
-        let mut exclusive = this.conn.exclusive.lock().unwrap();
-        match exclusive.state {
-            ConnectionState::Open => {
-                exclusive
-                    .msquic_conn
-                    .start(this.configuration, this.host, this.port);
-                exclusive.state = ConnectionState::Connecting;
-            }
-            ConnectionState::Connecting => {}
-            ConnectionState::Connected => return Poll::Ready(Ok(())),
-            ConnectionState::Shutdown | ConnectionState::ShutdownComplete => {
-                if let Some(error) = &exclusive.error {
-                    return Poll::Ready(Err(error.clone()));
-                } else {
-                    return Poll::Ready(Err(ConnectionError::ConnectionClosed));
-                }
-            }
-        }
-        exclusive.start_waiters.push(cx.waker().clone());
-        Poll::Pending
+        self.conn.poll_start(cx, self.configuration, self.host, self.port)
     }
 }
 
@@ -421,7 +428,7 @@ impl Future for OpenOutboundStream<'_> {
         }
         if stream.is_none() {
             *stream = Some(Stream::open(
-                &exclusive.msquic_conn,
+                &conn.shared.msquic_conn,
                 stream_type.take().unwrap(),
             ));
         }
