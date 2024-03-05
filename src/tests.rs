@@ -28,22 +28,12 @@ async fn connect_and_accept() {
         Ok::<_, anyhow::Error>(())
     });
 
-    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
-    let configuration = msquic::Configuration::new(
-        &registration,
-        &[msquic::Buffer::from("test")],
-        msquic::Settings::new()
-            .set_peer_bidi_stream_count(100)
-            .set_peer_unidi_stream_count(3),
-    );
-    let mut cred_config = msquic::CredentialConfig::new_client();
-    cred_config.cred_flags |= msquic::CREDENTIAL_FLAG_NO_CERTIFICATE_VALIDATION;
-    configuration.load_credential(&cred_config);
+    let client_config = new_client_config(&registration).expect("new_client_config");
     let conn = Connection::new(msquic::Connection::new(&registration), &registration);
     let client_task = tokio::spawn(async move {
         let res = conn
             .start(
-                &configuration,
+                &client_config,
                 &format!("{}", server_addr.ip()),
                 server_addr.port(),
             )
@@ -59,19 +49,10 @@ async fn connect_and_accept() {
 #[tokio::test]
 async fn connect_and_no_accept() {
     let registration = msquic::Registration::new(&*MSQUIC_API, ptr::null());
-    let configuration = msquic::Configuration::new(
-        &registration,
-        &[msquic::Buffer::from("test")],
-        msquic::Settings::new()
-            .set_peer_bidi_stream_count(100)
-            .set_peer_unidi_stream_count(3),
-    );
-    let mut cred_config = msquic::CredentialConfig::new_client();
-    cred_config.cred_flags |= msquic::CREDENTIAL_FLAG_NO_CERTIFICATE_VALIDATION;
-    configuration.load_credential(&cred_config);
+    let client_config = new_client_config(&registration).expect("new_client_config");
     let conn = Connection::new(msquic::Connection::new(&registration), &registration);
     if let Err(ConnectionError::ShutdownByTransport(_, _)) =
-        conn.start(&configuration, "127.0.0.1", 8443).await
+        conn.start(&client_config, "127.0.0.1", 8443).await
     {
         assert!(true, "ConnectionError::ShutdownByTransport");
     } else {
@@ -103,23 +84,13 @@ async fn connect_and_accept_and_stop() {
         Ok::<_, anyhow::Error>(())
     });
 
-    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
-    let configuration = msquic::Configuration::new(
-        &registration,
-        &[msquic::Buffer::from("test")],
-        msquic::Settings::new()
-            .set_peer_bidi_stream_count(100)
-            .set_peer_unidi_stream_count(3),
-    );
-    let mut cred_config = msquic::CredentialConfig::new_client();
-    cred_config.cred_flags |= msquic::CREDENTIAL_FLAG_NO_CERTIFICATE_VALIDATION;
-    configuration.load_credential(&cred_config);
+    let client_config = new_client_config(&registration).expect("new_client_config");
     let conn = Connection::new(msquic::Connection::new(&registration), &registration);
     let conn1 = Connection::new(msquic::Connection::new(&registration), &registration);
     let client_task = tokio::spawn(async move {
         let res = conn
             .start(
-                &configuration,
+                &client_config,
                 &format!("{}", server_addr.ip()),
                 server_addr.port(),
             )
@@ -129,7 +100,7 @@ async fn connect_and_accept_and_stop() {
         tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
         if let Err(ConnectionError::ShutdownByTransport(_, _)) = conn1
             .start(
-                &configuration,
+                &client_config,
                 &format!("{}", server_addr.ip()),
                 server_addr.port(),
             )
@@ -164,6 +135,21 @@ fn new_server(registration: &msquic::Registration) -> Result<Listener> {
         configuration,
     );
     Ok(listener)
+}
+
+fn new_client_config(registration: &msquic::Registration) -> Result<msquic::Configuration> {
+    let alpn = [msquic::Buffer::from("test")];
+    let configuration = msquic::Configuration::new(
+        registration,
+        &alpn,
+        msquic::Settings::new()
+            .set_idle_timeout_ms(1000)
+            .set_peer_bidi_stream_count(1),
+    );
+    let mut cred_config = msquic::CredentialConfig::new_client();
+    cred_config.cred_flags |= msquic::CREDENTIAL_FLAG_NO_CERTIFICATE_VALIDATION;
+    configuration.load_credential(&cred_config);
+    Ok(configuration)
 }
 
 struct SelfSignedCredentialConfig {
