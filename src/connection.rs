@@ -53,6 +53,7 @@ impl Connection {
                 Arc::into_raw(inner.clone()) as *const c_void,
             );
         }
+        println!("msquic-async::Connection({:p}) Open by local", inner);
         Self(inner)
     }
 
@@ -77,6 +78,7 @@ impl Connection {
                 Arc::into_raw(inner.clone()) as *const c_void,
             );
         }
+        println!("msquic-async::Connection({:p}) Open by peer", inner);
         Self(inner)
     }
 
@@ -303,12 +305,12 @@ impl Connection {
 
 impl Drop for Connection {
     fn drop(&mut self) {
-        println!("msquic-async::Connection({:p}) dropping", &self.0);
+        println!("msquic-async::Connection({:p}) dropping", &*self.0);
         {
             let exclusive = self.0.exclusive.lock().unwrap();
             match exclusive.state {
                 ConnectionState::Open | ConnectionState::Connecting | ConnectionState::Connected => {
-                    println!("msquic-async::Connection({:p}) do shutdown", self);
+                    println!("msquic-async::Connection({:p}) do shutdown", &*self.0);
                     exclusive.msquic_conn.shutdown(msquic::CONNECTION_SHUTDOWN_FLAG_NONE, 0);
                 }
                 ConnectionState::Shutdown | ConnectionState::ShutdownComplete => {}

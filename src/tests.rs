@@ -2,6 +2,7 @@ use super::{
     Connection, ConnectionError, CredentialConfigCertFile, ListenError, Listener, MSQUIC_API,
 };
 
+use std::future::poll_fn;
 use std::io::Write;
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -10,6 +11,8 @@ use std::ptr;
 use anyhow::Result;
 
 use tempfile::{NamedTempFile, TempPath};
+
+use tokio::time::timeout;
 
 #[tokio::test]
 async fn connect_and_accept() {
@@ -65,7 +68,6 @@ async fn no_connect() {
     let registration = msquic::Registration::new(&*MSQUIC_API, ptr::null());
     let _conn = Connection::new(msquic::Connection::new(&registration), &registration);
 }
-
 
 #[tokio::test]
 async fn connect_and_accept_and_stop() {
@@ -125,6 +127,55 @@ async fn connect_and_accept_and_stop() {
     assert!(res.is_ok());
 }
 
+#[tokio::test]
+async fn stream_validation() {
+    let registration = msquic::Registration::new(&*MSQUIC_API, ptr::null());
+    let listener = new_server(&registration).expect("new_server");
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    listener
+        .start(&[msquic::Buffer::from("test")], Some(addr))
+        .expect("listener start");
+    let server_addr = listener.local_addr().expect("listener local_addr");
+
+    let server_task = tokio::spawn(async move {
+        let conn = listener.accept().await.expect("accept");
+        let res = conn.accept_inbound_stream().await;
+        assert!(res.is_ok());
+        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+        Ok::<_, anyhow::Error>(())
+    });
+
+    let client_config = new_client_config(&registration).expect("new_client_config");
+    let conn = Connection::new(msquic::Connection::new(&registration), &registration);
+    let client_task = tokio::spawn(async move {
+        let res = conn
+            .start(
+                &client_config,
+                &format!("{}", server_addr.ip()),
+                server_addr.port(),
+            )
+            .await;
+        assert!(res.is_ok());
+        let res = conn
+            .open_outbound_stream(crate::StreamType::Bidirectional, false)
+            .await;
+        assert!(res.is_ok());
+        let stream = res.unwrap();
+        let res = poll_fn(|cx| stream.poll_write(cx, b"hello world", false)).await;
+        assert!(res.is_ok());
+        let res = timeout(
+            std::time::Duration::from_millis(1000),
+            conn.open_outbound_stream(crate::StreamType::Bidirectional, false),
+        ).await;
+        assert!(res.is_err());
+
+        Ok::<_, anyhow::Error>(())
+    });
+
+    let res = tokio::try_join!(server_task, client_task);
+    assert!(res.is_ok());
+}
+
 fn new_server(registration: &msquic::Registration) -> Result<Listener> {
     let alpn = [msquic::Buffer::from("test")];
     let configuration = msquic::Configuration::new(
@@ -132,7 +183,8 @@ fn new_server(registration: &msquic::Registration) -> Result<Listener> {
         &alpn,
         msquic::Settings::new()
             .set_idle_timeout_ms(1000)
-            .set_peer_bidi_stream_count(1),
+            .set_peer_bidi_stream_count(1)
+            .set_peer_unidi_stream_count(1),
     );
     let cred_config = SelfSignedCredentialConfig::new()?;
     configuration.load_credential(cred_config.as_cred_config_ref());
@@ -151,7 +203,8 @@ fn new_client_config(registration: &msquic::Registration) -> Result<msquic::Conf
         &alpn,
         msquic::Settings::new()
             .set_idle_timeout_ms(1000)
-            .set_peer_bidi_stream_count(1),
+            .set_peer_bidi_stream_count(1)
+            .set_peer_unidi_stream_count(1),
     );
     let mut cred_config = msquic::CredentialConfig::new_client();
     cred_config.cred_flags |= msquic::CREDENTIAL_FLAG_NO_CERTIFICATE_VALIDATION;
