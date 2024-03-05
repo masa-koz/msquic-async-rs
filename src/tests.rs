@@ -12,6 +12,7 @@ use anyhow::Result;
 
 use tempfile::{NamedTempFile, TempPath};
 
+use tokio::task::JoinSet;
 use tokio::time::timeout;
 
 #[tokio::test]
@@ -137,17 +138,20 @@ async fn stream_validation() {
         .expect("listener start");
     let server_addr = listener.local_addr().expect("listener local_addr");
 
-    let server_task = tokio::spawn(async move {
+    let mut set = JoinSet::new();
+
+    set.spawn(async move {
         let conn = listener.accept().await.expect("accept");
         let res = conn.accept_inbound_stream().await;
         assert!(res.is_ok());
-        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(3000)).await;
         Ok::<_, anyhow::Error>(())
     });
 
     let client_config = new_client_config(&registration).expect("new_client_config");
     let conn = Connection::new(msquic::Connection::new(&registration), &registration);
-    let client_task = tokio::spawn(async move {
+
+    set.spawn(async move {
         let res = conn
             .start(
                 &client_config,
@@ -156,24 +160,52 @@ async fn stream_validation() {
             )
             .await;
         assert!(res.is_ok());
-        let res = conn
-            .open_outbound_stream(crate::StreamType::Bidirectional, false)
-            .await;
+        let res = timeout(
+            std::time::Duration::from_millis(1000),
+            conn.open_outbound_stream(crate::StreamType::Bidirectional, false),
+        )
+        .await;
         assert!(res.is_ok());
-        let stream = res.unwrap();
+        let stream = res.expect("timeout").expect("open_outbound_stream");
         let res = poll_fn(|cx| stream.poll_write(cx, b"hello world", false)).await;
         assert!(res.is_ok());
         let res = timeout(
             std::time::Duration::from_millis(1000),
             conn.open_outbound_stream(crate::StreamType::Bidirectional, false),
-        ).await;
+        )
+        .await;
         assert!(res.is_err());
+
+        let res = conn
+            .open_outbound_stream(crate::StreamType::Bidirectional, true)
+            .await;
+        assert!(res.is_err());
+
+        let res = poll_fn(|cx| stream.poll_abort_write(cx, 0)).await;
+        assert!(res.is_ok());
+        let res = poll_fn(|cx| stream.poll_abort_read(cx, 0)).await;
+        assert!(res.is_ok());
+        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+
+        let res = conn
+            .open_outbound_stream(crate::StreamType::Bidirectional, true)
+            .await;
+        assert!(res.is_ok());
 
         Ok::<_, anyhow::Error>(())
     });
 
-    let res = tokio::try_join!(server_task, client_task);
-    assert!(res.is_ok());
+    let mut results = Vec::new();
+    while let Some(res) = set.join_next().await {
+        results.push(res);
+    }
+    results.into_iter().for_each(|res| {
+        if let Err(err) = res {
+            if err.is_panic() {
+                std::panic::resume_unwind(err.into_panic());
+            }
+        }
+    });
 }
 
 fn new_server(registration: &msquic::Registration) -> Result<Listener> {
