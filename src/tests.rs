@@ -61,6 +61,13 @@ async fn connect_and_no_accept() {
 }
 
 #[tokio::test]
+async fn no_connect() {
+    let registration = msquic::Registration::new(&*MSQUIC_API, ptr::null());
+    let _conn = Connection::new(msquic::Connection::new(&registration), &registration);
+}
+
+
+#[tokio::test]
 async fn connect_and_accept_and_stop() {
     let registration = msquic::Registration::new(&*MSQUIC_API, ptr::null());
     let listener = new_server(&registration).expect("new_server");

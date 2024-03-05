@@ -3,18 +3,18 @@ use crate::stream::{StartError, Stream, StreamType};
 use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 
 use libc::c_void;
 
 use thiserror::Error;
 
-pub struct Connection(Box<ConnectionInner>);
+pub struct Connection(Arc<ConnectionInner>);
 
 struct ConnectionInner {
     exclusive: Mutex<ConnectionInnerExclusive>,
-    shared: ConnectionInnerShared,
+    _shared: ConnectionInnerShared,
 }
 
 struct ConnectionInnerExclusive {
@@ -29,12 +29,11 @@ unsafe impl Sync for ConnectionInnerExclusive {}
 unsafe impl Send for ConnectionInnerExclusive {}
 
 struct ConnectionInnerShared {
-    shutdown_complete: Arc<(Mutex<bool>, Condvar)>,
 }
 
 impl Connection {
     pub fn new(msquic_conn: msquic::Connection, registration: &msquic::Registration) -> Self {
-        let inner = Box::new(ConnectionInner {
+        let inner = Arc::new(ConnectionInner {
             exclusive: Mutex::new(ConnectionInnerExclusive {
                 msquic_conn,
                 state: ConnectionState::Open,
@@ -43,8 +42,7 @@ impl Connection {
                 inbound_stream_waiters: Vec::new(),
                 inbound_streams: VecDeque::new(),
             }),
-            shared: ConnectionInnerShared {
-                shutdown_complete: Arc::new((Mutex::new(false), Condvar::new())),
+            _shared: ConnectionInnerShared {
             },
         });
         {
@@ -52,7 +50,7 @@ impl Connection {
             exclusive.msquic_conn.open(
                 registration,
                 Self::native_callback,
-                &*inner as *const _ as *const c_void,
+                Arc::into_raw(inner.clone()) as *const c_void,
             );
         }
         Self(inner)
@@ -60,7 +58,7 @@ impl Connection {
 
     pub(crate) fn from_handle(conn: msquic::Handle) -> Self {
         let msquic_conn = msquic::Connection::from_parts(conn, &*crate::MSQUIC_API);
-        let inner = Box::new(ConnectionInner {
+        let inner = Arc::new(ConnectionInner {
             exclusive: Mutex::new(ConnectionInnerExclusive {
                 msquic_conn,
                 state: ConnectionState::Connected,
@@ -69,15 +67,15 @@ impl Connection {
                 inbound_stream_waiters: Vec::new(),
                 inbound_streams: VecDeque::new(),
             }),
-            shared: ConnectionInnerShared {
-                shutdown_complete: Arc::new((Mutex::new(false), Condvar::new())),
+            _shared: ConnectionInnerShared {
             },
         });
         {
             let exclusive = inner.exclusive.lock().unwrap();
-            exclusive
-                .msquic_conn
-                .set_callback_handler(Self::native_callback, &*inner as *const _ as *const c_void);
+            exclusive.msquic_conn.set_callback_handler(
+                Self::native_callback,
+                Arc::into_raw(inner.clone()) as *const c_void,
+            );
         }
         Self(inner)
     }
@@ -167,7 +165,10 @@ impl Connection {
         inner: &ConnectionInner,
         payload: &msquic::ConnectionEventConnectionShutdownByTransport,
     ) -> u32 {
-        println!("msquic-async::Connection({:p}) Transport shutdown 0x{:x}", inner, payload.status);
+        println!(
+            "msquic-async::Connection({:p}) Transport shutdown 0x{:x}",
+            inner, payload.status
+        );
 
         let mut exclusive = inner.exclusive.lock().unwrap();
         exclusive.state = ConnectionState::Shutdown;
@@ -190,7 +191,10 @@ impl Connection {
         inner: &ConnectionInner,
         payload: &msquic::ConnectionEventConnectionShutdownByPeer,
     ) -> u32 {
-        println!("msquic-async::Connection({:p}) App shutdown {}", inner, payload.error_code);
+        println!(
+            "msquic-async::Connection({:p}) App shutdown {}",
+            inner, payload.error_code
+        );
 
         let mut exclusive = inner.exclusive.lock().unwrap();
         exclusive.state = ConnectionState::Shutdown;
@@ -210,7 +214,10 @@ impl Connection {
         inner: &ConnectionInner,
         _payload: &msquic::ConnectionEventShutdownComplete,
     ) -> u32 {
-        println!("msquic-async::Connection({:p}) Connection Shutdown complete", inner);
+        println!(
+            "msquic-async::Connection({:p}) Connection Shutdown complete",
+            inner
+        );
 
         {
             let mut exclusive = inner.exclusive.lock().unwrap();
@@ -224,11 +231,8 @@ impl Connection {
                 .drain(..)
                 .for_each(|waker| waker.wake());
         }
-        {
-            let (lock, cvar) = &*inner.shared.shutdown_complete;
-            let mut shutdown_complete = lock.lock().unwrap();
-            *shutdown_complete = true;
-            cvar.notify_one();
+        unsafe {
+            Arc::from_raw(inner as *const _);
         }
         0
     }
@@ -287,7 +291,10 @@ impl Connection {
                 })
             }
             _ => {
-                println!("msquic-async::Connection({:p}) Other callback {}", inner, event.event_type);
+                println!(
+                    "msquic-async::Connection({:p}) Other callback {}",
+                    inner, event.event_type
+                );
                 0
             }
         }
@@ -299,20 +306,20 @@ impl Drop for Connection {
         println!("msquic-async::Connection({:p}) dropping", &self.0);
         {
             let exclusive = self.0.exclusive.lock().unwrap();
-            if exclusive.state != ConnectionState::ShutdownComplete {
-                println!("msquic-async::Connection({:p}) do shutdown", self);
-                exclusive
-                    .msquic_conn
-                    .shutdown(msquic::CONNECTION_SHUTDOWN_FLAG_NONE, 0);
+            match exclusive.state {
+                ConnectionState::Open | ConnectionState::Connecting | ConnectionState::Connected => {
+                    println!("msquic-async::Connection({:p}) do shutdown", self);
+                    exclusive.msquic_conn.shutdown(msquic::CONNECTION_SHUTDOWN_FLAG_NONE, 0);
+                }
+                ConnectionState::Shutdown | ConnectionState::ShutdownComplete => {}
             }
         }
-        println!("msquic-async::Connection({:p}) wait for shutdown complete", self);
-        let (lock, cvar) = &*self.0.shared.shutdown_complete;
-        let mut shutdown_complete = lock.lock().unwrap();
-        while !*shutdown_complete {
-            shutdown_complete = cvar.wait(shutdown_complete).unwrap();
-        }
-        println!("msquic-async::Connection({:p}) after shutdown complete", self);
+    }
+}
+
+impl Drop for ConnectionInner {
+    fn drop(&mut self) {
+        println!("msquic-async::ConnectionInner({:p}) dropping", self);
     }
 }
 
