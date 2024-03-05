@@ -58,9 +58,7 @@ impl Listener {
                 new_connection_waiters: Vec::new(),
                 shutdown_complete_waiters: Vec::new(),
             }),
-            shared: ListenerInnerShared {
-                configuration,
-            },
+            shared: ListenerInnerShared { configuration },
         });
         {
             let exclusive = inner.exclusive.lock().unwrap();
@@ -86,7 +84,8 @@ impl Listener {
             }
         }
         let local_address: Option<SockAddr> = local_address.map(|x| x.into());
-        let local_address: Option<*const sockaddr> = local_address.as_ref().map(|x| x.as_ptr() as _);
+        let local_address: Option<*const sockaddr> =
+            local_address.as_ref().map(|x| x.as_ptr() as _);
         exclusive
             .msquic_listener
             .start(alpn.as_ref(), local_address);
@@ -120,6 +119,26 @@ impl Listener {
         }
         exclusive.new_connection_waiters.push(cx.waker().clone());
         Poll::Pending
+    }
+
+    pub fn local_addr(&self) -> Result<SocketAddr, ListenError> {
+        let exclusive = self.0.exclusive.lock().unwrap();
+        unsafe {
+            SockAddr::try_init(|addr, len| {
+                let status = exclusive.msquic_listener.get_param(
+                    msquic::PARAM_LISTENER_LOCAL_ADDRESS,
+                    len as _,
+                    addr as _,
+                );
+                if msquic::Status::succeeded(status) {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::from(std::io::ErrorKind::Other))
+                }
+            })
+            .map(|((), addr)| addr.as_socket().expect("socketaddr"))
+            .map_err(|_| ListenError::Failed)
+        }
     }
 
     pub fn poll_stop(&self, cx: &mut Context<'_>) -> Poll<Result<(), ListenError>> {
@@ -236,4 +255,6 @@ pub enum ListenError {
     AlreadyStarted,
     #[error("finished")]
     Finished,
+    #[error("failed")]
+    Failed,
 }
