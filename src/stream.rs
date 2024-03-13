@@ -1,9 +1,10 @@
 use crate::connection::ConnectionError;
 
 use std::collections::VecDeque;
+use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::task::{ready, Context, Poll, Waker};
 
 use bytes::Bytes;
@@ -20,8 +21,10 @@ pub enum StreamType {
     Unidirectional,
 }
 
+#[derive(Debug)]
 pub struct Stream(Arc<StreamInner>);
 
+#[derive(Debug)]
 struct StreamInner {
     exclusive: Mutex<StreamInnerExclusive>,
     shared: StreamInnerShared,
@@ -47,6 +50,7 @@ unsafe impl Send for StreamInnerExclusive {}
 
 struct StreamInnerShared {
     stream_type: StreamType,
+    id: RwLock<Option<u64>>,
     msquic_stream: msquic::Stream,
 }
 unsafe impl Sync for StreamInnerShared {}
@@ -102,6 +106,7 @@ impl Stream {
             }),
             shared: StreamInnerShared {
                 msquic_stream,
+                id: RwLock::new(None),
                 stream_type,
             },
         });
@@ -113,7 +118,7 @@ impl Stream {
                 Arc::into_raw(inner.clone()) as *const c_void,
             );
         }
-        println!("msquic-async::Stream({:p}) Open by local", inner);
+        println!("msquic-async::Stream({:p}) Open by local", &*inner);
 
         Self(inner)
     }
@@ -142,6 +147,7 @@ impl Stream {
             }),
             shared: StreamInnerShared {
                 msquic_stream,
+                id: RwLock::new(None),
                 stream_type,
             },
         });
@@ -151,10 +157,35 @@ impl Stream {
                 Arc::into_raw(inner.clone()) as *const c_void,
             );
         }
-        println!("msquic-async::Stream({:p}) Start by peer", inner);
-        Self(inner)
+        let stream = Self(inner);
+        println!(
+            "msquic-async::Stream({:p}) Start by peer id={:?}",
+            &*stream.0,
+            stream.id()
+        );
+        stream
     }
 
+    pub fn id(&self) -> Option<u64> {
+        let id = { *self.0.shared.id.read().unwrap() };
+        if id.is_some() {
+            id
+        } else {
+            let id = 0u64;
+            let mut buffer_length = std::mem::size_of_val(&id) as u32;
+            let status = self.0.shared.msquic_stream.get_param(
+                msquic::PARAM_STREAM_ID,
+                &mut buffer_length as *mut _,
+                &id as *const _ as *const c_void,
+            );
+            if msquic::Status::succeeded(status) {
+                self.0.shared.id.write().unwrap().replace(id);
+                Some(id)
+            } else {
+                None
+            }
+        }
+    }
     pub(crate) fn poll_start(
         &mut self,
         cx: &mut Context,
@@ -329,6 +360,7 @@ impl Stream {
     where
         T: FnMut(&mut StreamWriteBuffer) -> WriteStatus<U>,
     {
+        //println!("msquic-async::Stream({:p}) poll_write_generic", &*self.0);
         let mut exclusive = self.0.exclusive.lock().unwrap();
         match exclusive.send_state {
             StreamSendState::Closed => {
@@ -500,11 +532,15 @@ impl Stream {
         inner: &StreamInner,
         payload: &msquic::StreamEventStartComplete,
     ) -> u32 {
+        {
+            inner.shared.id.write().unwrap().replace(payload.id);
+        }
         println!(
-            "msquic-async::Stream({:p}) start complete status=0x{:x}, peer_accepted={}",
+            "msquic-async::Stream({:p}) start complete status=0x{:x}, peer_accepted={}, id={}",
             inner,
             payload.status,
-            payload.bit_flags.peer_accepted()
+            payload.bit_flags.peer_accepted(),
+            payload.id
         );
         let mut exclusive = inner.exclusive.lock().unwrap();
         exclusive.start_status = Some(payload.status);
@@ -786,6 +822,25 @@ impl Drop for Stream {
 impl Drop for StreamInner {
     fn drop(&mut self) {
         println!("msquic-async::StreamInner({:p}) Dropping", self);
+    }
+}
+
+impl fmt::Debug for StreamInnerExclusive {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Exclusive")
+            .field("state", &self.state)
+            .field("recv_state", &self.recv_state)
+            .field("send_state", &self.send_state)
+            .finish()
+    }
+}
+
+impl fmt::Debug for StreamInnerShared {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Shared")
+            .field("type", &self.stream_type)
+            .field("id", &self.id)
+            .finish()
     }
 }
 

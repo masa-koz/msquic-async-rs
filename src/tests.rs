@@ -1,5 +1,6 @@
 use super::{
-    Connection, ConnectionError, CredentialConfigCertFile, ListenError, Listener, MSQUIC_API,
+    Connection, ConnectionError, CredentialConfigCertFile, ListenError, Listener, ReadError, StartError,
+    WriteError, MSQUIC_API,
 };
 
 use std::future::poll_fn;
@@ -12,12 +13,17 @@ use anyhow::Result;
 
 use tempfile::{NamedTempFile, TempPath};
 
+use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 
 #[tokio::test]
-async fn connect_and_accept() {
+async fn connection_validation() {
+    let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
+    let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
+
     let registration = msquic::Registration::new(&*MSQUIC_API, ptr::null());
+
     let listener = new_server(&registration).expect("new_server");
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
     listener
@@ -28,61 +34,12 @@ async fn connect_and_accept() {
     let server_task = tokio::spawn(async move {
         let res = listener.accept().await;
         assert!(res.is_ok());
-        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
-        Ok::<_, anyhow::Error>(())
-    });
+        server_rx.recv().await.expect("recv");
 
-    let client_config = new_client_config(&registration).expect("new_client_config");
-    let conn = Connection::new(msquic::Connection::new(&registration), &registration);
-    let client_task = tokio::spawn(async move {
-        let res = conn
-            .start(
-                &client_config,
-                &format!("{}", server_addr.ip()),
-                server_addr.port(),
-            )
-            .await;
-        assert!(res.is_ok());
-        Ok::<_, anyhow::Error>(())
-    });
+        let conn = res.expect("accept");
+        let res = conn.open_outbound_stream(crate::StreamType::Bidirectional, false).await;
+        assert_eq!(res.err(), Some(StartError::ConnectionLost(ConnectionError::ShutdownByPeer(1))));
 
-    let res = tokio::try_join!(server_task, client_task);
-    assert!(res.is_ok());
-}
-
-#[tokio::test]
-async fn connect_and_no_accept() {
-    let registration = msquic::Registration::new(&*MSQUIC_API, ptr::null());
-    let client_config = new_client_config(&registration).expect("new_client_config");
-    let conn = Connection::new(msquic::Connection::new(&registration), &registration);
-    if let Err(ConnectionError::ShutdownByTransport(_, _)) =
-        conn.start(&client_config, "127.0.0.1", 8443).await
-    {
-        assert!(true, "ConnectionError::ShutdownByTransport");
-    } else {
-        assert!(false, "ConnectionError::ShutdownByTransport");
-    }
-}
-
-#[tokio::test]
-async fn no_connect() {
-    let registration = msquic::Registration::new(&*MSQUIC_API, ptr::null());
-    let _conn = Connection::new(msquic::Connection::new(&registration), &registration);
-}
-
-#[tokio::test]
-async fn connect_and_accept_and_stop() {
-    let registration = msquic::Registration::new(&*MSQUIC_API, ptr::null());
-    let listener = new_server(&registration).expect("new_server");
-    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    listener
-        .start(&[msquic::Buffer::from("test")], Some(addr))
-        .expect("listener start");
-    let server_addr = listener.local_addr().expect("listener local_addr");
-
-    let server_task = tokio::spawn(async move {
-        let res = listener.accept().await;
-        assert!(res.is_ok());
         let res = listener.stop().await;
         assert!(res.is_ok());
         if let Err(ListenError::Finished) = listener.accept().await {
@@ -90,7 +47,8 @@ async fn connect_and_accept_and_stop() {
         } else {
             assert!(false, "ListenError::Finished");
         }
-        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+        server_tx.send(()).await.expect("send");
+
         Ok::<_, anyhow::Error>(())
     });
 
@@ -106,8 +64,13 @@ async fn connect_and_accept_and_stop() {
             )
             .await;
         assert!(res.is_ok());
-        std::mem::drop(conn);
-        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+        let res = poll_fn(|cx| conn.poll_shutdown(cx, 1)).await;
+        assert!(res.is_ok());
+
+        client_tx.send(()).await.expect("send");
+
+        client_rx.recv().await.expect("recv");
+
         if let Err(ConnectionError::ShutdownByTransport(_, _)) = conn1
             .start(
                 &client_config,
@@ -140,11 +103,65 @@ async fn stream_validation() {
 
     let mut set = JoinSet::new();
 
+    let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
+    let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
     set.spawn(async move {
         let conn = listener.accept().await.expect("accept");
-        let res = conn.accept_inbound_stream().await;
+        let mut buf = [0; 1024];
+
+        let stream = conn
+            .accept_inbound_stream()
+            .await
+            .expect("accept_inbound_stream");
+        server_rx.recv().await.expect("recv");
+        let res = poll_fn(|cx| stream.poll_read(cx, &mut buf)).await;
+        assert_eq!(res, Err(ReadError::Reset(0)));
+
+        let stream = conn
+            .accept_inbound_stream()
+            .await
+            .expect("accept_inbound_stream");
+        let res = poll_fn(|cx| stream.poll_read(cx, &mut buf)).await;
+        assert_eq!(res, Err(ReadError::Reset(0)));
+
+        let stream = conn
+            .accept_inbound_stream()
+            .await
+            .expect("accept_inbound_stream");
+        let res = poll_fn(|cx| stream.poll_read(cx, &mut buf)).await;
+        assert_eq!(res, Ok(11));
+
+        let res = poll_fn(|cx| stream.poll_finish_write(cx)).await;
         assert!(res.is_ok());
-        tokio::time::sleep(std::time::Duration::from_millis(3000)).await;
+
+        let stream = conn
+            .accept_inbound_stream()
+            .await
+            .expect("accept_inbound_stream");
+
+        let res = poll_fn(|cx| stream.poll_read(cx, &mut buf)).await;
+        assert_eq!(res, Err(ReadError::Reset(0)));
+
+        let res = poll_fn(|cx| stream.poll_write(cx, b"hello world", true)).await;
+        assert_eq!(res, Ok(11));
+
+        let stream = conn
+            .accept_inbound_stream()
+            .await
+            .expect("accept_inbound_stream");
+
+        let res = poll_fn(|cx| stream.poll_write(cx, b"hello world", true)).await;
+        if res.is_err() {
+            assert_eq!(res, Err(WriteError::Stopped(0)));
+        } else {
+            assert_eq!(res, Ok(11));
+        }
+
+        let res = poll_fn(|cx| stream.poll_read(cx, &mut buf)).await;
+        assert_eq!(res, Ok(11));
+
+        server_tx.send(()).await.expect("send");
+
         Ok::<_, anyhow::Error>(())
     });
 
@@ -152,6 +169,8 @@ async fn stream_validation() {
     let conn = Connection::new(msquic::Connection::new(&registration), &registration);
 
     set.spawn(async move {
+        let mut buf = [0; 1024];
+
         let res = conn
             .start(
                 &client_config,
@@ -166,9 +185,11 @@ async fn stream_validation() {
         )
         .await;
         assert!(res.is_ok());
+
         let stream = res.expect("timeout").expect("open_outbound_stream");
         let res = poll_fn(|cx| stream.poll_write(cx, b"hello world", false)).await;
         assert!(res.is_ok());
+
         let res = timeout(
             std::time::Duration::from_millis(1000),
             conn.open_outbound_stream(crate::StreamType::Bidirectional, false),
@@ -181,16 +202,53 @@ async fn stream_validation() {
             .await;
         assert!(res.is_err());
 
-        let res = poll_fn(|cx| stream.poll_abort_write(cx, 0)).await;
-        assert!(res.is_ok());
-        let res = poll_fn(|cx| stream.poll_abort_read(cx, 0)).await;
-        assert!(res.is_ok());
-        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+        std::mem::drop(stream);
 
         let res = conn
-            .open_outbound_stream(crate::StreamType::Bidirectional, true)
+            .open_outbound_stream(crate::StreamType::Bidirectional, false)
             .await;
         assert!(res.is_ok());
+
+        let stream = res.expect("open_outbound_stream");
+        let res = poll_fn(|cx| stream.poll_write(cx, b"hello world", true)).await;
+        assert_eq!(res, Ok(11));
+
+        client_tx.send(()).await.expect("send");
+
+        let res = poll_fn(|cx| stream.poll_read(cx, &mut buf)).await;
+        assert_eq!(res, Ok(0));
+
+        std::mem::drop(stream);
+
+        let res = conn
+            .open_outbound_stream(crate::StreamType::Bidirectional, false)
+            .await;
+        assert!(res.is_ok());
+
+        let stream = res.expect("open_outbound_stream");
+        let res = poll_fn(|cx| stream.poll_abort_write(cx, 0)).await;
+        assert_eq!(res, Ok(()));
+
+        let res = poll_fn(|cx| stream.poll_read(cx, &mut buf)).await;
+        assert_eq!(res, Ok(11));
+
+        let res = poll_fn(|cx| stream.poll_read(cx, &mut buf)).await;
+        assert_eq!(res, Ok(0));
+
+        let res = conn
+            .open_outbound_stream(crate::StreamType::Bidirectional, false)
+            .await;
+        assert!(res.is_ok());
+
+        let stream = res.expect("open_outbound_stream");
+        let res = poll_fn(|cx| stream.poll_abort_read(cx, 0)).await;
+        assert_eq!(res, Ok(()));
+        // not waiting for the server to receive stopping
+
+        let res = poll_fn(|cx| stream.poll_write(cx, b"hello world", true)).await;
+        assert_eq!(res, Ok(11));
+
+        client_rx.recv().await.expect("recv");
 
         Ok::<_, anyhow::Error>(())
     });
@@ -214,7 +272,7 @@ fn new_server(registration: &msquic::Registration) -> Result<Listener> {
         registration,
         &alpn,
         msquic::Settings::new()
-            .set_idle_timeout_ms(1000)
+            .set_idle_timeout_ms(10000)
             .set_peer_bidi_stream_count(1)
             .set_peer_unidi_stream_count(1),
     );
@@ -234,7 +292,7 @@ fn new_client_config(registration: &msquic::Registration) -> Result<msquic::Conf
         registration,
         &alpn,
         msquic::Settings::new()
-            .set_idle_timeout_ms(1000)
+            .set_idle_timeout_ms(10000)
             .set_peer_bidi_stream_count(1)
             .set_peer_unidi_stream_count(1),
     );

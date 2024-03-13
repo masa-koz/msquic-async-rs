@@ -2,6 +2,7 @@ use crate::stream::{StartError, Stream, StreamType};
 
 use std::collections::VecDeque;
 use std::future::Future;
+use std::ops::Deref;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
@@ -10,7 +11,10 @@ use libc::c_void;
 
 use thiserror::Error;
 
-pub struct Connection(Arc<ConnectionInner>);
+#[derive(Clone)]
+pub struct Connection(Arc<ConnectionInstance>);
+
+struct ConnectionInstance(Arc<ConnectionInner>);
 
 struct ConnectionInner {
     exclusive: Mutex<ConnectionInnerExclusive>,
@@ -23,6 +27,7 @@ struct ConnectionInnerExclusive {
     start_waiters: Vec<Waker>,
     inbound_stream_waiters: Vec<Waker>,
     inbound_streams: VecDeque<crate::stream::Stream>,
+    shutdown_waiters: Vec<Waker>,
 }
 unsafe impl Sync for ConnectionInnerExclusive {}
 unsafe impl Send for ConnectionInnerExclusive {}
@@ -42,18 +47,18 @@ impl Connection {
                 start_waiters: Vec::new(),
                 inbound_stream_waiters: Vec::new(),
                 inbound_streams: VecDeque::new(),
+                shutdown_waiters: Vec::new(),
             }),
             shared: ConnectionInnerShared { msquic_conn },
         });
-        {
-            inner.shared.msquic_conn.open(
-                registration,
-                Self::native_callback,
-                Arc::into_raw(inner.clone()) as *const c_void,
-            );
-        }
-        println!("msquic-async::Connection({:p}) Open by local", inner);
-        Self(inner)
+        inner.shared.msquic_conn.open(
+            registration,
+            Self::native_callback,
+            Arc::into_raw(inner.clone()) as *const c_void,
+        );
+        println!("msquic-async::Connection({:p}) Open by local", &*inner);
+
+        Self(Arc::new(ConnectionInstance(inner)))
     }
 
     pub(crate) fn from_handle(conn: msquic::Handle) -> Self {
@@ -65,17 +70,16 @@ impl Connection {
                 start_waiters: Vec::new(),
                 inbound_stream_waiters: Vec::new(),
                 inbound_streams: VecDeque::new(),
+                shutdown_waiters: Vec::new(),
             }),
             shared: ConnectionInnerShared { msquic_conn },
         });
-        {
             inner.shared.msquic_conn.set_callback_handler(
                 Self::native_callback,
                 Arc::into_raw(inner.clone()) as *const c_void,
             );
-        }
-        println!("msquic-async::Connection({:p}) Open by peer", inner);
-        Self(inner)
+        println!("msquic-async::Connection({:p}) Open by peer", &*inner);
+        Self(Arc::new(ConnectionInstance(inner)))
     }
 
     pub fn start<'a>(
@@ -170,6 +174,41 @@ impl Connection {
         Poll::Pending
     }
 
+    pub fn poll_shutdown(
+        &self,
+        cx: &mut Context<'_>,
+        error_code: u64,
+    ) -> Poll<Result<(), ConnectionError>> {
+        let mut exclusive = self.0.exclusive.lock().unwrap();
+        match exclusive.state {
+            ConnectionState::Open => {
+                return Poll::Ready(Err(ConnectionError::ConnectionNotStarted));
+            }
+            ConnectionState::Connecting => {
+                exclusive.start_waiters.push(cx.waker().clone());
+                return Poll::Pending;
+            }
+            ConnectionState::Connected => {
+                self.0
+                .shared
+                .msquic_conn
+                .shutdown(msquic::CONNECTION_SHUTDOWN_FLAG_NONE, error_code);
+                exclusive.state = ConnectionState::Shutdown;
+            }
+            ConnectionState::Shutdown => {}
+            ConnectionState::ShutdownComplete => {
+                if let Some(error) = &exclusive.error {
+                    return Poll::Ready(Err(error.clone()));
+                } else {
+                    return Poll::Ready(Ok(()));
+                }
+            }
+        }
+
+        exclusive.shutdown_waiters.push(cx.waker().clone());
+        Poll::Pending
+    }
+
     fn handle_event_connected(
         inner: &ConnectionInner,
         _payload: &msquic::ConnectionEventConnected,
@@ -254,6 +293,10 @@ impl Connection {
                 .inbound_stream_waiters
                 .drain(..)
                 .for_each(|waker| waker.wake());
+            exclusive
+                .shutdown_waiters
+                .drain(..)
+                .for_each(|waker| waker.wake());
         }
         unsafe {
             Arc::from_raw(inner as *const _);
@@ -265,8 +308,6 @@ impl Connection {
         inner: &ConnectionInner,
         payload: &msquic::ConnectionEventPeerStreamStarted,
     ) -> u32 {
-        println!("msquic-async::Connection({:p}) Peer stream started", inner);
-
         let stream_type = if (payload.flags & msquic::STREAM_OPEN_FLAG_UNIDIRECTIONAL) != 0 {
             StreamType::Unidirectional
         } else {
@@ -281,6 +322,15 @@ impl Connection {
                 .drain(..)
                 .for_each(|waker| waker.wake());
         }
+
+        0
+    }
+
+    fn handle_event_streams_available(
+        inner: &ConnectionInner,
+        payload: &msquic::ConnectionEventStreamsAvailable,
+    ) -> u32 {
+        println!("msquic-async::Connection({:p}) Streams available bidirectional_count:{} unidirectional_count:{}", inner, payload.bidirectional_count, payload.unidirectional_count);
         0
     }
 
@@ -314,6 +364,11 @@ impl Connection {
                     &event.payload.peer_stream_started
                 })
             }
+            msquic::CONNECTION_EVENT_STREAMS_AVAILABLE => {
+                Self::handle_event_streams_available(inner, unsafe {
+                    &event.payload.streams_available
+                })
+            }
             _ => {
                 println!(
                     "msquic-async::Connection({:p}) Other callback {}",
@@ -325,7 +380,7 @@ impl Connection {
     }
 }
 
-impl Drop for Connection {
+impl Drop for ConnectionInstance {
     fn drop(&mut self) {
         println!("msquic-async::Connection({:p}) dropping", &*self.0);
         {
@@ -343,6 +398,14 @@ impl Drop for Connection {
                 ConnectionState::Shutdown | ConnectionState::ShutdownComplete => {}
             }
         }
+    }
+}
+
+impl Deref for ConnectionInstance {
+    type Target = ConnectionInner;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
@@ -371,6 +434,8 @@ pub enum ConnectionError {
     ShutdownByLocal,
     #[error("connection closed")]
     ConnectionClosed,
+    #[error("connection not started yet")]
+    ConnectionNotStarted,
 }
 
 pub struct ConnectionStart<'a> {
@@ -384,7 +449,8 @@ impl Future for ConnectionStart<'_> {
     type Output = Result<(), ConnectionError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.conn.poll_start(cx, self.configuration, self.host, self.port)
+        self.conn
+            .poll_start(cx, self.configuration, self.host, self.port)
     }
 }
 
