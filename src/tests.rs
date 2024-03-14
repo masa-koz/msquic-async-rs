@@ -1,6 +1,6 @@
 use super::{
-    Connection, ConnectionError, CredentialConfigCertFile, ListenError, Listener, ReadError, StartError,
-    WriteError, MSQUIC_API,
+    Connection, ConnectionError, CredentialConfigCertFile, ListenError, Listener, ReadError,
+    StartError, WriteError, MSQUIC_API,
 };
 
 use std::future::poll_fn;
@@ -31,14 +31,23 @@ async fn connection_validation() {
         .expect("listener start");
     let server_addr = listener.local_addr().expect("listener local_addr");
 
-    let server_task = tokio::spawn(async move {
+    let mut set = JoinSet::new();
+
+    set.spawn(async move {
         let res = listener.accept().await;
         assert!(res.is_ok());
         server_rx.recv().await.expect("recv");
 
         let conn = res.expect("accept");
-        let res = conn.open_outbound_stream(crate::StreamType::Bidirectional, false).await;
-        assert_eq!(res.err(), Some(StartError::ConnectionLost(ConnectionError::ShutdownByPeer(1))));
+        let res = conn
+            .open_outbound_stream(crate::StreamType::Bidirectional, false)
+            .await;
+        assert_eq!(
+            res.err(),
+            Some(StartError::ConnectionLost(ConnectionError::ShutdownByPeer(
+                1
+            )))
+        );
 
         let res = listener.stop().await;
         assert!(res.is_ok());
@@ -55,7 +64,7 @@ async fn connection_validation() {
     let client_config = new_client_config(&registration).expect("new_client_config");
     let conn = Connection::new(msquic::Connection::new(&registration), &registration);
     let conn1 = Connection::new(msquic::Connection::new(&registration), &registration);
-    let client_task = tokio::spawn(async move {
+    set.spawn(async move {
         let res = conn
             .start(
                 &client_config,
@@ -87,8 +96,17 @@ async fn connection_validation() {
         Ok::<_, anyhow::Error>(())
     });
 
-    let res = tokio::try_join!(server_task, client_task);
-    assert!(res.is_ok());
+    let mut results = Vec::new();
+    while let Some(res) = set.join_next().await {
+        results.push(res);
+    }
+    results.into_iter().for_each(|res| {
+        if let Err(err) = res {
+            if err.is_panic() {
+                std::panic::resume_unwind(err.into_panic());
+            }
+        }
+    });
 }
 
 #[tokio::test]
@@ -109,7 +127,7 @@ async fn stream_validation() {
         let conn = listener.accept().await.expect("accept");
         let mut buf = [0; 1024];
 
-        let stream = conn
+        let mut stream = conn
             .accept_inbound_stream()
             .await
             .expect("accept_inbound_stream");
@@ -117,24 +135,25 @@ async fn stream_validation() {
         let res = poll_fn(|cx| stream.poll_read(cx, &mut buf)).await;
         assert_eq!(res, Err(ReadError::Reset(0)));
 
-        let stream = conn
+        let mut stream = conn
             .accept_inbound_stream()
             .await
             .expect("accept_inbound_stream");
         let res = poll_fn(|cx| stream.poll_read(cx, &mut buf)).await;
         assert_eq!(res, Err(ReadError::Reset(0)));
 
-        let stream = conn
+        let mut stream = conn
             .accept_inbound_stream()
             .await
             .expect("accept_inbound_stream");
         let res = poll_fn(|cx| stream.poll_read(cx, &mut buf)).await;
         assert_eq!(res, Ok(11));
+        assert_eq!(&buf[0..11], b"hello world");
 
         let res = poll_fn(|cx| stream.poll_finish_write(cx)).await;
         assert!(res.is_ok());
 
-        let stream = conn
+        let mut stream = conn
             .accept_inbound_stream()
             .await
             .expect("accept_inbound_stream");
@@ -145,10 +164,11 @@ async fn stream_validation() {
         let res = poll_fn(|cx| stream.poll_write(cx, b"hello world", true)).await;
         assert_eq!(res, Ok(11));
 
-        let stream = conn
+        let mut stream = conn
             .accept_inbound_stream()
             .await
             .expect("accept_inbound_stream");
+        assert_eq!(stream.id(), Some(16));
 
         let res = poll_fn(|cx| stream.poll_write(cx, b"hello world", true)).await;
         if res.is_err() {
@@ -159,8 +179,51 @@ async fn stream_validation() {
 
         let res = poll_fn(|cx| stream.poll_read(cx, &mut buf)).await;
         assert_eq!(res, Ok(11));
+        assert_eq!(&buf[0..11], b"hello world");
+
+        std::mem::drop(stream);
 
         server_tx.send(()).await.expect("send");
+
+        let stream = conn
+            .accept_inbound_stream()
+            .await
+            .expect("accept_inbound_stream");
+        let (read, write) = stream.split();
+        assert!(read.is_some());
+        assert!(write.is_some());
+        let (mut read, mut write) = (read.unwrap(), write.unwrap());
+
+        let res = tokio::io::AsyncReadExt::read(&mut read, &mut buf).await;
+        assert_eq!(res.ok(), Some(11));
+        assert_eq!(&buf[0..11], b"hello world");
+
+        let res = tokio::io::AsyncReadExt::read(&mut read, &mut buf).await;
+        assert_eq!(res.ok(), Some(0));
+
+        let res = futures::io::AsyncWriteExt::write(&mut write, b"hello world").await;
+        assert_eq!(res.ok(), Some(11));
+
+        let res = poll_fn(|cx| write.poll_finish_write(cx)).await;
+        assert!(res.is_ok());
+
+        server_rx.recv().await.expect("recv");
+
+        std::mem::drop(read);
+        std::mem::drop(write);
+
+        let stream = conn
+            .accept_inbound_stream()
+            .await
+            .expect("accept_inbound_stream");
+        let (read, write) = stream.split();
+        assert!(read.is_some());
+        assert!(write.is_some());
+
+        let res = tokio::io::copy(&mut read.unwrap(), &mut write.unwrap()).await;
+        assert_eq!(res.ok(), Some(11));
+
+        server_rx.recv().await.expect("recv");
 
         Ok::<_, anyhow::Error>(())
     });
@@ -186,7 +249,7 @@ async fn stream_validation() {
         .await;
         assert!(res.is_ok());
 
-        let stream = res.expect("timeout").expect("open_outbound_stream");
+        let mut stream = res.expect("timeout").expect("open_outbound_stream");
         let res = poll_fn(|cx| stream.poll_write(cx, b"hello world", false)).await;
         assert!(res.is_ok());
 
@@ -209,7 +272,7 @@ async fn stream_validation() {
             .await;
         assert!(res.is_ok());
 
-        let stream = res.expect("open_outbound_stream");
+        let mut stream = res.expect("open_outbound_stream");
         let res = poll_fn(|cx| stream.poll_write(cx, b"hello world", true)).await;
         assert_eq!(res, Ok(11));
 
@@ -225,12 +288,13 @@ async fn stream_validation() {
             .await;
         assert!(res.is_ok());
 
-        let stream = res.expect("open_outbound_stream");
+        let mut stream = res.expect("open_outbound_stream");
         let res = poll_fn(|cx| stream.poll_abort_write(cx, 0)).await;
         assert_eq!(res, Ok(()));
 
         let res = poll_fn(|cx| stream.poll_read(cx, &mut buf)).await;
         assert_eq!(res, Ok(11));
+        assert_eq!(&buf[0..11], b"hello world");
 
         let res = poll_fn(|cx| stream.poll_read(cx, &mut buf)).await;
         assert_eq!(res, Ok(0));
@@ -240,7 +304,7 @@ async fn stream_validation() {
             .await;
         assert!(res.is_ok());
 
-        let stream = res.expect("open_outbound_stream");
+        let mut stream = res.expect("open_outbound_stream");
         let res = poll_fn(|cx| stream.poll_abort_read(cx, 0)).await;
         assert_eq!(res, Ok(()));
         // not waiting for the server to receive stopping
@@ -249,6 +313,51 @@ async fn stream_validation() {
         assert_eq!(res, Ok(11));
 
         client_rx.recv().await.expect("recv");
+
+        std::mem::drop(stream);
+
+        let res = conn
+            .open_outbound_stream(crate::StreamType::Bidirectional, false)
+            .await;
+        assert!(res.is_ok());
+
+        let stream = res.expect("open_outbound_stream");
+        let (read, write) = stream.split();
+        assert!(read.is_some());
+        assert!(write.is_some());
+
+        let (mut read, mut write) = (read.unwrap(), write.unwrap());
+        let res = tokio::io::AsyncWriteExt::write(&mut write, b"hello world").await;
+        assert_eq!(res.ok(), Some(11));
+
+        let res = poll_fn(|cx| write.poll_finish_write(cx)).await;
+        assert!(res.is_ok());
+
+        let res = futures::io::AsyncReadExt::read(&mut read, &mut buf).await;
+        assert_eq!(res.ok(), Some(11));
+        assert_eq!(&buf[0..11], b"hello world");
+
+        client_tx.send(()).await.expect("send");
+
+        std::mem::drop(read);
+        std::mem::drop(write);
+
+        let res = conn
+            .open_outbound_stream(crate::StreamType::Bidirectional, false)
+            .await;
+        assert!(res.is_ok());
+
+        let mut stream = res.expect("open_outbound_stream");
+
+        // echo
+        let res = poll_fn(|cx| stream.poll_write(cx, b"hello world", true)).await;
+        assert_eq!(res, Ok(11));
+
+        let res = poll_fn(|cx| stream.poll_read(cx, &mut buf)).await;
+        assert_eq!(res, Ok(11));
+        assert_eq!(&buf[0..11], b"hello world");
+
+        client_tx.send(()).await.expect("send");
 
         Ok::<_, anyhow::Error>(())
     });

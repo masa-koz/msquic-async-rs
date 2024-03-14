@@ -3,26 +3,34 @@ use crate::connection::ConnectionError;
 use std::collections::VecDeque;
 use std::fmt;
 use std::future::Future;
+use std::ops::Deref;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, RwLock};
 use std::task::{ready, Context, Poll, Waker};
 
 use bytes::Bytes;
 
-use futures_io::{AsyncRead, AsyncWrite};
-
 use libc::c_void;
 
 use thiserror::Error;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum StreamType {
     Bidirectional,
     Unidirectional,
 }
 
 #[derive(Debug)]
-pub struct Stream(Arc<StreamInner>);
+pub struct Stream(Arc<StreamInstance>);
+
+#[derive(Debug)]
+pub struct ReadStream(Arc<StreamInstance>);
+
+#[derive(Debug)]
+pub struct WriteStream(Arc<StreamInstance>);
+
+#[derive(Clone, Debug)]
+struct StreamInstance(Arc<StreamInner>);
 
 #[derive(Debug)]
 struct StreamInner {
@@ -50,6 +58,7 @@ unsafe impl Send for StreamInnerExclusive {}
 
 struct StreamInnerShared {
     stream_type: StreamType,
+    local_open: bool,
     id: RwLock<Option<u64>>,
     msquic_stream: msquic::Stream,
 }
@@ -106,21 +115,20 @@ impl Stream {
             }),
             shared: StreamInnerShared {
                 msquic_stream,
+                local_open: true,
                 id: RwLock::new(None),
                 stream_type,
             },
         });
-        {
-            inner.shared.msquic_stream.open(
-                msquic_conn,
-                flags,
-                Self::native_callback,
-                Arc::into_raw(inner.clone()) as *const c_void,
-            );
-        }
+        inner.shared.msquic_stream.open(
+            msquic_conn,
+            flags,
+            StreamInstance::native_callback,
+            Arc::into_raw(inner.clone()) as *const c_void,
+        );
         println!("msquic-async::Stream({:p}) Open by local", &*inner);
 
-        Self(inner)
+        Self(Arc::new(StreamInstance(inner)))
     }
 
     pub(crate) fn from_handle(stream: msquic::Handle, stream_type: StreamType) -> Self {
@@ -147,45 +155,24 @@ impl Stream {
             }),
             shared: StreamInnerShared {
                 msquic_stream,
+                local_open: false,
                 id: RwLock::new(None),
                 stream_type,
             },
         });
-        {
-            inner.shared.msquic_stream.set_callback_handler(
-                Self::native_callback,
-                Arc::into_raw(inner.clone()) as *const c_void,
-            );
-        }
-        let stream = Self(inner);
+        inner.shared.msquic_stream.set_callback_handler(
+            StreamInstance::native_callback,
+            Arc::into_raw(inner.clone()) as *const c_void,
+        );
+        let stream = Self(Arc::new(StreamInstance(inner)));
         println!(
-            "msquic-async::Stream({:p}) Start by peer id={:?}",
-            &*stream.0,
+            "msquic-async::Stream({:p}, id={:?}) Start by peer",
+            &*stream.0.0,
             stream.id()
         );
         stream
     }
 
-    pub fn id(&self) -> Option<u64> {
-        let id = { *self.0.shared.id.read().unwrap() };
-        if id.is_some() {
-            id
-        } else {
-            let id = 0u64;
-            let mut buffer_length = std::mem::size_of_val(&id) as u32;
-            let status = self.0.shared.msquic_stream.get_param(
-                msquic::PARAM_STREAM_ID,
-                &mut buffer_length as *mut _,
-                &id as *const _ as *const c_void,
-            );
-            if msquic::Status::succeeded(status) {
-                self.0.shared.id.write().unwrap().replace(id);
-                Some(id)
-            } else {
-                None
-            }
-        }
-    }
     pub(crate) fn poll_start(
         &mut self,
         cx: &mut Context,
@@ -234,7 +221,154 @@ impl Stream {
         Poll::Pending
     }
 
+    pub fn id(&self) -> Option<u64> {
+        self.0.id()
+    }
+
+    pub fn split(self) -> (Option<ReadStream>, Option<WriteStream>) {
+        match (self.0.shared.stream_type, self.0.shared.local_open) {
+            (StreamType::Unidirectional, true) => (None, Some(WriteStream(self.0))),
+            (StreamType::Unidirectional, false) => (Some(ReadStream(self.0)), None),
+            (StreamType::Bidirectional, _) => {
+                (Some(ReadStream(self.0.clone())), Some(WriteStream(self.0)))
+            }
+        }
+    }
+
     pub fn poll_read(
+        &mut self,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<Result<usize, ReadError>> {
+        self.0.poll_read(cx, buf)
+    }
+
+    pub fn poll_write(
+        &mut self,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+        fin: bool,
+    ) -> Poll<Result<usize, WriteError>> {
+        self.0.poll_write(cx, buf, fin)
+    }
+
+    pub fn zerocopy_write<'a>(&'a mut self, buf: &'a Bytes, fin: bool) -> ZeroCopyWrite<'a> {
+        self.0.zerocopy_write(buf, fin)
+    }
+
+    pub fn zerocopy_write_vectored<'a>(
+        &'a mut self,
+        bufs: &'a [Bytes],
+        fin: bool,
+    ) -> ZeroCopyWriteVectored<'a> {
+        self.0.zerocopy_write_vectored(bufs, fin)
+    }
+
+    pub fn poll_finish_write(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), WriteError>> {
+        self.0.poll_finish_write(cx)
+    }
+
+    pub fn poll_abort_write(
+        &mut self,
+        cx: &mut Context<'_>,
+        error_code: u64,
+    ) -> Poll<Result<(), WriteError>> {
+        self.0.poll_abort_write(cx, error_code)
+    }
+
+    pub fn poll_abort_read(
+        &mut self,
+        cx: &mut Context<'_>,
+        error_code: u64,
+    ) -> Poll<Result<(), ReadError>> {
+        self.0.poll_abort_read(cx, error_code)
+    }
+}
+
+impl ReadStream {
+    pub fn id(&self) -> Option<u64> {
+        self.0.id()
+    }
+
+    pub fn poll_read(
+        &mut self,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<Result<usize, ReadError>> {
+        self.0.poll_read(cx, buf)
+    }
+
+    pub fn poll_abort_read(
+        &mut self,
+        cx: &mut Context<'_>,
+        error_code: u64,
+    ) -> Poll<Result<(), ReadError>> {
+        self.0.poll_abort_read(cx, error_code)
+    }
+}
+
+impl WriteStream {
+    pub fn id(&self) -> Option<u64> {
+        self.0.id()
+    }
+
+    pub fn poll_write(
+        &mut self,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+        fin: bool,
+    ) -> Poll<Result<usize, WriteError>> {
+        self.0.poll_write(cx, buf, fin)
+    }
+
+    pub fn zerocopy_write<'a>(&'a mut self, buf: &'a Bytes, fin: bool) -> ZeroCopyWrite<'a> {
+        self.0.zerocopy_write(buf, fin)
+    }
+
+    pub fn zerocopy_write_vectored<'a>(
+        &'a mut self,
+        bufs: &'a [Bytes],
+        fin: bool,
+    ) -> ZeroCopyWriteVectored<'a> {
+        self.0.zerocopy_write_vectored(bufs, fin)
+    }
+
+    pub fn poll_finish_write(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), WriteError>> {
+        self.0.poll_finish_write(cx)
+    }
+
+    pub fn poll_abort_write(
+        &mut self,
+        cx: &mut Context<'_>,
+        error_code: u64,
+    ) -> Poll<Result<(), WriteError>> {
+        self.0.poll_abort_write(cx, error_code)
+    }
+}
+
+impl StreamInstance {
+    pub(crate) fn id(&self) -> Option<u64> {
+        let id = { *self.0.shared.id.read().unwrap() };
+        if id.is_some() {
+            id
+        } else {
+            let id = 0u64;
+            let mut buffer_length = std::mem::size_of_val(&id) as u32;
+            let status = self.0.shared.msquic_stream.get_param(
+                msquic::PARAM_STREAM_ID,
+                &mut buffer_length as *mut _,
+                &id as *const _ as *const c_void,
+            );
+            if msquic::Status::succeeded(status) {
+                self.0.shared.id.write().unwrap().replace(id);
+                Some(id)
+            } else {
+                None
+            }
+        }
+    }
+
+    pub(crate) fn poll_read(
         &self,
         cx: &mut Context<'_>,
         buf: &mut [u8],
@@ -315,7 +449,7 @@ impl Stream {
         }
     }
 
-    pub fn poll_write(
+    pub(crate) fn poll_write(
         &self,
         cx: &mut Context<'_>,
         buf: &[u8],
@@ -332,21 +466,21 @@ impl Stream {
         .map(|res| res.map(|x| x.unwrap_or(0)))
     }
 
-    pub fn zerocopy_write<'a>(&'a self, buf: &'a Bytes, fin: bool) -> ZeroCopyWrite<'a> {
+    pub(crate) fn zerocopy_write<'a>(&'a self, buf: &'a Bytes, fin: bool) -> ZeroCopyWrite<'a> {
         ZeroCopyWrite {
-            stream: &self,
+            stream: self,
             buf,
             fin,
         }
     }
 
-    pub fn zerocopy_write_vectored<'a>(
+    pub(crate) fn zerocopy_write_vectored<'a>(
         &'a self,
         bufs: &'a [Bytes],
         fin: bool,
     ) -> ZeroCopyWriteVectored<'a> {
         ZeroCopyWriteVectored {
-            stream: &self,
+            stream: self,
             bufs,
             fin,
         }
@@ -415,7 +549,7 @@ impl Stream {
         }
     }
 
-    pub fn poll_finish_write(&self, cx: &mut Context<'_>) -> Poll<Result<(), WriteError>> {
+    pub(crate) fn poll_finish_write(&self, cx: &mut Context<'_>) -> Poll<Result<(), WriteError>> {
         let mut exclusive = self.0.exclusive.lock().unwrap();
         match exclusive.send_state {
             StreamSendState::Start => {
@@ -449,7 +583,7 @@ impl Stream {
         Poll::Pending
     }
 
-    pub fn poll_abort_write(
+    pub(crate) fn poll_abort_write(
         &self,
         cx: &mut Context<'_>,
         error_code: u64,
@@ -487,7 +621,7 @@ impl Stream {
         Poll::Pending
     }
 
-    pub fn poll_abort_read(
+    pub(crate) fn poll_abort_read(
         &self,
         cx: &mut Context<'_>,
         error_code: u64,
@@ -532,12 +666,13 @@ impl Stream {
         inner: &StreamInner,
         payload: &msquic::StreamEventStartComplete,
     ) -> u32 {
-        {
+        if msquic::Status::succeeded(payload.status) {
             inner.shared.id.write().unwrap().replace(payload.id);
         }
         println!(
-            "msquic-async::Stream({:p}) start complete status=0x{:x}, peer_accepted={}, id={}",
+            "msquic-async::Stream({:p}, id={:?}) start complete status=0x{:x}, peer_accepted={}, id={}",
             inner,
+            inner.shared.id.read(),
             payload.status,
             payload.bit_flags.peer_accepted(),
             payload.id
@@ -567,8 +702,9 @@ impl Stream {
         payload: &msquic::StreamEventReceive,
     ) -> u32 {
         println!(
-            "msquic-async::Stream({:p}) Receive {} bytes, fin {}",
+            "msquic-async::Stream({:p}, id={:?}) Receive {} bytes, fin {}",
             inner,
+            inner.shared.id.read(),
             payload.total_buffer_length,
             (payload.flags & msquic::RECEIVE_FLAG_FIN) == msquic::RECEIVE_FLAG_FIN
         );
@@ -596,7 +732,11 @@ impl Stream {
         inner: &StreamInner,
         payload: &msquic::StreamEventSendComplete,
     ) -> u32 {
-        println!("msquic-async::Stream({:p}) Send complete", inner);
+        println!(
+            "msquic-async::Stream({:p}, id={:?}) Send complete",
+            inner,
+            inner.shared.id.read()
+        );
 
         let mut write_buf =
             unsafe { StreamWriteBuffer::from_raw(payload.client_context as *mut _) };
@@ -608,7 +748,11 @@ impl Stream {
     }
 
     fn handle_event_peer_send_shutdown(_stream: msquic::Handle, inner: &StreamInner) -> u32 {
-        println!("msquic-async::Stream({:p}) Peer send shutdown", inner);
+        println!(
+            "msquic-async::Stream({:p}, id={:?}) Peer send shutdown",
+            inner,
+            inner.shared.id.read()
+        );
         let mut exclusive = inner.exclusive.lock().unwrap();
         exclusive.recv_state = StreamRecvState::ShutdownComplete;
         exclusive
@@ -623,7 +767,11 @@ impl Stream {
         inner: &StreamInner,
         payload: &msquic::StreamEventPeerSendAborted,
     ) -> u32 {
-        println!("msquic-async::Stream({:p}) Peer send aborted", inner);
+        println!(
+            "msquic-async::Stream({:p}, id={:?}) Peer send aborted",
+            inner,
+            inner.shared.id.read()
+        );
         let mut exclusive = inner.exclusive.lock().unwrap();
         exclusive.recv_state = StreamRecvState::ShutdownComplete;
         exclusive.recv_error_code = Some(payload.error_code);
@@ -639,7 +787,11 @@ impl Stream {
         inner: &StreamInner,
         payload: &msquic::StreamEventPeerReceiveAborted,
     ) -> u32 {
-        println!("msquic-async::Stream({:p}) Peer receive aborted", inner);
+        println!(
+            "msquic-async::Stream({:p}, id={:?}) Peer receive aborted",
+            inner,
+            inner.shared.id.read()
+        );
         let mut exclusive = inner.exclusive.lock().unwrap();
         exclusive.send_state = StreamSendState::ShutdownComplete;
         exclusive.send_error_code = Some(payload.error_code);
@@ -655,7 +807,11 @@ impl Stream {
         inner: &StreamInner,
         _payload: &msquic::StreamEventSendShutdownComplete,
     ) -> u32 {
-        println!("msquic-async::Stream({:p}) Send shutdown complete", inner);
+        println!(
+            "msquic-async::Stream({:p}, id={:?}) Send shutdown complete",
+            inner,
+            inner.shared.id.read()
+        );
         let mut exclusive = inner.exclusive.lock().unwrap();
         exclusive.send_state = StreamSendState::ShutdownComplete;
         exclusive
@@ -670,7 +826,7 @@ impl Stream {
         inner: &StreamInner,
         payload: &msquic::StreamEventShutdownComplete,
     ) -> u32 {
-        println!("msquic-async::Stream({:p}) Shutdown complete", inner);
+        println!("msquic-async::Stream({:p}, id={:?}) Shutdown complete", inner, inner.shared.id.read());
         {
             let mut exclusive = inner.exclusive.lock().unwrap();
             exclusive.state = StreamState::ShutdownComplete;
@@ -717,12 +873,12 @@ impl Stream {
         inner: &StreamInner,
         _payload: &msquic::StreamEventIdealSendBufferSize,
     ) -> u32 {
-        println!("msquic-async::Stream({:p}) Ideal send buffer size", inner);
+        println!("msquic-async::Stream({:p}, id={:?}) Ideal send buffer size", inner, inner.shared.id.read());
         0
     }
 
     fn handle_event_peer_accepted(_stream: msquic::Handle, inner: &StreamInner) -> u32 {
-        println!("msquic-async::Stream({:p}) Peer accepted", inner);
+        println!("msquic-async::Stream({:p}, id={:?}) Peer accepted", inner, inner.shared.id.read());
         let mut exclusive = inner.exclusive.lock().unwrap();
         exclusive.state = StreamState::StartComplete;
         if inner.shared.stream_type == StreamType::Bidirectional {
@@ -796,9 +952,9 @@ impl Stream {
     }
 }
 
-impl Drop for Stream {
+impl Drop for StreamInstance {
     fn drop(&mut self) {
-        println!("msquic-async::Stream({:p}) Dropping", &*self.0);
+        println!("msquic-async::StreamInstance({:p}) Dropping", &*self.0);
         let mut exclusive = self.0.exclusive.lock().unwrap();
         exclusive.recv_buffers.clear();
         match exclusive.state {
@@ -806,7 +962,7 @@ impl Drop for Stream {
                 Arc::from_raw(Arc::as_ptr(&self.0));
             },
             StreamState::Start | StreamState::StartComplete => {
-                println!("msquic-async::Stream({:p}) Abort immediately", &*self.0);
+                println!("msquic-async::StreamInstance({:p}) Abort immediately", &*self.0);
                 self.0.shared.msquic_stream.shutdown(
                     msquic::STREAM_SHUTDOWN_FLAG_ABORT_SEND
                         | msquic::STREAM_SHUTDOWN_FLAG_ABORT_RECEIVE
@@ -816,6 +972,14 @@ impl Drop for Stream {
             }
             StreamState::ShutdownComplete => {}
         }
+    }
+}
+
+impl Deref for StreamInstance {
+    type Target = StreamInner;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
@@ -845,7 +1009,7 @@ impl fmt::Debug for StreamInnerShared {
 }
 
 pub struct ZeroCopyWrite<'a> {
-    stream: &'a Stream,
+    stream: &'a StreamInstance,
     buf: &'a Bytes,
     fin: bool,
 }
@@ -868,7 +1032,7 @@ impl Future for ZeroCopyWrite<'_> {
 }
 
 pub struct ZeroCopyWriteVectored<'a> {
-    stream: &'a Stream,
+    stream: &'a StreamInstance,
     bufs: &'a [Bytes],
     fin: bool,
 }
@@ -894,18 +1058,21 @@ impl Future for ZeroCopyWriteVectored<'_> {
     }
 }
 
-impl AsyncRead for Stream {
+#[cfg(feature = "tokio")]
+impl tokio::io::AsyncRead for Stream {
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut [u8],
-    ) -> Poll<std::io::Result<usize>> {
-        let len = ready!(Stream::poll_read(self.get_mut(), cx, buf))?;
-        Poll::Ready(Ok(len))
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let len = ready!(Self::poll_read(self.get_mut(), cx, buf.initialized_mut()))?;
+        buf.set_filled(len);
+        Poll::Ready(Ok(()))
     }
 }
 
-impl AsyncWrite for Stream {
+#[cfg(feature = "tokio")]
+impl tokio::io::AsyncWrite for Stream {
     fn poll_write(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -915,12 +1082,108 @@ impl AsyncWrite for Stream {
         Poll::Ready(Ok(len))
     }
 
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context) -> Poll<std::io::Result<()>> {
+        let _ = ready!(Stream::poll_finish_write(self.get_mut(), cx))?;
+        Poll::Ready(Ok(()))
+    }
+}
+
+#[cfg(feature = "tokio")]
+impl tokio::io::AsyncRead for ReadStream {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let len = ready!(Self::poll_read(self.get_mut(), cx, buf.initialized_mut()))?;
+        buf.set_filled(len);
+        Poll::Ready(Ok(()))
+    }
+}
+
+#[cfg(feature = "tokio")]
+impl tokio::io::AsyncWrite for WriteStream {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        let len = ready!(Self::poll_write(self.get_mut(), cx, buf, false))?;
+        Poll::Ready(Ok(len))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context) -> Poll<std::io::Result<()>> {
+        let _ = ready!(Self::poll_finish_write(self.get_mut(), cx))?;
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl futures_io::AsyncRead for Stream {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<std::io::Result<usize>> {
+        let len = ready!(Self::poll_read(self.get_mut(), cx, buf))?;
+        Poll::Ready(Ok(len))
+    }
+}
+
+impl futures_io::AsyncWrite for Stream {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        let len = ready!(Self::poll_write(self.get_mut(), cx, buf, false))?;
+        Poll::Ready(Ok(len))
+    }
+
     fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         Poll::Ready(Ok(()))
     }
 
     fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        let _ = ready!(Stream::poll_finish_write(self.get_mut(), cx))?;
+        let _ = ready!(Self::poll_finish_write(self.get_mut(), cx))?;
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl futures_io::AsyncRead for ReadStream {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<std::io::Result<usize>> {
+        let len = ready!(Self::poll_read(self.get_mut(), cx, buf))?;
+        Poll::Ready(Ok(len))
+    }
+}
+
+impl futures_io::AsyncWrite for WriteStream {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        let len = ready!(Self::poll_write(self.get_mut(), cx, buf, false))?;
+        Poll::Ready(Ok(len))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        let _ = ready!(Self::poll_finish_write(self.get_mut(), cx))?;
         Poll::Ready(Ok(()))
     }
 }

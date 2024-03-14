@@ -313,6 +313,12 @@ impl Connection {
         } else {
             StreamType::Bidirectional
         };
+        println!(
+            "msquic-async::Connection({:p}) Peer stream started {:?}",
+            inner,
+            stream_type
+        );
+
         let stream = Stream::from_handle(payload.stream, stream_type);
         {
             let mut exclusive = inner.exclusive.lock().unwrap();

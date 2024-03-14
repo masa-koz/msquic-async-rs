@@ -12,7 +12,7 @@ mod listener;
 
 pub use credential::{CredentialConfig, CredentialConfigCertFile};
 pub use connection::{Connection, ConnectionError};
-pub use stream::{Stream, StreamType, StartError, ReadError, WriteError};
+pub use stream::{Stream, ReadStream, WriteStream, StreamType, StartError, ReadError, WriteError};
 pub use listener::{Listener, ListenError};
 
 #[cfg(test)]
