@@ -125,13 +125,15 @@ async fn stream_validation() {
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
     set.spawn(async move {
         let conn = listener.accept().await.expect("accept");
-        let mut buf = [0; 1024];
 
         let mut stream = conn
             .accept_inbound_stream()
             .await
             .expect("accept_inbound_stream");
+
         server_rx.recv().await.expect("recv");
+
+        let mut buf = [0; 1024];
         let res = poll_fn(|cx| stream.poll_read(cx, &mut buf)).await;
         assert_eq!(res, Err(ReadError::Reset(0)));
 
@@ -220,11 +222,82 @@ async fn stream_validation() {
         assert!(read.is_some());
         assert!(write.is_some());
 
-        let res = tokio::io::copy(&mut read.unwrap(), &mut write.unwrap()).await;
+        let (mut read, mut write) = (read.unwrap(), write.unwrap());
+
+        let res = tokio::io::copy(&mut read, &mut write).await;
         assert_eq!(res.ok(), Some(11));
+
+        let res = poll_fn(|cx| write.poll_finish_write(cx)).await;
+        assert!(res.is_ok());
 
         server_rx.recv().await.expect("recv");
 
+        std::mem::drop(read);
+        std::mem::drop(write);
+
+        let stream = conn
+            .accept_inbound_stream()
+            .await
+            .expect("accept_inbound_stream");
+        let (read, write) = stream.split();
+        assert!(read.is_some());
+        assert!(write.is_some());
+
+        let (mut read, mut write) = (read.unwrap(), write.unwrap());
+
+        let read_task = tokio::task::spawn(async move {
+            let res = poll_fn(|cx| read.poll_read(cx, &mut buf)).await;
+            assert_eq!(res, Ok(11));
+            assert_eq!(&buf[0..11], b"hello world");
+        });
+
+        let res = poll_fn(|cx| write.poll_write(cx, b"hello world", true)).await;
+        assert_eq!(res, Ok(11));
+
+        let (res,) = tokio::join!(read_task);
+        if let Err(err) = res {
+            if err.is_panic() {
+                std::panic::resume_unwind(err.into_panic());
+            }
+        }
+
+        server_rx.recv().await.expect("recv");
+
+        std::mem::drop(write);
+
+        let mut stream = conn
+            .accept_inbound_stream()
+            .await
+            .expect("accept_inbound_stream");
+
+        let mut buf = [0; 1024];
+        let res = poll_fn(|cx| stream.poll_read(cx, &mut buf)).await;
+        assert_eq!(res, Ok(11));
+        assert_eq!(&buf[0..11], b"hello world");
+
+        server_tx.send(()).await.expect("send");
+
+        std::mem::drop(stream);
+
+        let stream = conn
+            .accept_inbound_stream()
+            .await
+            .expect("accept_inbound_stream");
+
+        let (read, write) = stream.split();
+        assert!(read.is_some());
+        assert!(write.is_none());
+
+        let mut read = read.unwrap();
+
+        let res = poll_fn(|cx| read.poll_read(cx, &mut buf)).await;
+        assert_eq!(res, Ok(11));
+        assert_eq!(&buf[0..11], b"hello world");
+
+        server_tx.send(()).await.expect("send");
+
+        std::mem::drop(read);
+        
         Ok::<_, anyhow::Error>(())
     });
 
@@ -327,6 +400,7 @@ async fn stream_validation() {
         assert!(write.is_some());
 
         let (mut read, mut write) = (read.unwrap(), write.unwrap());
+
         let res = tokio::io::AsyncWriteExt::write(&mut write, b"hello world").await;
         assert_eq!(res.ok(), Some(11));
 
@@ -358,6 +432,71 @@ async fn stream_validation() {
         assert_eq!(&buf[0..11], b"hello world");
 
         client_tx.send(()).await.expect("send");
+
+        std::mem::drop(stream);
+
+        let res = conn
+            .open_outbound_stream(crate::StreamType::Bidirectional, false)
+            .await;
+        assert!(res.is_ok());
+
+        let (read, write) = res.expect("open_outbound_stream").split();
+        assert!(read.is_some());
+        assert!(write.is_some());
+
+        let (mut read, mut write) = (read.unwrap(), write.unwrap());
+
+        // read/write in parallel
+        let write_task = tokio::task::spawn(async move {
+            let res = poll_fn(|cx| write.poll_write(cx, b"hello world", true)).await;
+            assert_eq!(res, Ok(11));
+            Ok::<_, anyhow::Error>(())
+        });
+
+        let res = poll_fn(|cx| read.poll_read(cx, &mut buf)).await;
+        assert_eq!(res, Ok(11));
+        assert_eq!(&buf[0..11], b"hello world");
+
+        let (res,) = tokio::join!(write_task);
+        if let Err(err) = res {
+            if err.is_panic() {
+                std::panic::resume_unwind(err.into_panic());
+            }
+        }
+        client_tx.send(()).await.expect("send");
+
+        std::mem::drop(read);
+
+        let res = conn
+            .open_outbound_stream(crate::StreamType::Unidirectional, false)
+            .await;
+        assert!(res.is_ok());
+
+        let mut stream = res.expect("open_outbound_stream");
+
+        let res = poll_fn(|cx| stream.poll_write(cx, b"hello world", true)).await;
+        assert_eq!(res, Ok(11));
+
+        client_rx.recv().await.expect("recv");
+
+        std::mem::drop(stream);
+
+        let res = conn
+            .open_outbound_stream(crate::StreamType::Unidirectional, false)
+            .await;
+        assert!(res.is_ok());
+
+        let (read, write) = res.expect("open_outbound_stream").split();
+        assert!(read.is_none());
+        assert!(write.is_some());
+
+        let mut write = write.unwrap();
+        let res = poll_fn(|cx| write.poll_write(cx, b"hello world", true)).await;
+        assert_eq!(res, Ok(11));
+
+        client_rx.recv().await.expect("recv");
+
+        std::mem::drop(write);
 
         Ok::<_, anyhow::Error>(())
     });
