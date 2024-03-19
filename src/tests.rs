@@ -1,6 +1,6 @@
 use super::{
-    Connection, ConnectionError, CredentialConfigCertFile, ListenError, Listener, ReadError,
-    StartError, WriteError, MSQUIC_API,
+    Connection, ConnectionError, ConnectionStartError, CredentialConfigCertFile, ListenError,
+    Listener, ReadError, StreamStartError, WriteError, MSQUIC_API,
 };
 
 use std::future::poll_fn;
@@ -10,6 +10,8 @@ use std::pin::Pin;
 use std::ptr;
 
 use anyhow::Result;
+
+use bytes::Bytes;
 
 use tempfile::{NamedTempFile, TempPath};
 
@@ -44,9 +46,9 @@ async fn connection_validation() {
             .await;
         assert_eq!(
             res.err(),
-            Some(StartError::ConnectionLost(ConnectionError::ShutdownByPeer(
-                1
-            )))
+            Some(StreamStartError::ConnectionLost(
+                ConnectionError::ShutdownByPeer(1)
+            ))
         );
 
         let res = listener.stop().await;
@@ -80,7 +82,10 @@ async fn connection_validation() {
 
         client_rx.recv().await.expect("recv");
 
-        if let Err(ConnectionError::ShutdownByTransport(_, _)) = conn1
+        if let Err(ConnectionStartError::ConnectionLost(ConnectionError::ShutdownByTransport(
+            _status,
+            _error_code,
+        ))) = conn1
             .start(
                 &client_config,
                 &format!("{}", server_addr.ip()),
@@ -297,7 +302,22 @@ async fn stream_validation() {
         server_tx.send(()).await.expect("send");
 
         std::mem::drop(read);
-        
+
+        let res = poll_fn(|cx| conn.poll_shutdown(cx, 0)).await;
+        assert!(res.is_ok());
+
+        server_tx.send(()).await.expect("send");
+
+        let res = conn
+            .open_outbound_stream(crate::StreamType::Unidirectional, false)
+            .await;
+        assert_eq!(
+            res.err(),
+            Some(StreamStartError::ConnectionLost(
+                ConnectionError::ShutdownByLocal
+            ))
+        );
+
         Ok::<_, anyhow::Error>(())
     });
 
@@ -498,6 +518,78 @@ async fn stream_validation() {
 
         std::mem::drop(write);
 
+        client_rx.recv().await.expect("recv");
+
+        let res = conn
+            .open_outbound_stream(crate::StreamType::Unidirectional, false)
+            .await;
+        assert_eq!(
+            res.err(),
+            Some(StreamStartError::ConnectionLost(
+                ConnectionError::ShutdownByPeer(0)
+            ))
+        );
+
+        Ok::<_, anyhow::Error>(())
+    });
+
+    let mut results = Vec::new();
+    while let Some(res) = set.join_next().await {
+        results.push(res);
+    }
+    results.into_iter().for_each(|res| {
+        if let Err(err) = res {
+            if err.is_panic() {
+                std::panic::resume_unwind(err.into_panic());
+            }
+        }
+    });
+}
+
+#[tokio::test]
+async fn datagram_validation() {
+    let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
+    //let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
+
+    let registration = msquic::Registration::new(&*MSQUIC_API, ptr::null());
+
+    let listener = new_server(&registration).expect("new_server");
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    listener
+        .start(&[msquic::Buffer::from("test")], Some(addr))
+        .expect("listener start");
+    let server_addr = listener.local_addr().expect("listener local_addr");
+
+    let mut set = JoinSet::new();
+
+    set.spawn(async move {
+        let res = listener.accept().await;
+        assert!(res.is_ok());
+        let conn = res.expect("accept");
+        let res = poll_fn(|cx| conn.poll_receive_datagram(cx)).await;
+        assert_eq!(res.ok(), Some(Bytes::from("hello world")));
+
+        server_rx.recv().await.expect("recv");
+
+        Ok::<_, anyhow::Error>(())
+    });
+
+    let client_config = new_client_config(&registration).expect("new_client_config");
+    let conn = Connection::new(msquic::Connection::new(&registration), &registration);
+    set.spawn(async move {
+        let res = conn
+            .start(
+                &client_config,
+                &format!("{}", server_addr.ip()),
+                server_addr.port(),
+            )
+            .await;
+        assert!(res.is_ok());
+        let res = poll_fn(|cx| conn.poll_send_datagram(cx, &Bytes::from("hello world"))).await;
+        assert!(res.is_ok());
+
+        client_tx.send(()).await.expect("send");
+
         Ok::<_, anyhow::Error>(())
     });
 
@@ -522,7 +614,8 @@ fn new_server(registration: &msquic::Registration) -> Result<Listener> {
         msquic::Settings::new()
             .set_idle_timeout_ms(10000)
             .set_peer_bidi_stream_count(1)
-            .set_peer_unidi_stream_count(1),
+            .set_peer_unidi_stream_count(1)
+            .set_datagram_receive_enabled(true),
     );
     let cred_config = SelfSignedCredentialConfig::new()?;
     configuration.load_credential(cred_config.as_cred_config_ref());
@@ -542,7 +635,8 @@ fn new_client_config(registration: &msquic::Registration) -> Result<msquic::Conf
         msquic::Settings::new()
             .set_idle_timeout_ms(10000)
             .set_peer_bidi_stream_count(1)
-            .set_peer_unidi_stream_count(1),
+            .set_peer_unidi_stream_count(1)
+            .set_datagram_receive_enabled(true),
     );
     let mut cred_config = msquic::CredentialConfig::new_client();
     cred_config.cred_flags |= msquic::CREDENTIAL_FLAG_NO_CERTIFICATE_VALIDATION;

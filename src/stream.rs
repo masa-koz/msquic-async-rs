@@ -1,3 +1,4 @@
+use crate::buffer::{StreamRecvBuffer, WriteBuffer};
 use crate::connection::ConnectionError;
 
 use std::collections::VecDeque;
@@ -44,7 +45,7 @@ struct StreamInnerExclusive {
     recv_state: StreamRecvState,
     recv_buffers: VecDeque<StreamRecvBuffer>,
     send_state: StreamSendState,
-    write_pool: Vec<StreamWriteBuffer>,
+    write_pool: Vec<WriteBuffer>,
     recv_error_code: Option<u64>,
     send_error_code: Option<u64>,
     conn_error: Option<ConnectionError>,
@@ -167,7 +168,7 @@ impl Stream {
         let stream = Self(Arc::new(StreamInstance(inner)));
         println!(
             "msquic-async::Stream({:p}, id={:?}) Start by peer",
-            &*stream.0.0,
+            &*stream.0 .0,
             stream.id()
         );
         stream
@@ -205,10 +206,8 @@ impl Stream {
                     return Poll::Ready(Err(match start_status {
                         0x80410008 /* QUIC_STATUS_STREAM_LIMIT_REACHED */ => StartError::LimitReached,
                         0x80004004 /* QUIC_STATUS_ABORTED */ |
-                        0x8007139f /* QUIC_STATUS_INVALID_STATE */ => if let Some(error) = &exclusive.conn_error {
-                            StartError::ConnectionLost(error.clone())
-                        } else {
-                            StartError::ConnectionClosed
+                        0x8007139f /* QUIC_STATUS_INVALID_STATE */ =>  {
+                            StartError::ConnectionLost(exclusive.conn_error.as_ref().expect("conn_error").clone())
                         }
                         _ => StartError::Unknown(start_status),
                     }));
@@ -492,9 +491,8 @@ impl StreamInstance {
         mut write_fn: T,
     ) -> Poll<Result<Option<U>, WriteError>>
     where
-        T: FnMut(&mut StreamWriteBuffer) -> WriteStatus<U>,
+        T: FnMut(&mut WriteBuffer) -> WriteStatus<U>,
     {
-        //println!("msquic-async::Stream({:p}) poll_write_generic", &*self.0);
         let mut exclusive = self.0.exclusive.lock().unwrap();
         match exclusive.send_state {
             StreamSendState::Closed => {
@@ -523,7 +521,7 @@ impl StreamInstance {
         let mut write_buf = exclusive
             .write_pool
             .pop()
-            .unwrap_or_else(|| StreamWriteBuffer::new());
+            .unwrap_or_else(|| WriteBuffer::new());
         let status = write_fn(&mut write_buf);
         let (buffer, buffer_count) = write_buf.get_buffer();
         match status {
@@ -687,7 +685,9 @@ impl StreamInstance {
             exclusive.send_state = StreamSendState::StartComplete;
         }
 
-        if msquic::Status::failed(payload.status) || payload.bit_flags.peer_accepted() == 1 {
+        if (msquic::Status::failed(payload.status) && payload.status == 0x80410008)
+            || payload.bit_flags.peer_accepted() == 1
+        {
             exclusive
                 .start_waiters
                 .drain(..)
@@ -738,9 +738,7 @@ impl StreamInstance {
             inner.shared.id.read()
         );
 
-        let mut write_buf =
-            unsafe { StreamWriteBuffer::from_raw(payload.client_context as *mut _) };
-        //write_buf.send_zerocopy();
+        let mut write_buf = unsafe { WriteBuffer::from_raw(payload.client_context) };
         let mut exclusive = inner.exclusive.lock().unwrap();
         write_buf.reset();
         exclusive.write_pool.push(write_buf);
@@ -826,7 +824,11 @@ impl StreamInstance {
         inner: &StreamInner,
         payload: &msquic::StreamEventShutdownComplete,
     ) -> u32 {
-        println!("msquic-async::Stream({:p}, id={:?}) Shutdown complete", inner, inner.shared.id.read());
+        println!(
+            "msquic-async::Stream({:p}, id={:?}) Shutdown complete",
+            inner,
+            inner.shared.id.read()
+        );
         {
             let mut exclusive = inner.exclusive.lock().unwrap();
             exclusive.state = StreamState::ShutdownComplete;
@@ -873,12 +875,20 @@ impl StreamInstance {
         inner: &StreamInner,
         _payload: &msquic::StreamEventIdealSendBufferSize,
     ) -> u32 {
-        println!("msquic-async::Stream({:p}, id={:?}) Ideal send buffer size", inner, inner.shared.id.read());
+        println!(
+            "msquic-async::Stream({:p}, id={:?}) Ideal send buffer size",
+            inner,
+            inner.shared.id.read()
+        );
         0
     }
 
     fn handle_event_peer_accepted(_stream: msquic::Handle, inner: &StreamInner) -> u32 {
-        println!("msquic-async::Stream({:p}, id={:?}) Peer accepted", inner, inner.shared.id.read());
+        println!(
+            "msquic-async::Stream({:p}, id={:?}) Peer accepted",
+            inner,
+            inner.shared.id.read()
+        );
         let mut exclusive = inner.exclusive.lock().unwrap();
         exclusive.state = StreamState::StartComplete;
         if inner.shared.stream_type == StreamType::Bidirectional {
@@ -962,7 +972,10 @@ impl Drop for StreamInstance {
                 Arc::from_raw(Arc::as_ptr(&self.0));
             },
             StreamState::Start | StreamState::StartComplete => {
-                println!("msquic-async::StreamInstance({:p}) Abort immediately", &*self.0);
+                println!(
+                    "msquic-async::StreamInstance({:p}) Abort immediately",
+                    &*self.0
+                );
                 self.0.shared.msquic_stream.shutdown(
                     msquic::STREAM_SHUTDOWN_FLAG_ABORT_SEND
                         | msquic::STREAM_SHUTDOWN_FLAG_ABORT_RECEIVE
@@ -1188,121 +1201,6 @@ impl futures_io::AsyncWrite for WriteStream {
     }
 }
 
-struct StreamRecvBuffer {
-    handle: Option<msquic::Handle>,
-    buffers: Vec<msquic::Buffer>,
-    total_length: usize,
-    read: usize,
-    fin: bool,
-}
-
-impl StreamRecvBuffer {
-    pub(crate) unsafe fn new<T: AsRef<[msquic::Buffer]>>(
-        buffers: &T,
-        fin: bool,
-        handle: Option<msquic::Handle>,
-    ) -> Self {
-        let total_length: u32 = buffers.as_ref().iter().map(|x| x.length).sum();
-        Self {
-            handle,
-            buffers: buffers.as_ref().to_vec(),
-            total_length: total_length as usize,
-            read: 0,
-            fin,
-        }
-    }
-
-    fn next<'a>(&mut self, max_length: usize) -> Option<&'a [u8]> {
-        if self.read >= self.total_length {
-            return None;
-        }
-        let mut skip = self.read;
-        for buffer in &self.buffers {
-            if (buffer.length as usize) <= skip {
-                skip -= buffer.length as usize;
-                continue;
-            }
-            let len = std::cmp::min(buffer.length as usize - skip, max_length);
-            self.read += len;
-            let slice = unsafe { std::slice::from_raw_parts(buffer.buffer.add(skip), len) };
-            return Some(slice);
-        }
-        None
-    }
-
-    fn fin(&self) -> bool {
-        self.fin
-    }
-}
-
-impl Drop for StreamRecvBuffer {
-    fn drop(&mut self) {
-        println!("StreamRecvBuffer dropped");
-        if let Some(handle) = self.handle.take() {
-            println!(
-                "stream_receive_complete self.total_length: {}",
-                self.total_length
-            );
-            crate::MSQUIC_API.stream_receive_complete(handle, self.total_length as u64);
-        }
-    }
-}
-
-struct StreamWriteBuffer(Box<StreamWriteBufferInner>);
-
-struct StreamWriteBufferInner {
-    internal: Vec<u8>,
-    zerocopy: Vec<Bytes>,
-    msquic_buffer: Vec<msquic::Buffer>,
-}
-
-impl StreamWriteBuffer {
-    fn new() -> Self {
-        StreamWriteBuffer(Box::new(StreamWriteBufferInner {
-            internal: Vec::new(),
-            zerocopy: Vec::new(),
-            msquic_buffer: Vec::new(),
-        }))
-    }
-
-    unsafe fn from_raw(inner: *mut StreamWriteBufferInner) -> Self {
-        StreamWriteBuffer(unsafe { Box::from_raw(inner) })
-    }
-
-    fn put_zerocopy(&mut self, buf: &Bytes) -> usize {
-        self.0.zerocopy.push(buf.clone());
-        buf.len()
-    }
-
-    fn put_slice(&mut self, slice: &[u8]) -> usize {
-        self.0.internal.extend_from_slice(slice);
-        slice.len()
-    }
-
-    fn get_buffer(&mut self) -> (*const msquic::Buffer, u32) {
-        if !self.0.zerocopy.is_empty() {
-            for buf in &self.0.zerocopy {
-                self.0.msquic_buffer.push(buf[..].into());
-            }
-        } else {
-            self.0.msquic_buffer.push((&self.0.internal).into());
-        }
-        let ptr = self.0.msquic_buffer.as_ptr();
-        let len = self.0.msquic_buffer.len() as u32;
-        (ptr, len)
-    }
-
-    fn into_raw(self) -> *mut StreamWriteBufferInner {
-        Box::into_raw(self.0)
-    }
-
-    fn reset(&mut self) {
-        self.0.internal.clear();
-        self.0.zerocopy.clear();
-        self.0.msquic_buffer.clear();
-    }
-}
-
 enum ReadStatus<T> {
     Readable(T),
     Finished(Option<T>),
@@ -1335,12 +1233,12 @@ impl<T> From<(Option<T>, bool)> for WriteStatus<T> {
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum StartError {
-    #[error("connection closed")]
-    ConnectionClosed,
-    #[error("connection lost")]
-    ConnectionLost(#[from] ConnectionError),
+    #[error("connection not started yet")]
+    ConnectionNotStarted,
     #[error("reach stream count limit")]
     LimitReached,
+    #[error("connection lost")]
+    ConnectionLost(#[from] ConnectionError),
     #[error("unknown error {0}")]
     Unknown(u32),
 }
@@ -1371,12 +1269,12 @@ impl From<ReadError> for std::io::Error {
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum WriteError {
-    #[error("stream stopped by peer: error {0}")]
-    Stopped(u64),
-    #[error("stream finished")]
-    Finished,
     #[error("stream not opened for writing")]
     Closed,
+    #[error("stream finished")]
+    Finished,
+    #[error("stream stopped by peer: error {0}")]
+    Stopped(u64),
     #[error("connection lost")]
     ConnectionLost(#[from] ConnectionError),
 }

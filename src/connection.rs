@@ -1,4 +1,5 @@
-use crate::stream::{StartError, Stream, StreamType};
+use crate::buffer::WriteBuffer;
+use crate::stream::{StartError as StreamStartError, Stream, StreamType};
 
 use std::collections::VecDeque;
 use std::future::Future;
@@ -6,6 +7,8 @@ use std::ops::Deref;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
+
+use bytes::Bytes;
 
 use libc::c_void;
 
@@ -27,6 +30,9 @@ struct ConnectionInnerExclusive {
     start_waiters: Vec<Waker>,
     inbound_stream_waiters: Vec<Waker>,
     inbound_streams: VecDeque<crate::stream::Stream>,
+    recv_buffers: VecDeque<Bytes>,
+    recv_waiters: Vec<Waker>,
+    write_pool: Vec<WriteBuffer>,
     shutdown_waiters: Vec<Waker>,
 }
 unsafe impl Sync for ConnectionInnerExclusive {}
@@ -47,6 +53,9 @@ impl Connection {
                 start_waiters: Vec::new(),
                 inbound_stream_waiters: Vec::new(),
                 inbound_streams: VecDeque::new(),
+                recv_buffers: VecDeque::new(),
+                recv_waiters: Vec::new(),
+                write_pool: Vec::new(),
                 shutdown_waiters: Vec::new(),
             }),
             shared: ConnectionInnerShared { msquic_conn },
@@ -70,14 +79,17 @@ impl Connection {
                 start_waiters: Vec::new(),
                 inbound_stream_waiters: Vec::new(),
                 inbound_streams: VecDeque::new(),
+                recv_buffers: VecDeque::new(),
+                recv_waiters: Vec::new(),
+                write_pool: Vec::new(),
                 shutdown_waiters: Vec::new(),
             }),
             shared: ConnectionInnerShared { msquic_conn },
         });
-            inner.shared.msquic_conn.set_callback_handler(
-                Self::native_callback,
-                Arc::into_raw(inner.clone()) as *const c_void,
-            );
+        inner.shared.msquic_conn.set_callback_handler(
+            Self::native_callback,
+            Arc::into_raw(inner.clone()) as *const c_void,
+        );
         println!("msquic-async::Connection({:p}) Open by peer", &*inner);
         Self(Arc::new(ConnectionInstance(inner)))
     }
@@ -102,7 +114,7 @@ impl Connection {
         configuration: &msquic::Configuration,
         host: &str,
         port: u16,
-    ) -> Poll<Result<(), ConnectionError>> {
+    ) -> Poll<Result<(), StartError>> {
         let mut exclusive = self.0.exclusive.lock().unwrap();
         match exclusive.state {
             ConnectionState::Open => {
@@ -112,11 +124,9 @@ impl Connection {
             ConnectionState::Connecting => {}
             ConnectionState::Connected => return Poll::Ready(Ok(())),
             ConnectionState::Shutdown | ConnectionState::ShutdownComplete => {
-                if let Some(error) = &exclusive.error {
-                    return Poll::Ready(Err(error.clone()));
-                } else {
-                    return Poll::Ready(Err(ConnectionError::ConnectionClosed));
-                }
+                return Poll::Ready(Err(StartError::ConnectionLost(
+                    exclusive.error.as_ref().expect("error").clone(),
+                )));
             }
         }
         exclusive.start_waiters.push(cx.waker().clone());
@@ -147,11 +157,11 @@ impl Connection {
     pub fn poll_accept_inbound_stream(
         &self,
         cx: &mut Context<'_>,
-    ) -> Poll<Result<Stream, StartError>> {
+    ) -> Poll<Result<Stream, StreamStartError>> {
         let mut exclusive = self.0.exclusive.lock().unwrap();
         match exclusive.state {
             ConnectionState::Open => {
-                return Poll::Ready(Err(StartError::ConnectionClosed));
+                return Poll::Ready(Err(StreamStartError::ConnectionNotStarted));
             }
             ConnectionState::Connecting => {
                 exclusive.start_waiters.push(cx.waker().clone());
@@ -159,11 +169,9 @@ impl Connection {
             }
             ConnectionState::Connected => {}
             ConnectionState::Shutdown | ConnectionState::ShutdownComplete => {
-                if let Some(error) = &exclusive.error {
-                    return Poll::Ready(Err(StartError::ConnectionLost(error.clone())));
-                } else {
-                    return Poll::Ready(Err(StartError::ConnectionClosed));
-                }
+                return Poll::Ready(Err(StreamStartError::ConnectionLost(
+                    exclusive.error.as_ref().expect("error").clone(),
+                )));
             }
         }
 
@@ -174,15 +182,81 @@ impl Connection {
         Poll::Pending
     }
 
+    pub fn poll_receive_datagram(
+        &self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<Bytes, DgramReceiveError>> {
+        let mut exclusive = self.0.exclusive.lock().unwrap();
+        match exclusive.state {
+            ConnectionState::Open => {
+                return Poll::Ready(Err(DgramReceiveError::ConnectionNotStarted));
+            }
+            ConnectionState::Connecting => {
+                exclusive.start_waiters.push(cx.waker().clone());
+                return Poll::Pending;
+            }
+            ConnectionState::Connected => {}
+            ConnectionState::Shutdown | ConnectionState::ShutdownComplete => {
+                return Poll::Ready(Err(DgramReceiveError::ConnectionLost(
+                    exclusive.error.as_ref().expect("error").clone(),
+                )));
+            }
+        }
+        
+        if let Some(buf) = exclusive.recv_buffers.pop_front() {
+            Poll::Ready(Ok(buf))
+        } else {
+            exclusive.recv_waiters.push(cx.waker().clone());
+            return Poll::Pending
+        }
+    }
+
+    pub fn poll_send_datagram(
+        &self,
+        cx: &mut Context<'_>,
+        buf: &Bytes,
+    ) -> Poll<Result<(), DgramSendError>> {
+        let mut exclusive = self.0.exclusive.lock().unwrap();
+        match exclusive.state {
+            ConnectionState::Open => {
+                return Poll::Ready(Err(DgramSendError::ConnectionNotStarted));
+            }
+            ConnectionState::Connecting => {
+                exclusive.start_waiters.push(cx.waker().clone());
+                return Poll::Pending;
+            }
+            ConnectionState::Connected => {}
+            ConnectionState::Shutdown | ConnectionState::ShutdownComplete => {
+                return Poll::Ready(Err(DgramSendError::ConnectionLost(
+                    exclusive.error.as_ref().expect("error").clone(),
+                )));
+            }
+        }
+
+        let mut write_buf = exclusive
+            .write_pool
+            .pop()
+            .unwrap_or_else(|| WriteBuffer::new());
+        let _ = write_buf.put_zerocopy(buf);
+        let (buffer, buffer_count) = write_buf.get_buffer();
+        self.0.shared.msquic_conn.datagram_send(
+            buffer,
+            buffer_count,
+            msquic::SEND_FLAG_NONE,
+            write_buf.into_raw() as *const _ as *const c_void,
+        );
+        Poll::Ready(Ok(()))
+    }
+
     pub fn poll_shutdown(
         &self,
         cx: &mut Context<'_>,
         error_code: u64,
-    ) -> Poll<Result<(), ConnectionError>> {
+    ) -> Poll<Result<(), ShutdownError>> {
         let mut exclusive = self.0.exclusive.lock().unwrap();
         match exclusive.state {
             ConnectionState::Open => {
-                return Poll::Ready(Err(ConnectionError::ConnectionNotStarted));
+                return Poll::Ready(Err(ShutdownError::ConnectionNotStarted));
             }
             ConnectionState::Connecting => {
                 exclusive.start_waiters.push(cx.waker().clone());
@@ -190,17 +264,19 @@ impl Connection {
             }
             ConnectionState::Connected => {
                 self.0
-                .shared
-                .msquic_conn
-                .shutdown(msquic::CONNECTION_SHUTDOWN_FLAG_NONE, error_code);
+                    .shared
+                    .msquic_conn
+                    .shutdown(msquic::CONNECTION_SHUTDOWN_FLAG_NONE, error_code);
                 exclusive.state = ConnectionState::Shutdown;
             }
             ConnectionState::Shutdown => {}
             ConnectionState::ShutdownComplete => {
-                if let Some(error) = &exclusive.error {
-                    return Poll::Ready(Err(error.clone()));
-                } else {
+                if let Some(ConnectionError::ShutdownByLocal) = &exclusive.error {
                     return Poll::Ready(Ok(()));
+                } else {
+                    return Poll::Ready(Err(ShutdownError::ConnectionLost(
+                        exclusive.error.as_ref().expect("error").clone(),
+                    )));
                 }
             }
         }
@@ -285,6 +361,9 @@ impl Connection {
         {
             let mut exclusive = inner.exclusive.lock().unwrap();
             exclusive.state = ConnectionState::ShutdownComplete;
+            if exclusive.error.is_none() {
+                exclusive.error = Some(ConnectionError::ShutdownByLocal);
+            }
             exclusive
                 .start_waiters
                 .drain(..)
@@ -315,8 +394,7 @@ impl Connection {
         };
         println!(
             "msquic-async::Connection({:p}) Peer stream started {:?}",
-            inner,
-            stream_type
+            inner, stream_type
         );
 
         let stream = Stream::from_handle(payload.stream, stream_type);
@@ -337,6 +415,54 @@ impl Connection {
         payload: &msquic::ConnectionEventStreamsAvailable,
     ) -> u32 {
         println!("msquic-async::Connection({:p}) Streams available bidirectional_count:{} unidirectional_count:{}", inner, payload.bidirectional_count, payload.unidirectional_count);
+        0
+    }
+
+    fn handle_event_datagram_state_changed(
+        inner: &ConnectionInner,
+        payload: &msquic::ConnectionEventDatagramStateChanged,
+    ) -> u32 {
+        println!("msquic-async::Connection({:p}) Datagram state changed send_enabled:{} max_send_length:{}", inner, payload.send_enabled, payload.max_send_length);
+        0
+    }
+
+    fn handle_event_datagram_received(
+        inner: &ConnectionInner,
+        payload: &msquic::ConnectionEventDatagramReceived,
+    ) -> u32 {
+        println!("msquic-async::Connection({:p}) Datagram received", inner);
+        let buffer = unsafe {
+            std::slice::from_raw_parts((*payload.buffer).buffer, (*payload.buffer).length as usize)
+        };
+        let buf = Bytes::copy_from_slice(buffer);
+        {
+            let mut exclusive = inner.exclusive.lock().unwrap();
+            exclusive.recv_buffers.push_back(buf);
+            exclusive
+                .recv_waiters
+                .drain(..)
+                .for_each(|waker| waker.wake());
+        }
+        0
+    }
+
+    fn handle_event_datagram_send_state_changed(
+        inner: &ConnectionInner,
+        payload: &msquic::ConnectionEventDatagramSendStateChanged,
+    ) -> u32 {
+        println!(
+            "msquic-async::Connection({:p}) Datagram send state changed state:{}",
+            inner, payload.state
+        );
+        match payload.state {
+            msquic::DATAGRAM_SEND_SENT | msquic::DATAGRAM_SEND_CANCELED => {
+                let mut write_buf = unsafe { WriteBuffer::from_raw(payload.client_context) };
+                let mut exclusive = inner.exclusive.lock().unwrap();
+                write_buf.reset();
+                exclusive.write_pool.push(write_buf);
+            }
+            _ => {}
+        }
         0
     }
 
@@ -373,6 +499,21 @@ impl Connection {
             msquic::CONNECTION_EVENT_STREAMS_AVAILABLE => {
                 Self::handle_event_streams_available(inner, unsafe {
                     &event.payload.streams_available
+                })
+            }
+            msquic::CONNECTION_EVENT_DATAGRAM_STATE_CHANGED => {
+                Self::handle_event_datagram_state_changed(inner, unsafe {
+                    &event.payload.datagram_state_changed
+                })
+            }
+            msquic::CONNECTION_EVENT_DATAGRAM_RECEIVED => {
+                Self::handle_event_datagram_received(inner, unsafe {
+                    &event.payload.datagram_received
+                })
+            }
+            msquic::CONNECTION_EVENT_DATAGRAM_SEND_STATE_CHANGED => {
+                Self::handle_event_datagram_send_state_changed(inner, unsafe {
+                    &event.payload.datagram_send_state_changed
                 })
             }
             _ => {
@@ -440,8 +581,40 @@ pub enum ConnectionError {
     ShutdownByLocal,
     #[error("connection closed")]
     ConnectionClosed,
+}
+
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum DgramReceiveError {
     #[error("connection not started yet")]
     ConnectionNotStarted,
+    #[error("connection lost")]
+    ConnectionLost(#[from] ConnectionError),
+}
+
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum DgramSendError {
+    #[error("connection not started yet")]
+    ConnectionNotStarted,
+    #[error("not allowed for sending dgram")]
+    Denied,
+    #[error("exceeded maximum data size for sending dgram")]
+    TooBig,
+    #[error("connection lost")]
+    ConnectionLost(#[from] ConnectionError),
+}
+
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum StartError {
+    #[error("connection lost")]
+    ConnectionLost(#[from] ConnectionError),
+}
+
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum ShutdownError {
+    #[error("connection not started yet")]
+    ConnectionNotStarted,
+    #[error("connection lost")]
+    ConnectionLost(#[from] ConnectionError),
 }
 
 pub struct ConnectionStart<'a> {
@@ -452,7 +625,7 @@ pub struct ConnectionStart<'a> {
 }
 
 impl Future for ConnectionStart<'_> {
-    type Output = Result<(), ConnectionError>;
+    type Output = Result<(), StartError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.conn
@@ -468,7 +641,7 @@ pub struct OpenOutboundStream<'a> {
 }
 
 impl Future for OpenOutboundStream<'_> {
-    type Output = Result<crate::stream::Stream, crate::stream::StartError>;
+    type Output = Result<crate::stream::Stream, StreamStartError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
@@ -483,7 +656,7 @@ impl Future for OpenOutboundStream<'_> {
         let mut exclusive = conn.exclusive.lock().unwrap();
         match exclusive.state {
             ConnectionState::Open => {
-                return Poll::Ready(Err(StartError::ConnectionClosed));
+                return Poll::Ready(Err(StreamStartError::ConnectionNotStarted));
             }
             ConnectionState::Connecting => {
                 exclusive.start_waiters.push(cx.waker().clone());
@@ -491,11 +664,9 @@ impl Future for OpenOutboundStream<'_> {
             }
             ConnectionState::Connected => {}
             ConnectionState::Shutdown | ConnectionState::ShutdownComplete => {
-                if let Some(error) = &exclusive.error {
-                    return Poll::Ready(Err(StartError::ConnectionLost(error.clone())));
-                } else {
-                    return Poll::Ready(Err(StartError::ConnectionClosed));
-                }
+                return Poll::Ready(Err(StreamStartError::ConnectionLost(
+                    exclusive.error.as_ref().expect("error").clone(),
+                )));
             }
         }
         if stream.is_none() {
@@ -516,7 +687,7 @@ pub struct AcceptInboundStream<'a> {
 }
 
 impl Future for AcceptInboundStream<'_> {
-    type Output = Result<Stream, StartError>;
+    type Output = Result<Stream, StreamStartError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.conn.poll_accept_inbound_stream(cx)
