@@ -1,63 +1,145 @@
-use bytes::Bytes;
+use crate::stream::StreamInner;
 
+use std::io::IoSlice;
+use std::slice;
+use std::sync::Arc;
+
+use bytes::{Buf, Bytes};
 use libc::c_void;
 
-pub(crate) struct StreamRecvBuffer {
-    handle: Option<msquic::Handle>,
+pub struct StreamRecvBuffer {
+    stream: Option<Arc<StreamInner>>,
     buffers: Vec<msquic::Buffer>,
-    total_length: usize,
-    read: usize,
+    len: usize,
+    read_cursor: usize,
+    read_cursor_in_buffer: usize,
     fin: bool,
 }
 
 impl StreamRecvBuffer {
-    pub(crate) unsafe fn new<T: AsRef<[msquic::Buffer]>>(
+    pub(crate) fn new<T: AsRef<[msquic::Buffer]>>(
         buffers: &T,
         fin: bool,
-        handle: Option<msquic::Handle>,
+        stream: Option<Arc<StreamInner>>,
     ) -> Self {
-        let total_length: u32 = buffers.as_ref().iter().map(|x| x.length).sum();
         Self {
-            handle,
+            stream,
             buffers: buffers.as_ref().to_vec(),
-            total_length: total_length as usize,
-            read: 0,
+            len: buffers.as_ref().iter().map(|x| x.length).sum::<u32>() as usize,
+            read_cursor: 0,
+            read_cursor_in_buffer: 0,
             fin,
         }
     }
 
-    pub(crate) fn next<'a>(&mut self, max_length: usize) -> Option<&'a [u8]> {
-        if self.read >= self.total_length {
-            return None;
+    pub fn len(&self) -> usize {
+        if self.buffers.len() <= self.read_cursor {
+            return 0;
         }
-        let mut skip = self.read;
-        for buffer in &self.buffers {
-            if (buffer.length as usize) <= skip {
-                skip -= buffer.length as usize;
-                continue;
-            }
-            let len = std::cmp::min(buffer.length as usize - skip, max_length);
-            self.read += len;
-            let slice = unsafe { std::slice::from_raw_parts(buffer.buffer.add(skip), len) };
-            return Some(slice);
-        }
-        None
+        self.len
+            - self.buffers[..self.read_cursor]
+                .iter()
+                .map(|x| x.length)
+                .sum::<u32>() as usize
+            - self.read_cursor_in_buffer
     }
 
-    pub(crate) fn fin(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn as_slice_upto_size(&self, size: usize) -> &[u8] {
+        if self.buffers.len() <= self.read_cursor {
+            return &[];
+        }
+        assert!(self.buffers.len() >= self.read_cursor);
+        let buffer = &self.buffers[self.read_cursor];
+        assert!(buffer.length as usize >= self.read_cursor_in_buffer);
+        let len = std::cmp::min(buffer.length as usize - self.read_cursor_in_buffer, size);
+        unsafe { slice::from_raw_parts(buffer.buffer.add(self.read_cursor_in_buffer), len) }
+    }
+
+    pub fn get_bytes_upto_size<'a>(&mut self, size: usize) -> Option<&'a [u8]> {
+        if self.buffers.len() <= self.read_cursor {
+            return None;
+        }
+        assert!(self.buffers.len() >= self.read_cursor);
+        let buffer = &self.buffers[self.read_cursor];
+
+        assert!(buffer.length as usize >= self.read_cursor_in_buffer);
+        let len = std::cmp::min(buffer.length as usize - self.read_cursor_in_buffer, size);
+
+        let slice = unsafe { slice::from_raw_parts(buffer.buffer.add(self.read_cursor_in_buffer), len) };
+        self.read_cursor_in_buffer += len;
+        if self.read_cursor_in_buffer >= buffer.length as usize {
+            self.read_cursor += 1;
+            self.read_cursor_in_buffer = 0;
+        }
+        Some(slice)
+    }
+
+    pub fn fin(&self) -> bool {
         self.fin
+    }
+}
+
+unsafe impl Sync for StreamRecvBuffer {}
+unsafe impl Send for StreamRecvBuffer {}
+
+impl Buf for StreamRecvBuffer {
+    fn advance(&mut self, mut count: usize) {
+        assert!(count == 0 || count <= self.remaining());
+        for buffer in &self.buffers[self.read_cursor..] {
+            if count == 0 {
+                break;
+            }
+            let remaining = buffer.length as usize - self.read_cursor_in_buffer;
+            if count < remaining {
+                self.read_cursor_in_buffer += count;
+                break;
+            } else {
+                self.read_cursor += 1;
+                self.read_cursor_in_buffer = 0;
+                count -= remaining;
+            }
+        }
+    }
+
+    fn chunk(&self) -> &[u8] {
+        self.as_slice_upto_size(self.len())
+    }
+
+    fn remaining(&self) -> usize {
+        self.len()
+    }
+
+    fn chunks_vectored<'a>(&'a self, dst: &mut [IoSlice<'a>]) -> usize {
+        let mut count = 0;
+        let mut read_cursor_in_buffer = Some(self.read_cursor_in_buffer);
+        for buffer in &self.buffers[self.read_cursor..] {
+            if let Some(slice) = dst.get_mut(count) {
+                count += 1;
+                let skip = read_cursor_in_buffer.take().unwrap_or(0);
+                *slice = IoSlice::new(unsafe {
+                    slice::from_raw_parts(buffer.buffer.add(skip), buffer.length as usize - skip)
+                });
+            } else {
+                break;
+            }
+        }
+        count
     }
 }
 
 impl Drop for StreamRecvBuffer {
     fn drop(&mut self) {
         println!("StreamRecvBuffer dropped");
-        if let Some(handle) = self.handle.take() {
-            println!(
-                "stream_receive_complete self.total_length: {}",
-                self.total_length
-            );
-            crate::MSQUIC_API.stream_receive_complete(handle, self.total_length as u64);
+        if let Some(stream) = self.stream.take() {
+            println!("stream_receive_complete len: {}", self.len);
+            stream
+                .shared
+                .msquic_stream
+                .receive_complete(self.len as u64);
         }
     }
 }

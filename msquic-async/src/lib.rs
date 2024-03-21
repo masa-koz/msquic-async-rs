@@ -6,16 +6,22 @@ use once_cell::sync::Lazy;
 static MSQUIC_API: Lazy<msquic::Api> = Lazy::new(|| msquic::Api::new());
 
 mod buffer;
-mod credential;
 mod connection;
-mod stream;
+mod credential;
 mod listener;
+mod stream;
 
-
+pub use connection::{
+    Connection, ConnectionError, ShutdownError as ConnectionShutdownError,
+    StartError as ConnectionStartError,
+};
 pub use credential::{CredentialConfig, CredentialConfigCertFile};
-pub use connection::{Connection, ConnectionError, StartError as ConnectionStartError};
-pub use stream::{Stream, ReadStream, WriteStream, StreamType, StartError as StreamStartError, ReadError, WriteError};
-pub use listener::{Listener, ListenError};
+pub use listener::{ListenError, Listener};
+pub use stream::{
+    ReadError, ReadStream, StartError as StreamStartError, Stream, StreamType, WriteError,
+    WriteStream,
+};
+pub use buffer::StreamRecvBuffer;
 
 #[cfg(test)]
 mod tests;

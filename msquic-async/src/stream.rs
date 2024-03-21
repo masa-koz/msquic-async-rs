@@ -34,9 +34,9 @@ pub struct WriteStream(Arc<StreamInstance>);
 struct StreamInstance(Arc<StreamInner>);
 
 #[derive(Debug)]
-struct StreamInner {
+pub(crate) struct StreamInner {
     exclusive: Mutex<StreamInnerExclusive>,
-    shared: StreamInnerShared,
+    pub(crate) shared: StreamInnerShared,
 }
 
 struct StreamInnerExclusive {
@@ -57,11 +57,11 @@ struct StreamInnerExclusive {
 unsafe impl Sync for StreamInnerExclusive {}
 unsafe impl Send for StreamInnerExclusive {}
 
-struct StreamInnerShared {
+pub(crate) struct StreamInnerShared {
     stream_type: StreamType,
     local_open: bool,
     id: RwLock<Option<u64>>,
-    msquic_stream: msquic::Stream,
+    pub(crate) msquic_stream: msquic::Stream,
 }
 unsafe impl Sync for StreamInnerShared {}
 unsafe impl Send for StreamInnerShared {}
@@ -242,6 +242,13 @@ impl Stream {
         self.0.poll_read(cx, buf)
     }
 
+    pub fn poll_read_chunk(
+        &self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<Option<StreamRecvBuffer>, ReadError>> {
+        self.0.poll_read_chunk(cx)
+    }
+
     pub fn poll_write(
         &mut self,
         cx: &mut Context<'_>,
@@ -295,6 +302,13 @@ impl ReadStream {
         buf: &mut [u8],
     ) -> Poll<Result<usize, ReadError>> {
         self.0.poll_read(cx, buf)
+    }
+
+    pub fn poll_read_chunk(
+        &self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<Option<StreamRecvBuffer>, ReadError>> {
+        self.0.poll_read_chunk(cx)
     }
 
     pub fn poll_abort_read(
@@ -382,7 +396,7 @@ impl StreamInstance {
 
                 match recv_buffers
                     .front_mut()
-                    .and_then(|x| x.next(buf.len() - read))
+                    .and_then(|x| x.get_bytes_upto_size(buf.len() - read))
                 {
                     Some(slice) => {
                         let len = slice.len();
@@ -401,6 +415,22 @@ impl StreamInstance {
             }
         })
         .map(|res| res.map(|x| x.unwrap_or(0)))
+    }
+
+    fn poll_read_chunk(
+        &self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<Option<StreamRecvBuffer>, ReadError>> {
+        self.poll_read_generic(cx, |recv_buffers| {
+            recv_buffers
+                .pop_front()
+                .map(|x| {
+                    let fin = x.fin();
+                    (Some(x), fin)
+                })
+                .unwrap_or((None, false))
+                .into()
+        })
     }
 
     fn poll_read_generic<T, U>(
@@ -697,7 +727,7 @@ impl StreamInstance {
     }
 
     fn handle_event_receive(
-        stream: msquic::Handle,
+        _stream: msquic::Handle,
         inner: &StreamInner,
         payload: &msquic::StreamEventReceive,
     ) -> u32 {
@@ -711,13 +741,17 @@ impl StreamInstance {
 
         let buffers =
             unsafe { std::slice::from_raw_parts(payload.buffer, payload.buffer_count as usize) };
-        let recv_buffer = unsafe {
-            StreamRecvBuffer::new(
-                &buffers,
-                (payload.flags & msquic::RECEIVE_FLAG_FIN) == msquic::RECEIVE_FLAG_FIN,
-                Some(stream),
-            )
-        };
+
+        let arc_inner: Arc<StreamInner> = unsafe { Arc::from_raw(inner as *const _) };
+
+        let recv_buffer = StreamRecvBuffer::new(
+            &buffers,
+            (payload.flags & msquic::RECEIVE_FLAG_FIN) == msquic::RECEIVE_FLAG_FIN,
+            Some(arc_inner.clone()),
+        );
+
+        let _ = Arc::into_raw(arc_inner);
+
         let mut exclusive = inner.exclusive.lock().unwrap();
         exclusive.recv_buffers.push_back(recv_buffer);
         exclusive

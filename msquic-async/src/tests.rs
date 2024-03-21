@@ -1,6 +1,6 @@
 use super::{
     Connection, ConnectionError, ConnectionStartError, CredentialConfigCertFile, ListenError,
-    Listener, ReadError, StreamStartError, WriteError, MSQUIC_API,
+    Listener, ReadError, StreamRecvBuffer, StreamStartError, WriteError, MSQUIC_API,
 };
 
 use std::future::poll_fn;
@@ -11,7 +11,7 @@ use std::ptr;
 
 use anyhow::Result;
 
-use bytes::Bytes;
+use bytes::{Buf, Bytes};
 
 use tempfile::{NamedTempFile, TempPath};
 
@@ -544,6 +544,152 @@ async fn stream_validation() {
             }
         }
     });
+}
+
+#[tokio::test]
+async fn stream_recv_buffer_validation() {
+    //let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
+    let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
+
+    let registration = msquic::Registration::new(&*MSQUIC_API, ptr::null());
+
+    let listener = new_server(&registration).expect("new_server");
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    listener
+        .start(&[msquic::Buffer::from("test")], Some(addr))
+        .expect("listener start");
+    let server_addr = listener.local_addr().expect("listener local_addr");
+
+    let mut set = JoinSet::new();
+
+    set.spawn(async move {
+        let res = listener.accept().await;
+        assert!(res.is_ok());
+
+        let conn = res.expect("accept");
+        let stream = conn
+            .accept_inbound_stream()
+            .await
+            .expect("accept_inbound_stream");
+
+        let res = poll_fn(|cx| stream.poll_read_chunk(cx)).await;
+        assert!(res.is_ok());
+        let chunk = res.expect("poll_read_chunk");
+        assert!(chunk.is_some());
+        let mut chunk = chunk.unwrap();
+        assert_eq!(chunk.remaining(), 11);
+        let mut dst = [0; 11];
+        chunk.copy_to_slice(&mut dst);
+        assert_eq!(&dst, b"hello world");
+
+        std::mem::drop(chunk);
+
+        server_tx.send(()).await.expect("send");
+
+        let res = poll_fn(|cx| stream.poll_read_chunk(cx)).await;
+        assert!(res.is_ok());
+        let chunk = res.expect("poll_read_chunk");
+        assert!(chunk.is_some());
+        let chunk = chunk.unwrap();
+        assert_eq!(chunk.remaining(), 11);
+
+        server_tx.send(()).await.expect("send");
+
+        Ok::<_, anyhow::Error>(())
+    });
+
+    let client_config = new_client_config(&registration).expect("new_client_config");
+    let conn = Connection::new(msquic::Connection::new(&registration), &registration);
+    set.spawn(async move {
+        let res = conn
+            .start(
+                &client_config,
+                &format!("{}", server_addr.ip()),
+                server_addr.port(),
+            )
+            .await;
+        assert!(res.is_ok());
+
+        let res = conn
+            .open_outbound_stream(crate::StreamType::Unidirectional, false)
+            .await;
+        assert!(res.is_ok());
+
+        let mut stream = res.expect("open_outbound_stream");
+        let res = poll_fn(|cx| stream.poll_write(cx, b"hello world", false)).await;
+        assert_eq!(res, Ok(11));
+
+        client_rx.recv().await.expect("recv");
+
+        let res = poll_fn(|cx| stream.poll_write(cx, b"hello world", true)).await;
+        assert_eq!(res, Ok(11));
+
+        client_rx.recv().await.expect("recv");
+
+        Ok::<_, anyhow::Error>(())
+    });
+
+    let mut results = Vec::new();
+    while let Some(res) = set.join_next().await {
+        results.push(res);
+    }
+    results.into_iter().for_each(|res| {
+        if let Err(err) = res {
+            if err.is_panic() {
+                std::panic::resume_unwind(err.into_panic());
+            }
+        }
+    });
+}
+
+#[test]
+fn test_stream_recv_buffers() {
+    let buffers = vec![msquic::Buffer::from("hello "), msquic::Buffer::from("world"), msquic::Buffer::from("!")];
+    let mut buffer = StreamRecvBuffer::new(&buffers, false, None);
+    assert_eq!(buffer.remaining(), 12);
+    assert_eq!(buffer.fin(), false);
+    assert_eq!(buffer.get_bytes_upto_size(10), Some(&b"hello "[..]));
+    assert_eq!(buffer.remaining(), 6);
+    assert_eq!(buffer.get_bytes_upto_size(10), Some(&b"world"[..]));
+    assert_eq!(buffer.remaining(), 1);
+    assert_eq!(buffer.get_bytes_upto_size(10), Some(&b"!"[..]));
+    assert_eq!(buffer.remaining(), 0);
+    assert_eq!(buffer.get_bytes_upto_size(10), None);
+
+    let mut buffer = StreamRecvBuffer::new(&buffers, true, None);
+    assert_eq!(buffer.fin(), true);
+    assert_eq!(buffer.get_bytes_upto_size(3), Some(&b"hel"[..]));
+    assert_eq!(buffer.remaining(), 9);
+    assert_eq!(buffer.get_bytes_upto_size(10), Some(&b"lo "[..]));
+    assert_eq!(buffer.remaining(), 6);
+    assert_eq!(buffer.get_bytes_upto_size(3), Some(&b"wor"[..]));
+    assert_eq!(buffer.remaining(), 3);
+    assert_eq!(buffer.get_bytes_upto_size(1), Some(&b"l"[..]));
+    assert_eq!(buffer.remaining(), 2);
+    assert_eq!(buffer.get_bytes_upto_size(10), Some(&b"d"[..]));
+    assert_eq!(buffer.remaining(), 1);
+    assert_eq!(buffer.get_bytes_upto_size(10), Some(&b"!"[..]));
+    assert_eq!(buffer.remaining(), 0);
+    assert_eq!(buffer.get_bytes_upto_size(10), None);
+
+    let mut buffer = StreamRecvBuffer::new(&buffers, false, None);
+    assert_eq!(buffer.chunk(), b"hello ");
+    buffer.advance(3);
+    assert_eq!(buffer.remaining(), 9);
+    assert_eq!(buffer.chunk(), b"lo ");
+    buffer.advance(3);
+    assert_eq!(buffer.remaining(), 6);
+    assert_eq!(buffer.chunk(), b"world");
+    buffer.advance(6);
+    assert_eq!(buffer.remaining(), 0);
+    assert_eq!(buffer.chunk(), b"");
+
+    let buffer = StreamRecvBuffer::new(&buffers, false, None);
+    let mut dst = [std::io::IoSlice::new(&[]); 3];
+    assert_eq!(buffer.chunks_vectored(&mut dst), 3);
+    assert_eq!(dst[0].get(0..6), Some(&b"hello "[..]));
+    assert_eq!(dst[1].get(0..5), Some(&b"world"[..]));
+    assert_eq!(dst[2].get(0..1), Some(&b"!"[..]));
 }
 
 #[tokio::test]
