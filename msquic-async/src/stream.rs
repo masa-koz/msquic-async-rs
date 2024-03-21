@@ -10,10 +10,9 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::task::{ready, Context, Poll, Waker};
 
 use bytes::Bytes;
-
 use libc::c_void;
-
 use thiserror::Error;
+use tracing::trace;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum StreamType {
@@ -127,7 +126,7 @@ impl Stream {
             StreamInstance::native_callback,
             Arc::into_raw(inner.clone()) as *const c_void,
         );
-        println!("msquic-async::Stream({:p}) Open by local", &*inner);
+        trace!("Stream({:p}) Open by local", &*inner);
 
         Self(Arc::new(StreamInstance(inner)))
     }
@@ -166,8 +165,8 @@ impl Stream {
             Arc::into_raw(inner.clone()) as *const c_void,
         );
         let stream = Self(Arc::new(StreamInstance(inner)));
-        println!(
-            "msquic-async::Stream({:p}, id={:?}) Start by peer",
+        trace!(
+            "Stream({:p}, id={:?}) Start by peer",
             &*stream.0 .0,
             stream.id()
         );
@@ -697,8 +696,8 @@ impl StreamInstance {
         if msquic::Status::succeeded(payload.status) {
             inner.shared.id.write().unwrap().replace(payload.id);
         }
-        println!(
-            "msquic-async::Stream({:p}, id={:?}) start complete status=0x{:x}, peer_accepted={}, id={}",
+        trace!(
+            "Stream({:p}, id={:?}) start complete status=0x{:x}, peer_accepted={}, id={}",
             inner,
             inner.shared.id.read(),
             payload.status,
@@ -731,8 +730,8 @@ impl StreamInstance {
         inner: &StreamInner,
         payload: &msquic::StreamEventReceive,
     ) -> u32 {
-        println!(
-            "msquic-async::Stream({:p}, id={:?}) Receive {} bytes, fin {}",
+        trace!(
+            "Stream({:p}, id={:?}) Receive {} bytes, fin {}",
             inner,
             inner.shared.id.read(),
             payload.total_buffer_length,
@@ -766,8 +765,8 @@ impl StreamInstance {
         inner: &StreamInner,
         payload: &msquic::StreamEventSendComplete,
     ) -> u32 {
-        println!(
-            "msquic-async::Stream({:p}, id={:?}) Send complete",
+        trace!(
+            "Stream({:p}, id={:?}) Send complete",
             inner,
             inner.shared.id.read()
         );
@@ -780,8 +779,8 @@ impl StreamInstance {
     }
 
     fn handle_event_peer_send_shutdown(_stream: msquic::Handle, inner: &StreamInner) -> u32 {
-        println!(
-            "msquic-async::Stream({:p}, id={:?}) Peer send shutdown",
+        trace!(
+            "Stream({:p}, id={:?}) Peer send shutdown",
             inner,
             inner.shared.id.read()
         );
@@ -799,8 +798,8 @@ impl StreamInstance {
         inner: &StreamInner,
         payload: &msquic::StreamEventPeerSendAborted,
     ) -> u32 {
-        println!(
-            "msquic-async::Stream({:p}, id={:?}) Peer send aborted",
+        trace!(
+            "Stream({:p}, id={:?}) Peer send aborted",
             inner,
             inner.shared.id.read()
         );
@@ -819,8 +818,8 @@ impl StreamInstance {
         inner: &StreamInner,
         payload: &msquic::StreamEventPeerReceiveAborted,
     ) -> u32 {
-        println!(
-            "msquic-async::Stream({:p}, id={:?}) Peer receive aborted",
+        trace!(
+            "Stream({:p}, id={:?}) Peer receive aborted",
             inner,
             inner.shared.id.read()
         );
@@ -839,8 +838,8 @@ impl StreamInstance {
         inner: &StreamInner,
         _payload: &msquic::StreamEventSendShutdownComplete,
     ) -> u32 {
-        println!(
-            "msquic-async::Stream({:p}, id={:?}) Send shutdown complete",
+        trace!(
+            "Stream({:p}, id={:?}) Send shutdown complete",
             inner,
             inner.shared.id.read()
         );
@@ -858,8 +857,8 @@ impl StreamInstance {
         inner: &StreamInner,
         payload: &msquic::StreamEventShutdownComplete,
     ) -> u32 {
-        println!(
-            "msquic-async::Stream({:p}, id={:?}) Shutdown complete",
+        trace!(
+            "Stream({:p}, id={:?}) Shutdown complete",
             inner,
             inner.shared.id.read()
         );
@@ -909,8 +908,8 @@ impl StreamInstance {
         inner: &StreamInner,
         _payload: &msquic::StreamEventIdealSendBufferSize,
     ) -> u32 {
-        println!(
-            "msquic-async::Stream({:p}, id={:?}) Ideal send buffer size",
+        trace!(
+            "Stream({:p}, id={:?}) Ideal send buffer size",
             inner,
             inner.shared.id.read()
         );
@@ -918,8 +917,8 @@ impl StreamInstance {
     }
 
     fn handle_event_peer_accepted(_stream: msquic::Handle, inner: &StreamInner) -> u32 {
-        println!(
-            "msquic-async::Stream({:p}, id={:?}) Peer accepted",
+        trace!(
+            "Stream({:p}, id={:?}) Peer accepted",
             inner,
             inner.shared.id.read()
         );
@@ -986,8 +985,8 @@ impl StreamInstance {
             }
             msquic::STREAM_EVENT_PEER_ACCEPTED => Self::handle_event_peer_accepted(stream, inner),
             _ => {
-                println!(
-                    "msquic-async::Stream({:p}) Other callback {}",
+                trace!(
+                    "Stream({:p}) Other callback {}",
                     inner, event.event_type
                 );
                 0
@@ -998,7 +997,7 @@ impl StreamInstance {
 
 impl Drop for StreamInstance {
     fn drop(&mut self) {
-        println!("msquic-async::StreamInstance({:p}) Dropping", &*self.0);
+        trace!("StreamInstance({:p}) dropping", &*self.0);
         let mut exclusive = self.0.exclusive.lock().unwrap();
         exclusive.recv_buffers.clear();
         match exclusive.state {
@@ -1006,8 +1005,8 @@ impl Drop for StreamInstance {
                 Arc::from_raw(Arc::as_ptr(&self.0));
             },
             StreamState::Start | StreamState::StartComplete => {
-                println!(
-                    "msquic-async::StreamInstance({:p}) Abort immediately",
+                trace!(
+                    "StreamInstance({:p}) shutdown while dropping",
                     &*self.0
                 );
                 self.0.shared.msquic_stream.shutdown(
@@ -1032,7 +1031,7 @@ impl Deref for StreamInstance {
 
 impl Drop for StreamInner {
     fn drop(&mut self) {
-        println!("msquic-async::StreamInner({:p}) Dropping", self);
+        trace!("StreamInner({:p}) dropping", self);
     }
 }
 

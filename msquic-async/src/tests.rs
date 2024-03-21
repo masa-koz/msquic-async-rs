@@ -15,11 +15,12 @@ use bytes::{Buf, Bytes};
 
 use tempfile::{NamedTempFile, TempPath};
 
+use test_log::test;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 
-#[tokio::test]
+#[test(tokio::test)]
 async fn connection_validation() {
     let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
@@ -114,7 +115,7 @@ async fn connection_validation() {
     });
 }
 
-#[tokio::test]
+#[test(tokio::test)]
 async fn stream_validation() {
     let registration = msquic::Registration::new(&*MSQUIC_API, ptr::null());
     let listener = new_server(&registration).expect("new_server");
@@ -546,7 +547,7 @@ async fn stream_validation() {
     });
 }
 
-#[tokio::test]
+#[test(tokio::test)]
 async fn stream_recv_buffer_validation() {
     //let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
@@ -687,9 +688,9 @@ fn test_stream_recv_buffers() {
     let buffer = StreamRecvBuffer::new(&buffers, false, None);
     let mut dst = [std::io::IoSlice::new(&[]); 3];
     assert_eq!(buffer.chunks_vectored(&mut dst), 3);
-    assert_eq!(dst[0].get(0..6), Some(&b"hello "[..]));
-    assert_eq!(dst[1].get(0..5), Some(&b"world"[..]));
-    assert_eq!(dst[2].get(0..1), Some(&b"!"[..]));
+    assert_eq!(dst[0].get(..), Some(&b"hello "[..]));
+    assert_eq!(dst[1].get(..), Some(&b"world"[..]));
+    assert_eq!(dst[2].get(..), Some(&b"!"[..]));
 }
 
 #[tokio::test]

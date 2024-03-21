@@ -7,10 +7,9 @@ use std::sync::Mutex;
 use std::task::{Context, Poll, Waker};
 
 use libc::{c_void, sockaddr};
-
 use socket2::SockAddr;
-
 use thiserror::Error;
+use tracing::trace;
 
 pub struct Listener(Box<ListenerInner>);
 
@@ -171,7 +170,7 @@ impl Listener {
         inner: &ListenerInner,
         payload: &msquic::ListenerEventNewConnection,
     ) -> u32 {
-        println!("new connection");
+        trace!("Listener({:p}) new connection event", inner);
 
         let new_conn = Connection::from_handle(payload.connection);
         new_conn.set_configuration(&inner.shared.configuration);
@@ -189,7 +188,7 @@ impl Listener {
         inner: &ListenerInner,
         _payload: &msquic::ListenerEventStopComplete,
     ) -> u32 {
-        println!("stop complete");
+        trace!("Listener({:p}) stop complete", inner);
         let mut exclusive = inner.exclusive.lock().unwrap();
         exclusive.state = ListenerState::ShutdownComplete;
 

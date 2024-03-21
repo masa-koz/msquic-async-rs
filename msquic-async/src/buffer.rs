@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use bytes::{Buf, Bytes};
 use libc::c_void;
+use tracing::trace;
 
 pub struct StreamRecvBuffer {
     stream: Option<Arc<StreamInner>>,
@@ -22,14 +23,16 @@ impl StreamRecvBuffer {
         fin: bool,
         stream: Option<Arc<StreamInner>>,
     ) -> Self {
-        Self {
+        let buf = Self {
             stream,
             buffers: buffers.as_ref().to_vec(),
             len: buffers.as_ref().iter().map(|x| x.length).sum::<u32>() as usize,
             read_cursor: 0,
             read_cursor_in_buffer: 0,
             fin,
-        }
+        };
+        trace!("StreamRecvBuffer({:p}) created len={}", &buf, buf.len());
+        buf
     }
 
     pub fn len(&self) -> usize {
@@ -133,9 +136,9 @@ impl Buf for StreamRecvBuffer {
 
 impl Drop for StreamRecvBuffer {
     fn drop(&mut self) {
-        println!("StreamRecvBuffer dropped");
+        trace!("StreamRecvBuffer({:p}) dropping", self);
         if let Some(stream) = self.stream.take() {
-            println!("stream_receive_complete len: {}", self.len);
+            trace!("StreamRecvBuffer({:p}) call receive_complete len={}", self, self.len);
             stream
                 .shared
                 .msquic_stream

@@ -9,10 +9,9 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 
 use bytes::Bytes;
-
 use libc::c_void;
-
 use thiserror::Error;
+use tracing::trace;
 
 #[derive(Clone)]
 pub struct Connection(Arc<ConnectionInstance>);
@@ -65,7 +64,7 @@ impl Connection {
             Self::native_callback,
             Arc::into_raw(inner.clone()) as *const c_void,
         );
-        println!("msquic-async::Connection({:p}) Open by local", &*inner);
+        trace!("Connection({:p}) Open by local", &*inner);
 
         Self(Arc::new(ConnectionInstance(inner)))
     }
@@ -90,7 +89,7 @@ impl Connection {
             Self::native_callback,
             Arc::into_raw(inner.clone()) as *const c_void,
         );
-        println!("msquic-async::Connection({:p}) Open by peer", &*inner);
+        trace!("Connection({:p}) Open by peer", &*inner);
         Self(Arc::new(ConnectionInstance(inner)))
     }
 
@@ -289,7 +288,7 @@ impl Connection {
         inner: &ConnectionInner,
         _payload: &msquic::ConnectionEventConnected,
     ) -> u32 {
-        println!("msquic-async::Connection({:p}) Connected", inner);
+        trace!("Connection({:p}) Connected", inner);
 
         let mut exclusive = inner.exclusive.lock().unwrap();
         exclusive.state = ConnectionState::Connected;
@@ -304,8 +303,8 @@ impl Connection {
         inner: &ConnectionInner,
         payload: &msquic::ConnectionEventConnectionShutdownByTransport,
     ) -> u32 {
-        println!(
-            "msquic-async::Connection({:p}) Transport shutdown 0x{:x}",
+        trace!(
+            "Connection({:p}) Transport shutdown 0x{:x}",
             inner, payload.status
         );
 
@@ -330,8 +329,8 @@ impl Connection {
         inner: &ConnectionInner,
         payload: &msquic::ConnectionEventConnectionShutdownByPeer,
     ) -> u32 {
-        println!(
-            "msquic-async::Connection({:p}) App shutdown {}",
+        trace!(
+            "Connection({:p}) App shutdown {}",
             inner, payload.error_code
         );
 
@@ -353,8 +352,8 @@ impl Connection {
         inner: &ConnectionInner,
         _payload: &msquic::ConnectionEventShutdownComplete,
     ) -> u32 {
-        println!(
-            "msquic-async::Connection({:p}) Connection Shutdown complete",
+        trace!(
+            "Connection({:p}) Connection Shutdown complete",
             inner
         );
 
@@ -392,8 +391,8 @@ impl Connection {
         } else {
             StreamType::Bidirectional
         };
-        println!(
-            "msquic-async::Connection({:p}) Peer stream started {:?}",
+        trace!(
+            "Connection({:p}) Peer stream started {:?}",
             inner, stream_type
         );
 
@@ -414,7 +413,7 @@ impl Connection {
         inner: &ConnectionInner,
         payload: &msquic::ConnectionEventStreamsAvailable,
     ) -> u32 {
-        println!("msquic-async::Connection({:p}) Streams available bidirectional_count:{} unidirectional_count:{}", inner, payload.bidirectional_count, payload.unidirectional_count);
+        trace!("Connection({:p}) Streams available bidirectional_count:{} unidirectional_count:{}", inner, payload.bidirectional_count, payload.unidirectional_count);
         0
     }
 
@@ -422,7 +421,7 @@ impl Connection {
         inner: &ConnectionInner,
         payload: &msquic::ConnectionEventDatagramStateChanged,
     ) -> u32 {
-        println!("msquic-async::Connection({:p}) Datagram state changed send_enabled:{} max_send_length:{}", inner, payload.send_enabled, payload.max_send_length);
+        trace!("Connection({:p}) Datagram state changed send_enabled:{} max_send_length:{}", inner, payload.send_enabled, payload.max_send_length);
         0
     }
 
@@ -430,7 +429,7 @@ impl Connection {
         inner: &ConnectionInner,
         payload: &msquic::ConnectionEventDatagramReceived,
     ) -> u32 {
-        println!("msquic-async::Connection({:p}) Datagram received", inner);
+        trace!("Connection({:p}) Datagram received", inner);
         let buffer = unsafe {
             std::slice::from_raw_parts((*payload.buffer).buffer, (*payload.buffer).length as usize)
         };
@@ -450,8 +449,8 @@ impl Connection {
         inner: &ConnectionInner,
         payload: &msquic::ConnectionEventDatagramSendStateChanged,
     ) -> u32 {
-        println!(
-            "msquic-async::Connection({:p}) Datagram send state changed state:{}",
+        trace!(
+            "Connection({:p}) Datagram send state changed state:{}",
             inner, payload.state
         );
         match payload.state {
@@ -517,8 +516,8 @@ impl Connection {
                 })
             }
             _ => {
-                println!(
-                    "msquic-async::Connection({:p}) Other callback {}",
+                trace!(
+                    "Connection({:p}) Other callback {}",
                     inner, event.event_type
                 );
                 0
@@ -529,14 +528,14 @@ impl Connection {
 
 impl Drop for ConnectionInstance {
     fn drop(&mut self) {
-        println!("msquic-async::Connection({:p}) dropping", &*self.0);
+        trace!("Connection({:p}) dropping", &*self.0);
         {
             let exclusive = self.0.exclusive.lock().unwrap();
             match exclusive.state {
                 ConnectionState::Open
                 | ConnectionState::Connecting
                 | ConnectionState::Connected => {
-                    println!("msquic-async::Connection({:p}) do shutdown", &*self.0);
+                    trace!("Connection({:p}) shutdown while dropping", &*self.0);
                     self.0
                         .shared
                         .msquic_conn
@@ -558,7 +557,7 @@ impl Deref for ConnectionInstance {
 
 impl Drop for ConnectionInner {
     fn drop(&mut self) {
-        println!("msquic-async::ConnectionInner({:p}) dropping", self);
+        trace!("ConnectionInner({:p}) dropping", self);
     }
 }
 
