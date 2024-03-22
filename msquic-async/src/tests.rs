@@ -583,7 +583,7 @@ async fn stream_recv_buffer_validation() {
         chunk.copy_to_slice(&mut dst);
         assert_eq!(&dst, b"hello world");
 
-        std::mem::drop(chunk);
+        //std::mem::drop(chunk);
 
         server_tx.send(()).await.expect("send");
 
@@ -646,7 +646,7 @@ async fn stream_recv_buffer_validation() {
 #[test]
 fn test_stream_recv_buffers() {
     let buffers = vec![msquic::Buffer::from("hello "), msquic::Buffer::from("world"), msquic::Buffer::from("!")];
-    let mut buffer = StreamRecvBuffer::new(&buffers, false, None);
+    let mut buffer = StreamRecvBuffer::new(0, &buffers, false);
     assert_eq!(buffer.remaining(), 12);
     assert_eq!(buffer.fin(), false);
     assert_eq!(buffer.get_bytes_upto_size(10), Some(&b"hello "[..]));
@@ -657,7 +657,7 @@ fn test_stream_recv_buffers() {
     assert_eq!(buffer.remaining(), 0);
     assert_eq!(buffer.get_bytes_upto_size(10), None);
 
-    let mut buffer = StreamRecvBuffer::new(&buffers, true, None);
+    let mut buffer = StreamRecvBuffer::new(0, &buffers, true);
     assert_eq!(buffer.fin(), true);
     assert_eq!(buffer.get_bytes_upto_size(3), Some(&b"hel"[..]));
     assert_eq!(buffer.remaining(), 9);
@@ -673,7 +673,7 @@ fn test_stream_recv_buffers() {
     assert_eq!(buffer.remaining(), 0);
     assert_eq!(buffer.get_bytes_upto_size(10), None);
 
-    let mut buffer = StreamRecvBuffer::new(&buffers, false, None);
+    let mut buffer = StreamRecvBuffer::new(0, &buffers, false);
     assert_eq!(buffer.chunk(), b"hello ");
     buffer.advance(3);
     assert_eq!(buffer.remaining(), 9);
@@ -685,7 +685,7 @@ fn test_stream_recv_buffers() {
     assert_eq!(buffer.remaining(), 0);
     assert_eq!(buffer.chunk(), b"");
 
-    let buffer = StreamRecvBuffer::new(&buffers, false, None);
+    let buffer = StreamRecvBuffer::new(0, &buffers, false);
     let mut dst = [std::io::IoSlice::new(&[]); 3];
     assert_eq!(buffer.chunks_vectored(&mut dst), 3);
     assert_eq!(dst[0].get(..), Some(&b"hello "[..]));
@@ -693,7 +693,7 @@ fn test_stream_recv_buffers() {
     assert_eq!(dst[2].get(..), Some(&b"!"[..]));
 }
 
-#[tokio::test]
+#[test(tokio::test)]
 async fn datagram_validation() {
     let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
     //let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
@@ -762,7 +762,8 @@ fn new_server(registration: &msquic::Registration) -> Result<Listener> {
             .set_idle_timeout_ms(10000)
             .set_peer_bidi_stream_count(1)
             .set_peer_unidi_stream_count(1)
-            .set_datagram_receive_enabled(true),
+            .set_datagram_receive_enabled(true)
+            .set_stream_multi_receive_enabled(false),
     );
     let cred_config = SelfSignedCredentialConfig::new()?;
     configuration.load_credential(cred_config.as_cred_config_ref());
@@ -783,7 +784,8 @@ fn new_client_config(registration: &msquic::Registration) -> Result<msquic::Conf
             .set_idle_timeout_ms(10000)
             .set_peer_bidi_stream_count(1)
             .set_peer_unidi_stream_count(1)
-            .set_datagram_receive_enabled(true),
+            .set_datagram_receive_enabled(true)
+            .set_stream_multi_receive_enabled(false),
     );
     let mut cred_config = msquic::CredentialConfig::new_client();
     cred_config.cred_flags |= msquic::CREDENTIAL_FLAG_NO_CERTIFICATE_VALIDATION;

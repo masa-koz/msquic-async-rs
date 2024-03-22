@@ -1,6 +1,7 @@
 use crate::stream::StreamInner;
 
 use std::io::IoSlice;
+use std::ops::Range;
 use std::slice;
 use std::sync::Arc;
 
@@ -11,6 +12,7 @@ use tracing::trace;
 pub struct StreamRecvBuffer {
     stream: Option<Arc<StreamInner>>,
     buffers: Vec<msquic::Buffer>,
+    offset: usize,
     len: usize,
     read_cursor: usize,
     read_cursor_in_buffer: usize,
@@ -18,21 +20,28 @@ pub struct StreamRecvBuffer {
 }
 
 impl StreamRecvBuffer {
-    pub(crate) fn new<T: AsRef<[msquic::Buffer]>>(
-        buffers: &T,
-        fin: bool,
-        stream: Option<Arc<StreamInner>>,
-    ) -> Self {
+    pub(crate) fn new<T: AsRef<[msquic::Buffer]>>(offset: usize, buffers: &T, fin: bool) -> Self {
         let buf = Self {
-            stream,
+            stream: None,
             buffers: buffers.as_ref().to_vec(),
+            offset,
             len: buffers.as_ref().iter().map(|x| x.length).sum::<u32>() as usize,
             read_cursor: 0,
             read_cursor_in_buffer: 0,
             fin,
         };
-        trace!("StreamRecvBuffer({:p}) created len={}", &buf, buf.len());
+        trace!(
+            "StreamRecvBuffer({:p}) created offset={} len={} fin={}",
+            buf.buffers.first().map(|x| x.buffer).unwrap_or(std::ptr::null_mut()),
+            buf.offset,
+            buf.len(),
+            buf.fin,
+        );
         buf
+    }
+
+    pub(crate) fn set_stream(&mut self, stream: Arc<StreamInner>) {
+        self.stream = Some(stream);
     }
 
     pub fn len(&self) -> usize {
@@ -72,13 +81,22 @@ impl StreamRecvBuffer {
         assert!(buffer.length as usize >= self.read_cursor_in_buffer);
         let len = std::cmp::min(buffer.length as usize - self.read_cursor_in_buffer, size);
 
-        let slice = unsafe { slice::from_raw_parts(buffer.buffer.add(self.read_cursor_in_buffer), len) };
+        let slice =
+            unsafe { slice::from_raw_parts(buffer.buffer.add(self.read_cursor_in_buffer), len) };
         self.read_cursor_in_buffer += len;
         if self.read_cursor_in_buffer >= buffer.length as usize {
             self.read_cursor += 1;
             self.read_cursor_in_buffer = 0;
         }
         Some(slice)
+    }
+
+    pub fn offset(&self) -> usize {
+        self.offset
+    }
+
+    pub fn range(&self) -> Range<usize> {
+        self.offset..self.offset + self.len
     }
 
     pub fn fin(&self) -> bool {
@@ -136,13 +154,12 @@ impl Buf for StreamRecvBuffer {
 
 impl Drop for StreamRecvBuffer {
     fn drop(&mut self) {
-        trace!("StreamRecvBuffer({:p}) dropping", self);
+        trace!(
+            "StreamRecvBuffer({:p}) dropping",
+            self.buffers.first().map(|x| x.buffer).unwrap_or(std::ptr::null_mut())
+        );
         if let Some(stream) = self.stream.take() {
-            trace!("StreamRecvBuffer({:p}) call receive_complete len={}", self, self.len);
-            stream
-                .shared
-                .msquic_stream
-                .receive_complete(self.len as u64);
+            stream.read_complete(self);
         }
     }
 }

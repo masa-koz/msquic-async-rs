@@ -11,6 +11,7 @@ use std::task::{ready, Context, Poll, Waker};
 
 use bytes::Bytes;
 use libc::c_void;
+use rangemap::RangeSet;
 use thiserror::Error;
 use tracing::trace;
 
@@ -43,6 +44,8 @@ struct StreamInnerExclusive {
     start_status: Option<u32>,
     recv_state: StreamRecvState,
     recv_buffers: VecDeque<StreamRecvBuffer>,
+    read_complete_map: RangeSet<usize>,
+    read_complete_cursor: usize,
     send_state: StreamSendState,
     write_pool: Vec<WriteBuffer>,
     recv_error_code: Option<u64>,
@@ -104,6 +107,8 @@ impl Stream {
                 start_status: None,
                 recv_state: StreamRecvState::Closed,
                 recv_buffers: VecDeque::new(),
+                read_complete_map: RangeSet::new(),
+                read_complete_cursor: 0,
                 send_state: StreamSendState::Closed,
                 write_pool: Vec::new(),
                 recv_error_code: None,
@@ -144,6 +149,8 @@ impl Stream {
                 start_status: None,
                 recv_state: StreamRecvState::StartComplete,
                 recv_buffers: VecDeque::new(),
+                read_complete_map: RangeSet::new(),
+                read_complete_cursor: 0,
                 send_state,
                 write_pool: Vec::new(),
                 recv_error_code: None,
@@ -385,7 +392,7 @@ impl StreamInstance {
         cx: &mut Context<'_>,
         buf: &mut [u8],
     ) -> Poll<Result<usize, ReadError>> {
-        self.poll_read_generic(cx, |recv_buffers| {
+        self.poll_read_generic(cx, |recv_buffers, read_complete_buffers| {
             let mut read = 0;
             let mut fin = false;
             loop {
@@ -403,8 +410,10 @@ impl StreamInstance {
                         read += len;
                     }
                     None => {
-                        if let Some(recv_buffer) = recv_buffers.pop_front() {
+                        if let Some(mut recv_buffer) = recv_buffers.pop_front() {
+                            recv_buffer.set_stream(self.0.clone());
                             fin = recv_buffer.fin();
+                            read_complete_buffers.push(recv_buffer);
                             continue;
                         } else {
                             return (if read > 0 { Some(read) } else { None }, fin).into();
@@ -420,12 +429,13 @@ impl StreamInstance {
         &self,
         cx: &mut Context<'_>,
     ) -> Poll<Result<Option<StreamRecvBuffer>, ReadError>> {
-        self.poll_read_generic(cx, |recv_buffers| {
+        self.poll_read_generic(cx, |recv_buffers, _| {
             recv_buffers
                 .pop_front()
-                .map(|x| {
-                    let fin = x.fin();
-                    (Some(x), fin)
+                .map(|mut recv_buffer| {
+                    let fin = recv_buffer.fin();
+                    recv_buffer.set_stream(self.0.clone());
+                    (Some(recv_buffer), fin)
                 })
                 .unwrap_or((None, false))
                 .into()
@@ -438,43 +448,48 @@ impl StreamInstance {
         mut read_fn: T,
     ) -> Poll<Result<Option<U>, ReadError>>
     where
-        T: FnMut(&mut VecDeque<StreamRecvBuffer>) -> ReadStatus<U>,
+        T: FnMut(&mut VecDeque<StreamRecvBuffer>, &mut Vec<StreamRecvBuffer>) -> ReadStatus<U>,
     {
-        let mut exclusive = self.0.exclusive.lock().unwrap();
-        match exclusive.recv_state {
-            StreamRecvState::Closed => {
-                return Poll::Ready(Err(ReadError::Closed));
-            }
-            StreamRecvState::Start => {
-                exclusive.start_waiters.push(cx.waker().clone());
-                return Poll::Pending;
-            }
-            StreamRecvState::StartComplete => {}
-            StreamRecvState::ShutdownComplete => {
-                if let Some(conn_error) = &exclusive.conn_error {
-                    return Poll::Ready(Err(ReadError::ConnectionLost(conn_error.clone())));
-                } else {
-                    if let Some(error_code) = &exclusive.recv_error_code {
-                        return Poll::Ready(Err(ReadError::Reset(*error_code)));
+        let res;
+        let mut read_complete_buffers = Vec::new();
+        {
+            let mut exclusive = self.0.exclusive.lock().unwrap();
+            match exclusive.recv_state {
+                StreamRecvState::Closed => {
+                    return Poll::Ready(Err(ReadError::Closed));
+                }
+                StreamRecvState::Start => {
+                    exclusive.start_waiters.push(cx.waker().clone());
+                    return Poll::Pending;
+                }
+                StreamRecvState::StartComplete => {}
+                StreamRecvState::ShutdownComplete => {
+                    if let Some(conn_error) = &exclusive.conn_error {
+                        return Poll::Ready(Err(ReadError::ConnectionLost(conn_error.clone())));
                     } else {
-                        return Poll::Ready(Ok(None));
+                        if let Some(error_code) = &exclusive.recv_error_code {
+                            return Poll::Ready(Err(ReadError::Reset(*error_code)));
+                        } else {
+                            return Poll::Ready(Ok(None));
+                        }
                     }
                 }
             }
-        }
 
-        let status = read_fn(&mut exclusive.recv_buffers);
+            let status = read_fn(&mut exclusive.recv_buffers, &mut read_complete_buffers);
 
-        match status {
-            ReadStatus::Readable(read) | ReadStatus::Blocked(Some(read)) => {
-                Poll::Ready(Ok(Some(read)))
-            }
-            ReadStatus::Finished(read) => Poll::Ready(Ok(read)),
-            ReadStatus::Blocked(None) => {
-                exclusive.read_waiters.push(cx.waker().clone());
-                Poll::Pending
-            }
+            res = match status {
+                ReadStatus::Readable(read) | ReadStatus::Blocked(Some(read)) => {
+                    Poll::Ready(Ok(Some(read)))
+                }
+                ReadStatus::Finished(read) => Poll::Ready(Ok(read)),
+                ReadStatus::Blocked(None) => {
+                    exclusive.read_waiters.push(cx.waker().clone());
+                    Poll::Pending
+                }
+            };
         }
+        res
     }
 
     pub(crate) fn poll_write(
@@ -731,9 +746,10 @@ impl StreamInstance {
         payload: &msquic::StreamEventReceive,
     ) -> u32 {
         trace!(
-            "Stream({:p}, id={:?}) Receive {} bytes, fin {}",
+            "Stream({:p}, id={:?}) Receive {} offsets {} bytes, fin {}",
             inner,
             inner.shared.id.read(),
+            payload.absolute_offset,
             payload.total_buffer_length,
             (payload.flags & msquic::RECEIVE_FLAG_FIN) == msquic::RECEIVE_FLAG_FIN
         );
@@ -744,9 +760,9 @@ impl StreamInstance {
         let arc_inner: Arc<StreamInner> = unsafe { Arc::from_raw(inner as *const _) };
 
         let recv_buffer = StreamRecvBuffer::new(
+            payload.absolute_offset as usize,
             &buffers,
             (payload.flags & msquic::RECEIVE_FLAG_FIN) == msquic::RECEIVE_FLAG_FIN,
-            Some(arc_inner.clone()),
         );
 
         let _ = Arc::into_raw(arc_inner);
@@ -985,10 +1001,7 @@ impl StreamInstance {
             }
             msquic::STREAM_EVENT_PEER_ACCEPTED => Self::handle_event_peer_accepted(stream, inner),
             _ => {
-                trace!(
-                    "Stream({:p}) Other callback {}",
-                    inner, event.event_type
-                );
+                trace!("Stream({:p}) Other callback {}", inner, event.event_type);
                 0
             }
         }
@@ -1005,10 +1018,7 @@ impl Drop for StreamInstance {
                 Arc::from_raw(Arc::as_ptr(&self.0));
             },
             StreamState::Start | StreamState::StartComplete => {
-                trace!(
-                    "StreamInstance({:p}) shutdown while dropping",
-                    &*self.0
-                );
+                trace!("StreamInstance({:p}) shutdown while dropping", &*self.0);
                 self.0.shared.msquic_stream.shutdown(
                     msquic::STREAM_SHUTDOWN_FLAG_ABORT_SEND
                         | msquic::STREAM_SHUTDOWN_FLAG_ABORT_RECEIVE
@@ -1026,6 +1036,49 @@ impl Deref for StreamInstance {
 
     fn deref(&self) -> &Self::Target {
         &self.0
+    }
+}
+
+impl StreamInner {
+    pub(crate) fn read_complete(&self, buffer: &StreamRecvBuffer) {
+        let buffer_range = buffer.range();
+        trace!(
+            "StreamInner({:p}) read complete offset={} len={}",
+            self,
+            buffer_range.start,
+            buffer_range.end - buffer_range.start
+        );
+
+        let complete_len = if !buffer_range.is_empty(){
+            let mut exclusive = self.exclusive.lock().unwrap();
+            exclusive.read_complete_map.insert(buffer_range);
+            let complete_range = exclusive.read_complete_map.first().unwrap();
+            trace!(
+                "StreamInner({:p}) complete read offset={} len={}",
+                self,
+                complete_range.start,
+                complete_range.end - complete_range.start
+            );
+            if complete_range.start == 0 && exclusive.read_complete_cursor < complete_range.end {
+                let complete_len = complete_range.end - exclusive.read_complete_cursor;
+                exclusive.read_complete_cursor = complete_range.end;
+                complete_len
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+        if complete_len > 0 {
+            trace!(
+                "StreamInner({:p}) call receive_complete len={}",
+                self,
+                complete_len
+            );
+            self.shared
+                .msquic_stream
+                .receive_complete(complete_len as u64);
+        }
     }
 }
 
