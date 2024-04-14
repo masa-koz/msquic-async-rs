@@ -63,7 +63,7 @@ impl Connection {
             registration,
             Self::native_callback,
             Arc::into_raw(inner.clone()) as *const c_void,
-        );
+        ).unwrap();
         trace!("Connection({:p}) Open by local", &*inner);
 
         Self(Arc::new(ConnectionInstance(inner)))
@@ -117,7 +117,7 @@ impl Connection {
         let mut exclusive = self.0.exclusive.lock().unwrap();
         match exclusive.state {
             ConnectionState::Open => {
-                self.0.shared.msquic_conn.start(configuration, host, port);
+                self.0.shared.msquic_conn.start(configuration, host, port).unwrap();
                 exclusive.state = ConnectionState::Connecting;
             }
             ConnectionState::Connecting => {}
@@ -133,7 +133,7 @@ impl Connection {
     }
 
     pub(crate) fn set_configuration(&self, configuration: &msquic::Configuration) {
-        self.0.shared.msquic_conn.set_configuration(configuration);
+        self.0.shared.msquic_conn.set_configuration(configuration).unwrap();
     }
 
     pub fn open_outbound_stream(
@@ -243,7 +243,7 @@ impl Connection {
             buffer_count,
             msquic::SEND_FLAG_NONE,
             write_buf.into_raw() as *const _ as *const c_void,
-        );
+        ).unwrap();
         Poll::Ready(Ok(()))
     }
 

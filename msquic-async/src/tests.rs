@@ -25,7 +25,7 @@ async fn connection_validation() {
     let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let registration = msquic::Registration::new(&*MSQUIC_API, ptr::null());
+    let registration = msquic::Registration::new(&*MSQUIC_API, ptr::null()).unwrap();
 
     let listener = new_server(&registration).expect("new_server");
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
@@ -117,7 +117,7 @@ async fn connection_validation() {
 
 #[test(tokio::test)]
 async fn stream_validation() {
-    let registration = msquic::Registration::new(&*MSQUIC_API, ptr::null());
+    let registration = msquic::Registration::new(&*MSQUIC_API, ptr::null()).unwrap();
     let listener = new_server(&registration).expect("new_server");
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
     listener
@@ -552,7 +552,7 @@ async fn stream_recv_buffer_validation() {
     //let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let registration = msquic::Registration::new(&*MSQUIC_API, ptr::null());
+    let registration = msquic::Registration::new(&*MSQUIC_API, ptr::null()).unwrap();
 
     let listener = new_server(&registration).expect("new_server");
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
@@ -698,7 +698,7 @@ async fn datagram_validation() {
     let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
     //let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let registration = msquic::Registration::new(&*MSQUIC_API, ptr::null());
+    let registration = msquic::Registration::new(&*MSQUIC_API, ptr::null()).unwrap();
 
     let listener = new_server(&registration).expect("new_server");
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
@@ -764,9 +764,9 @@ fn new_server(registration: &msquic::Registration) -> Result<Listener> {
             .set_peer_unidi_stream_count(1)
             .set_datagram_receive_enabled(true)
             .set_stream_multi_receive_enabled(false),
-    );
+    ).unwrap();
     let cred_config = SelfSignedCredentialConfig::new()?;
-    configuration.load_credential(cred_config.as_cred_config_ref());
+    configuration.load_credential(cred_config.as_cred_config_ref()).unwrap();
     let listener = Listener::new(
         msquic::Listener::new(registration),
         registration,
@@ -786,10 +786,10 @@ fn new_client_config(registration: &msquic::Registration) -> Result<msquic::Conf
             .set_peer_unidi_stream_count(1)
             .set_datagram_receive_enabled(true)
             .set_stream_multi_receive_enabled(false),
-    );
+    ).unwrap();
     let mut cred_config = msquic::CredentialConfig::new_client();
     cred_config.cred_flags |= msquic::CREDENTIAL_FLAG_NO_CERTIFICATE_VALIDATION;
-    configuration.load_credential(&cred_config);
+    configuration.load_credential(&cred_config).unwrap();
     Ok(configuration)
 }
 

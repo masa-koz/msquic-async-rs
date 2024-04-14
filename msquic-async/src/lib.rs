@@ -3,7 +3,7 @@
 
 use once_cell::sync::Lazy;
 
-static MSQUIC_API: Lazy<msquic::Api> = Lazy::new(|| msquic::Api::new());
+static MSQUIC_API: Lazy<msquic::Api> = Lazy::new(|| msquic::Api::new().unwrap());
 
 mod buffer;
 mod connection;

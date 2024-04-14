@@ -65,7 +65,7 @@ impl Listener {
                 registration,
                 Self::native_callback,
                 &*inner as *const _ as *const c_void,
-            );
+            ).unwrap();
         }
         Self(inner)
     }
@@ -88,7 +88,7 @@ impl Listener {
         self.0
             .shared
             .msquic_listener
-            .start(alpn.as_ref(), local_address);
+            .start(alpn.as_ref(), local_address).unwrap();
         exclusive.state = ListenerState::StartComplete;
         Ok(())
     }

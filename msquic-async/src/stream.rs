@@ -130,7 +130,7 @@ impl Stream {
             flags,
             StreamInstance::native_callback,
             Arc::into_raw(inner.clone()) as *const c_void,
-        );
+        ).unwrap();
         trace!("Stream({:p}) Open by local", &*inner);
 
         Self(Arc::new(StreamInstance(inner)))
@@ -196,7 +196,7 @@ impl Stream {
                         } else {
                             msquic::STREAM_START_FLAG_NONE
                         },
-                );
+                ).unwrap();
                 exclusive.state = StreamState::Start;
                 if self.0.shared.stream_type == StreamType::Bidirectional {
                     exclusive.recv_state = StreamRecvState::Start;
@@ -575,7 +575,7 @@ impl StreamInstance {
                     buffer_count,
                     msquic::SEND_FLAG_NONE,
                     write_buf.into_raw() as *const _ as *const c_void,
-                );
+                ).unwrap();
                 Poll::Ready(Ok(Some(val)))
             }
             WriteStatus::Blocked(None) => unreachable!(),
@@ -585,7 +585,7 @@ impl StreamInstance {
                     buffer_count,
                     msquic::SEND_FLAG_FIN,
                     write_buf.into_raw() as *const _ as *const c_void,
-                );
+                ).unwrap();
                 Poll::Ready(Ok(val))
             }
         }
@@ -602,7 +602,8 @@ impl StreamInstance {
                 self.0
                     .shared
                     .msquic_stream
-                    .shutdown(msquic::STREAM_SHUTDOWN_FLAG_GRACEFUL, 0);
+                    .shutdown(msquic::STREAM_SHUTDOWN_FLAG_GRACEFUL, 0)
+                    .unwrap();
                 exclusive.send_state = StreamSendState::Shutdown;
             }
             StreamSendState::Shutdown => {}
@@ -640,7 +641,8 @@ impl StreamInstance {
                 self.0
                     .shared
                     .msquic_stream
-                    .shutdown(msquic::STREAM_SHUTDOWN_FLAG_ABORT_SEND, error_code);
+                    .shutdown(msquic::STREAM_SHUTDOWN_FLAG_ABORT_SEND, error_code)
+                    .unwrap();
                 exclusive.send_state = StreamSendState::Shutdown;
             }
             StreamSendState::Shutdown => {}
@@ -678,7 +680,8 @@ impl StreamInstance {
                 self.0
                     .shared
                     .msquic_stream
-                    .shutdown(msquic::STREAM_SHUTDOWN_FLAG_ABORT_RECEIVE, error_code);
+                    .shutdown(msquic::STREAM_SHUTDOWN_FLAG_ABORT_RECEIVE, error_code)
+                    .unwrap();
                 exclusive.recv_state = StreamRecvState::ShutdownComplete;
                 exclusive
                     .read_waiters
@@ -1024,7 +1027,7 @@ impl Drop for StreamInstance {
                         | msquic::STREAM_SHUTDOWN_FLAG_ABORT_RECEIVE
                         | msquic::STREAM_SHUTDOWN_FLAG_IMMEDIATE,
                     0,
-                );
+                ).unwrap();
             }
             StreamState::ShutdownComplete => {}
         }
