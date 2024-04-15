@@ -583,7 +583,7 @@ async fn stream_recv_buffer_validation() {
         chunk.copy_to_slice(&mut dst);
         assert_eq!(&dst, b"hello world");
 
-        //std::mem::drop(chunk);
+        std::mem::drop(chunk);
 
         server_tx.send(()).await.expect("send");
 
@@ -695,8 +695,8 @@ fn test_stream_recv_buffers() {
 
 #[test(tokio::test)]
 async fn datagram_validation() {
-    let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
-    //let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
+    //let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
+    let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
     let registration = msquic::Registration::new(&*MSQUIC_API, ptr::null()).unwrap();
 
@@ -716,7 +716,7 @@ async fn datagram_validation() {
         let res = poll_fn(|cx| conn.poll_receive_datagram(cx)).await;
         assert_eq!(res.ok(), Some(Bytes::from("hello world")));
 
-        server_rx.recv().await.expect("recv");
+        server_tx.send(()).await.expect("send");
 
         Ok::<_, anyhow::Error>(())
     });
@@ -735,7 +735,7 @@ async fn datagram_validation() {
         let res = poll_fn(|cx| conn.poll_send_datagram(cx, &Bytes::from("hello world"))).await;
         assert!(res.is_ok());
 
-        client_tx.send(()).await.expect("send");
+        client_rx.recv().await.expect("recv");
 
         Ok::<_, anyhow::Error>(())
     });

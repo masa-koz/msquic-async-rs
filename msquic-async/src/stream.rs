@@ -719,12 +719,12 @@ impl StreamInstance {
             inner,
             inner.shared.id.read(),
             payload.status,
-            payload.bit_flags.peer_accepted(),
-            payload.id
+            payload.flags.peer_accepted(),
+            payload.id,
         );
         let mut exclusive = inner.exclusive.lock().unwrap();
         exclusive.start_status = Some(payload.status);
-        if msquic::Status::succeeded(payload.status) && payload.bit_flags.peer_accepted() == 1 {
+        if msquic::Status::succeeded(payload.status) && payload.flags.peer_accepted() == 1 {
             exclusive.state = StreamState::StartComplete;
             if inner.shared.stream_type == StreamType::Bidirectional {
                 exclusive.recv_state = StreamRecvState::StartComplete;
@@ -732,8 +732,8 @@ impl StreamInstance {
             exclusive.send_state = StreamSendState::StartComplete;
         }
 
-        if (msquic::Status::failed(payload.status) && payload.status == 0x80410008)
-            || payload.bit_flags.peer_accepted() == 1
+        if payload.status == msquic::QUIC_STATUS_STREAM_LIMIT_REACHED
+            || payload.flags.peer_accepted() == 1
         {
             exclusive
                 .start_waiters
@@ -776,7 +776,7 @@ impl StreamInstance {
             .read_waiters
             .drain(..)
             .for_each(|waker| waker.wake());
-        0x703e5
+        msquic::QUIC_STATUS_PENDING
     }
 
     fn handle_event_send_complete(
@@ -960,6 +960,7 @@ impl StreamInstance {
         event: &msquic::StreamEvent,
     ) -> u32 {
         let inner = unsafe { &*(context as *const StreamInner) };
+
         match event.event_type {
             msquic::STREAM_EVENT_START_COMPLETE => {
                 Self::handle_event_start_complete(stream, inner, unsafe {
