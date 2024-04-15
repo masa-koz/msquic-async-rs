@@ -34,14 +34,10 @@ struct ConnectionInnerExclusive {
     write_pool: Vec<WriteBuffer>,
     shutdown_waiters: Vec<Waker>,
 }
-unsafe impl Sync for ConnectionInnerExclusive {}
-unsafe impl Send for ConnectionInnerExclusive {}
 
 struct ConnectionInnerShared {
     msquic_conn: msquic::Connection,
 }
-unsafe impl Sync for ConnectionInnerShared {}
-unsafe impl Send for ConnectionInnerShared {}
 
 impl Connection {
     pub fn new(msquic_conn: msquic::Connection, registration: &msquic::Registration) -> Self {

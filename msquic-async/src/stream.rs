@@ -56,17 +56,12 @@ struct StreamInnerExclusive {
     write_shutdown_waiters: Vec<Waker>,
 }
 
-unsafe impl Sync for StreamInnerExclusive {}
-unsafe impl Send for StreamInnerExclusive {}
-
 pub(crate) struct StreamInnerShared {
     stream_type: StreamType,
     local_open: bool,
     id: RwLock<Option<u64>>,
     pub(crate) msquic_stream: msquic::Stream,
 }
-unsafe impl Sync for StreamInnerShared {}
-unsafe impl Send for StreamInnerShared {}
 
 #[derive(Debug, PartialEq)]
 enum StreamState {

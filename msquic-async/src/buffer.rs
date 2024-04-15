@@ -171,6 +171,8 @@ struct WriteBufferInner {
     zerocopy: Vec<Bytes>,
     msquic_buffer: Vec<msquic::Buffer>,
 }
+unsafe impl Sync for WriteBufferInner {}
+unsafe impl Send for WriteBufferInner {}
 
 impl WriteBuffer {
     pub(crate) fn new() -> Self {
