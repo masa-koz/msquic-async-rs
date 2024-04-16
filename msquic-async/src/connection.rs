@@ -292,7 +292,7 @@ impl Connection {
             .start_waiters
             .drain(..)
             .for_each(|waker| waker.wake());
-        0
+        msquic::QUIC_STATUS_SUCCESS
     }
 
     fn handle_event_shutdown_initiated_by_transport(
@@ -318,7 +318,7 @@ impl Connection {
             .inbound_stream_waiters
             .drain(..)
             .for_each(|waker| waker.wake());
-        0
+        msquic::QUIC_STATUS_SUCCESS
     }
 
     fn handle_event_shutdown_initiated_by_peer(
@@ -341,7 +341,7 @@ impl Connection {
             .inbound_stream_waiters
             .drain(..)
             .for_each(|waker| waker.wake());
-        0
+        msquic::QUIC_STATUS_SUCCESS
     }
 
     fn handle_event_shutdown_complete(
@@ -375,7 +375,7 @@ impl Connection {
         unsafe {
             Arc::from_raw(inner as *const _);
         }
-        0
+        msquic::QUIC_STATUS_SUCCESS
     }
 
     fn handle_event_peer_stream_started(
@@ -402,7 +402,7 @@ impl Connection {
                 .for_each(|waker| waker.wake());
         }
 
-        0
+        msquic::QUIC_STATUS_SUCCESS
     }
 
     fn handle_event_streams_available(
@@ -410,7 +410,7 @@ impl Connection {
         payload: &msquic::ConnectionEventStreamsAvailable,
     ) -> u32 {
         trace!("Connection({:p}) Streams available bidirectional_count:{} unidirectional_count:{}", inner, payload.bidirectional_count, payload.unidirectional_count);
-        0
+        msquic::QUIC_STATUS_SUCCESS
     }
 
     fn handle_event_datagram_state_changed(
@@ -418,7 +418,7 @@ impl Connection {
         payload: &msquic::ConnectionEventDatagramStateChanged,
     ) -> u32 {
         trace!("Connection({:p}) Datagram state changed send_enabled:{} max_send_length:{}", inner, payload.send_enabled, payload.max_send_length);
-        0
+        msquic::QUIC_STATUS_SUCCESS
     }
 
     fn handle_event_datagram_received(
@@ -438,7 +438,7 @@ impl Connection {
                 .drain(..)
                 .for_each(|waker| waker.wake());
         }
-        0
+        msquic::QUIC_STATUS_SUCCESS
     }
 
     fn handle_event_datagram_send_state_changed(
@@ -458,7 +458,7 @@ impl Connection {
             }
             _ => {}
         }
-        0
+        msquic::QUIC_STATUS_SUCCESS
     }
 
     extern "C" fn native_callback(
@@ -516,7 +516,7 @@ impl Connection {
                     "Connection({:p}) Other callback {}",
                     inner, event.event_type
                 );
-                0
+                msquic::QUIC_STATUS_SUCCESS
             }
         }
     }

@@ -181,7 +181,7 @@ impl Listener {
             .new_connection_waiters
             .drain(..)
             .for_each(|waker| waker.wake());
-        0
+        msquic::QUIC_STATUS_SUCCESS
     }
 
     fn handle_event_stop_complete(
@@ -201,7 +201,7 @@ impl Listener {
             .shutdown_complete_waiters
             .drain(..)
             .for_each(|waker| waker.wake());
-        0
+        msquic::QUIC_STATUS_SUCCESS
     }
 
     extern "C" fn native_callback(

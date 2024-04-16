@@ -94,7 +94,7 @@ impl Stream {
         let flags = if stream_type == StreamType::Unidirectional {
             msquic::STREAM_OPEN_FLAG_UNIDIRECTIONAL
         } else {
-            0
+            msquic::STREAM_OPEN_FLAG_NONE
         };
         let inner = Arc::new(StreamInner {
             exclusive: Mutex::new(StreamInnerExclusive {
@@ -205,9 +205,9 @@ impl Stream {
                         return Poll::Ready(Ok(()));
                     }
                     return Poll::Ready(Err(match start_status {
-                        0x80410008 /* QUIC_STATUS_STREAM_LIMIT_REACHED */ => StartError::LimitReached,
-                        0x80004004 /* QUIC_STATUS_ABORTED */ |
-                        0x8007139f /* QUIC_STATUS_INVALID_STATE */ =>  {
+                        msquic::QUIC_STATUS_STREAM_LIMIT_REACHED  => StartError::LimitReached,
+                        msquic::QUIC_STATUS_ABORTED |
+                        msquic::QUIC_STATUS_INVALID_STATE =>  {
                             StartError::ConnectionLost(exclusive.conn_error.as_ref().expect("conn_error").clone())
                         }
                         _ => StartError::Unknown(start_status),
@@ -735,7 +735,7 @@ impl StreamInstance {
                 .drain(..)
                 .for_each(|waker| waker.wake());
         }
-        0
+        msquic::QUIC_STATUS_SUCCESS
     }
 
     fn handle_event_receive(
@@ -789,7 +789,7 @@ impl StreamInstance {
         let mut exclusive = inner.exclusive.lock().unwrap();
         write_buf.reset();
         exclusive.write_pool.push(write_buf);
-        0
+        msquic::QUIC_STATUS_SUCCESS
     }
 
     fn handle_event_peer_send_shutdown(_stream: msquic::Handle, inner: &StreamInner) -> u32 {
@@ -804,7 +804,7 @@ impl StreamInstance {
             .read_waiters
             .drain(..)
             .for_each(|waker| waker.wake());
-        0
+        msquic::QUIC_STATUS_SUCCESS
     }
 
     fn handle_event_peer_send_aborted(
@@ -824,7 +824,7 @@ impl StreamInstance {
             .read_waiters
             .drain(..)
             .for_each(|waker| waker.wake());
-        0
+        msquic::QUIC_STATUS_SUCCESS
     }
 
     fn handle_event_peer_receive_aborted(
@@ -844,7 +844,7 @@ impl StreamInstance {
             .write_shutdown_waiters
             .drain(..)
             .for_each(|waker| waker.wake());
-        0
+        msquic::QUIC_STATUS_SUCCESS
     }
 
     fn handle_event_send_shutdown_complete(
@@ -863,7 +863,7 @@ impl StreamInstance {
             .write_shutdown_waiters
             .drain(..)
             .for_each(|waker| waker.wake());
-        0
+        msquic::QUIC_STATUS_SUCCESS
     }
 
     fn handle_event_shutdown_complete(
@@ -914,7 +914,7 @@ impl StreamInstance {
         unsafe {
             Arc::from_raw(inner as *const _);
         }
-        0
+        msquic::QUIC_STATUS_SUCCESS
     }
 
     fn handle_event_ideal_send_buffer_size(
@@ -927,7 +927,7 @@ impl StreamInstance {
             inner,
             inner.shared.id.read()
         );
-        0
+        msquic::QUIC_STATUS_SUCCESS
     }
 
     fn handle_event_peer_accepted(_stream: msquic::Handle, inner: &StreamInner) -> u32 {
@@ -946,7 +946,7 @@ impl StreamInstance {
             .start_waiters
             .drain(..)
             .for_each(|waker| waker.wake());
-        0
+        msquic::QUIC_STATUS_SUCCESS
     }
 
     extern "C" fn native_callback(
@@ -1001,7 +1001,7 @@ impl StreamInstance {
             msquic::STREAM_EVENT_PEER_ACCEPTED => Self::handle_event_peer_accepted(stream, inner),
             _ => {
                 trace!("Stream({:p}) Other callback {}", inner, event.event_type);
-                0
+                msquic::QUIC_STATUS_SUCCESS
             }
         }
     }
