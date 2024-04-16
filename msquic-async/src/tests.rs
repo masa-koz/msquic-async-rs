@@ -1,6 +1,6 @@
 use super::{
     Connection, ConnectionError, ConnectionStartError, CredentialConfigCertFile, ListenError,
-    Listener, ReadError, StreamRecvBuffer, StreamStartError, WriteError, MSQUIC_API,
+    Listener, ReadError, StreamRecvBuffer, StreamStartError, WriteError,
 };
 
 use std::future::poll_fn;
@@ -25,9 +25,10 @@ async fn connection_validation() {
     let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let registration = msquic::Registration::new(&*MSQUIC_API, ptr::null()).unwrap();
+    let api = msquic::Api::new().unwrap();
+    let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
 
-    let listener = new_server(&registration).expect("new_server");
+    let listener = new_server(&registration, &api).expect("new_server");
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
     listener
         .start(&[msquic::Buffer::from("test")], Some(addr))
@@ -65,8 +66,8 @@ async fn connection_validation() {
     });
 
     let client_config = new_client_config(&registration).expect("new_client_config");
-    let conn = Connection::new(msquic::Connection::new(&registration), &registration);
-    let conn1 = Connection::new(msquic::Connection::new(&registration), &registration);
+    let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
+    let conn1 = Connection::new(msquic::Connection::new(&registration), &registration, &api);
     set.spawn(async move {
         let res = conn
             .start(
@@ -117,8 +118,9 @@ async fn connection_validation() {
 
 #[test(tokio::test)]
 async fn stream_validation() {
-    let registration = msquic::Registration::new(&*MSQUIC_API, ptr::null()).unwrap();
-    let listener = new_server(&registration).expect("new_server");
+    let api = msquic::Api::new().unwrap();
+    let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
+    let listener = new_server(&registration, &api).expect("new_server");
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
     listener
         .start(&[msquic::Buffer::from("test")], Some(addr))
@@ -323,7 +325,7 @@ async fn stream_validation() {
     });
 
     let client_config = new_client_config(&registration).expect("new_client_config");
-    let conn = Connection::new(msquic::Connection::new(&registration), &registration);
+    let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
 
     set.spawn(async move {
         let mut buf = [0; 1024];
@@ -552,9 +554,10 @@ async fn stream_recv_buffer_validation() {
     //let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let registration = msquic::Registration::new(&*MSQUIC_API, ptr::null()).unwrap();
+    let api = msquic::Api::new().unwrap();
+    let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
 
-    let listener = new_server(&registration).expect("new_server");
+    let listener = new_server(&registration, &api).expect("new_server");
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
     listener
         .start(&[msquic::Buffer::from("test")], Some(addr))
@@ -600,7 +603,7 @@ async fn stream_recv_buffer_validation() {
     });
 
     let client_config = new_client_config(&registration).expect("new_client_config");
-    let conn = Connection::new(msquic::Connection::new(&registration), &registration);
+    let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
     set.spawn(async move {
         let res = conn
             .start(
@@ -698,9 +701,10 @@ async fn datagram_validation() {
     //let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let registration = msquic::Registration::new(&*MSQUIC_API, ptr::null()).unwrap();
+    let api = msquic::Api::new().unwrap();
+    let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
 
-    let listener = new_server(&registration).expect("new_server");
+    let listener = new_server(&registration, &api).expect("new_server");
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
     listener
         .start(&[msquic::Buffer::from("test")], Some(addr))
@@ -722,7 +726,7 @@ async fn datagram_validation() {
     });
 
     let client_config = new_client_config(&registration).expect("new_client_config");
-    let conn = Connection::new(msquic::Connection::new(&registration), &registration);
+    let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
     set.spawn(async move {
         let res = conn
             .start(
@@ -753,7 +757,7 @@ async fn datagram_validation() {
     });
 }
 
-fn new_server(registration: &msquic::Registration) -> Result<Listener> {
+fn new_server(registration: &msquic::Registration, api: &msquic::Api) -> Result<Listener> {
     let alpn = [msquic::Buffer::from("test")];
     let configuration = msquic::Configuration::new(
         registration,
@@ -771,6 +775,7 @@ fn new_server(registration: &msquic::Registration) -> Result<Listener> {
         msquic::Listener::new(registration),
         registration,
         configuration,
+        api,
     );
     Ok(listener)
 }

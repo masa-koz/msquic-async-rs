@@ -30,6 +30,7 @@ unsafe impl Send for ListenerInnerExclusive {}
 struct ListenerInnerShared {
     msquic_listener: msquic::Listener,
     configuration: msquic::Configuration,
+    msquic_api: msquic::Api,
 }
 unsafe impl Sync for ListenerInnerShared {}
 unsafe impl Send for ListenerInnerShared {}
@@ -47,6 +48,7 @@ impl Listener {
         msquic_listener: msquic::Listener,
         registration: &msquic::Registration,
         configuration: msquic::Configuration,
+        msquic_api: &msquic::Api,
     ) -> Self {
         let inner = Box::new(ListenerInner {
             exclusive: Mutex::new(ListenerInnerExclusive {
@@ -58,6 +60,7 @@ impl Listener {
             shared: ListenerInnerShared {
                 msquic_listener,
                 configuration,
+                msquic_api: msquic_api.clone(),
             },
         });
         {
@@ -172,7 +175,7 @@ impl Listener {
     ) -> u32 {
         trace!("Listener({:p}) new connection event", inner);
 
-        let new_conn = Connection::from_handle(payload.connection);
+        let new_conn = Connection::from_handle(payload.connection, &inner.shared.msquic_api);
         new_conn.set_configuration(&inner.shared.configuration);
 
         let mut exclusive = inner.exclusive.lock().unwrap();

@@ -37,10 +37,11 @@ struct ConnectionInnerExclusive {
 
 struct ConnectionInnerShared {
     msquic_conn: msquic::Connection,
+    msquic_api: msquic::Api,
 }
 
 impl Connection {
-    pub fn new(msquic_conn: msquic::Connection, registration: &msquic::Registration) -> Self {
+    pub fn new(msquic_conn: msquic::Connection, registration: &msquic::Registration, api: &msquic::Api) -> Self {
         let inner = Arc::new(ConnectionInner {
             exclusive: Mutex::new(ConnectionInnerExclusive {
                 state: ConnectionState::Open,
@@ -53,7 +54,10 @@ impl Connection {
                 write_pool: Vec::new(),
                 shutdown_waiters: Vec::new(),
             }),
-            shared: ConnectionInnerShared { msquic_conn },
+            shared: ConnectionInnerShared {
+                msquic_conn,
+                msquic_api: api.clone(),
+            },
         });
         inner.shared.msquic_conn.open(
             registration,
@@ -65,8 +69,8 @@ impl Connection {
         Self(Arc::new(ConnectionInstance(inner)))
     }
 
-    pub(crate) fn from_handle(conn: msquic::Handle) -> Self {
-        let msquic_conn = msquic::Connection::from_parts(conn, &*crate::MSQUIC_API);
+    pub(crate) fn from_handle(conn: msquic::Handle, api: &msquic::Api) -> Self {
+        let msquic_conn = msquic::Connection::from_parts(conn, api);
         let inner = Arc::new(ConnectionInner {
             exclusive: Mutex::new(ConnectionInnerExclusive {
                 state: ConnectionState::Connected,
@@ -79,7 +83,10 @@ impl Connection {
                 write_pool: Vec::new(),
                 shutdown_waiters: Vec::new(),
             }),
-            shared: ConnectionInnerShared { msquic_conn },
+            shared: ConnectionInnerShared {
+                msquic_conn,
+                msquic_api: api.clone(),
+            },
         });
         inner.shared.msquic_conn.set_callback_handler(
             Self::native_callback,
@@ -392,7 +399,7 @@ impl Connection {
             inner, stream_type
         );
 
-        let stream = Stream::from_handle(payload.stream, stream_type);
+        let stream = Stream::from_handle(payload.stream, &inner.shared.msquic_api, stream_type);
         {
             let mut exclusive = inner.exclusive.lock().unwrap();
             exclusive.inbound_streams.push_back(stream);
@@ -667,6 +674,7 @@ impl Future for OpenOutboundStream<'_> {
         if stream.is_none() {
             *stream = Some(Stream::open(
                 &conn.shared.msquic_conn,
+                &conn.shared.msquic_api,
                 stream_type.take().unwrap(),
             ));
         }

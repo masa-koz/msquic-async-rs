@@ -89,8 +89,8 @@ enum StreamSendState {
 }
 
 impl Stream {
-    pub(crate) fn open(msquic_conn: &msquic::Connection, stream_type: StreamType) -> Self {
-        let msquic_stream = msquic::Stream::new(&*crate::MSQUIC_API as *const _ as *const c_void);
+    pub(crate) fn open(msquic_conn: &msquic::Connection, msquic_api: &msquic::Api, stream_type: StreamType) -> Self {
+        let msquic_stream = msquic::Stream::new(msquic_api as *const _ as *const c_void);
         let flags = if stream_type == StreamType::Unidirectional {
             msquic::STREAM_OPEN_FLAG_UNIDIRECTIONAL
         } else {
@@ -131,8 +131,8 @@ impl Stream {
         Self(Arc::new(StreamInstance(inner)))
     }
 
-    pub(crate) fn from_handle(stream: msquic::Handle, stream_type: StreamType) -> Self {
-        let msquic_stream = msquic::Stream::from_parts(stream, &*crate::MSQUIC_API);
+    pub(crate) fn from_handle(stream: msquic::Handle, msquic_api: &msquic::Api, stream_type: StreamType) -> Self {
+        let msquic_stream = msquic::Stream::from_parts(stream, msquic_api);
         let send_state = if stream_type == StreamType::Bidirectional {
             StreamSendState::StartComplete
         } else {
