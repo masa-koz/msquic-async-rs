@@ -9,7 +9,7 @@ edition = "2021"
 default = ["tokio"]
 
 [dependencies]
-msquic = { path = "../../msquic" }
+msquic = { git = "https://github.com/masa-koz/msquic.git", branch = "msquic-async" }
 bytes = "1.5.0"
 futures-io = "0.3.30"
 libc = "0.2.153"
