@@ -288,6 +288,41 @@ impl Connection {
         Poll::Ready(Ok(()))
     }
 
+    pub fn send_datagram(
+        &self,
+        buf: &Bytes,
+    ) -> Result<(), DgramSendError> {
+        let mut exclusive = self.0.exclusive.lock().unwrap();
+        match exclusive.state {
+            ConnectionState::Open => {
+                return Err(DgramSendError::ConnectionNotStarted);
+            }
+            ConnectionState::Connecting => {
+                return Err(DgramSendError::ConnectionNotStarted);
+            }
+            ConnectionState::Connected => {}
+            ConnectionState::Shutdown | ConnectionState::ShutdownComplete => {
+                return Err(DgramSendError::ConnectionLost(
+                    exclusive.error.as_ref().expect("error").clone(),
+                ));
+            }
+        }
+
+        let mut write_buf = exclusive
+            .write_pool
+            .pop()
+            .unwrap_or_else(|| WriteBuffer::new());
+        let _ = write_buf.put_zerocopy(buf);
+        let (buffer, buffer_count) = write_buf.get_buffer();
+        self.0.shared.msquic_conn.datagram_send(
+            buffer,
+            buffer_count,
+            msquic::SEND_FLAG_NONE,
+            write_buf.into_raw() as *const _ as *const c_void,
+        ).unwrap();
+        Ok(())
+    }
+
     pub fn poll_shutdown(
         &self,
         cx: &mut Context<'_>,

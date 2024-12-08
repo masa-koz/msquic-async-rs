@@ -89,7 +89,11 @@ enum StreamSendState {
 }
 
 impl Stream {
-    pub(crate) fn open(msquic_conn: &msquic::Connection, msquic_api: &msquic::Api, stream_type: StreamType) -> Self {
+    pub(crate) fn open(
+        msquic_conn: &msquic::Connection,
+        msquic_api: &msquic::Api,
+        stream_type: StreamType,
+    ) -> Self {
         let msquic_stream = msquic::Stream::new(msquic_api);
         let flags = if stream_type == StreamType::Unidirectional {
             msquic::STREAM_OPEN_FLAG_UNIDIRECTIONAL
@@ -120,18 +124,26 @@ impl Stream {
                 stream_type,
             },
         });
-        inner.shared.msquic_stream.open(
-            msquic_conn,
-            flags,
-            StreamInstance::native_callback,
-            Arc::into_raw(inner.clone()) as *const c_void,
-        ).unwrap();
+        inner
+            .shared
+            .msquic_stream
+            .open(
+                msquic_conn,
+                flags,
+                StreamInstance::native_callback,
+                Arc::into_raw(inner.clone()) as *const c_void,
+            )
+            .unwrap();
         trace!("Stream({:p}) Open by local", &*inner);
 
         Self(Arc::new(StreamInstance(inner)))
     }
 
-    pub(crate) fn from_handle(stream: msquic::Handle, msquic_api: &msquic::Api, stream_type: StreamType) -> Self {
+    pub(crate) fn from_handle(
+        stream: msquic::Handle,
+        msquic_api: &msquic::Api,
+        stream_type: StreamType,
+    ) -> Self {
         let msquic_stream = msquic::Stream::from_parts(stream, msquic_api);
         let send_state = if stream_type == StreamType::Bidirectional {
             StreamSendState::StartComplete
@@ -183,15 +195,19 @@ impl Stream {
         let mut exclusive = self.0.exclusive.lock().unwrap();
         match exclusive.state {
             StreamState::Open => {
-                self.0.shared.msquic_stream.start(
-                    msquic::STREAM_START_FLAG_SHUTDOWN_ON_FAIL
-                        | msquic::STREAM_START_FLAG_INDICATE_PEER_ACCEPT
-                        | if failed_on_block {
-                            msquic::STREAM_START_FLAG_FAIL_BLOCKED
-                        } else {
-                            msquic::STREAM_START_FLAG_NONE
-                        },
-                ).unwrap();
+                self.0
+                    .shared
+                    .msquic_stream
+                    .start(
+                        msquic::STREAM_START_FLAG_SHUTDOWN_ON_FAIL
+                            | msquic::STREAM_START_FLAG_INDICATE_PEER_ACCEPT
+                            | if failed_on_block {
+                                msquic::STREAM_START_FLAG_FAIL_BLOCKED
+                            } else {
+                                msquic::STREAM_START_FLAG_NONE
+                            },
+                    )
+                    .unwrap();
                 exclusive.state = StreamState::Start;
                 if self.0.shared.stream_type == StreamType::Bidirectional {
                     exclusive.recv_state = StreamRecvState::Start;
@@ -205,10 +221,11 @@ impl Stream {
                         return Poll::Ready(Ok(()));
                     }
                     return Poll::Ready(Err(match start_status {
-                        msquic::QUIC_STATUS_STREAM_LIMIT_REACHED  => StartError::LimitReached,
-                        msquic::QUIC_STATUS_ABORTED |
-                        msquic::QUIC_STATUS_INVALID_STATE =>  {
-                            StartError::ConnectionLost(exclusive.conn_error.as_ref().expect("conn_error").clone())
+                        msquic::QUIC_STATUS_STREAM_LIMIT_REACHED => StartError::LimitReached,
+                        msquic::QUIC_STATUS_ABORTED | msquic::QUIC_STATUS_INVALID_STATE => {
+                            StartError::ConnectionLost(
+                                exclusive.conn_error.as_ref().expect("conn_error").clone(),
+                            )
                         }
                         _ => StartError::Unknown(start_status),
                     }));
@@ -281,6 +298,10 @@ impl Stream {
         error_code: u64,
     ) -> Poll<Result<(), WriteError>> {
         self.0.poll_abort_write(cx, error_code)
+    }
+
+    pub fn abort_write(&mut self, error_code: u64) -> Result<(), WriteError> {
+        self.0.abort_write(error_code)
     }
 
     pub fn poll_abort_read(
@@ -357,6 +378,13 @@ impl WriteStream {
         error_code: u64,
     ) -> Poll<Result<(), WriteError>> {
         self.0.poll_abort_write(cx, error_code)
+    }
+
+    pub fn abort_write(
+        &mut self,
+        error_code: u64,
+    ) -> Result<(), WriteError> {
+        self.0.abort_write(error_code)
     }
 }
 
@@ -565,22 +593,30 @@ impl StreamInstance {
         let (buffer, buffer_count) = write_buf.get_buffer();
         match status {
             WriteStatus::Writable(val) | WriteStatus::Blocked(Some(val)) => {
-                self.0.shared.msquic_stream.send(
-                    buffer,
-                    buffer_count,
-                    msquic::SEND_FLAG_NONE,
-                    write_buf.into_raw() as *const _ as *const c_void,
-                ).unwrap();
+                self.0
+                    .shared
+                    .msquic_stream
+                    .send(
+                        buffer,
+                        buffer_count,
+                        msquic::SEND_FLAG_NONE,
+                        write_buf.into_raw() as *const _ as *const c_void,
+                    )
+                    .unwrap();
                 Poll::Ready(Ok(Some(val)))
             }
             WriteStatus::Blocked(None) => unreachable!(),
             WriteStatus::Finished(val) => {
-                self.0.shared.msquic_stream.send(
-                    buffer,
-                    buffer_count,
-                    msquic::SEND_FLAG_FIN,
-                    write_buf.into_raw() as *const _ as *const c_void,
-                ).unwrap();
+                self.0
+                    .shared
+                    .msquic_stream
+                    .send(
+                        buffer,
+                        buffer_count,
+                        msquic::SEND_FLAG_FIN,
+                        write_buf.into_raw() as *const _ as *const c_void,
+                    )
+                    .unwrap();
                 Poll::Ready(Ok(val))
             }
         }
@@ -656,6 +692,38 @@ impl StreamInstance {
         }
         exclusive.write_shutdown_waiters.push(cx.waker().clone());
         Poll::Pending
+    }
+
+    pub(crate) fn abort_write(&self, error_code: u64) -> Result<(), WriteError> {
+        let mut exclusive = self.0.exclusive.lock().unwrap();
+        match exclusive.send_state {
+            StreamSendState::Start => {
+                return Err(WriteError::Closed);
+            }
+            StreamSendState::StartComplete => {
+                self.0
+                    .shared
+                    .msquic_stream
+                    .shutdown(msquic::STREAM_SHUTDOWN_FLAG_ABORT_SEND, error_code);
+                exclusive.send_state = StreamSendState::Shutdown;
+                return Ok(());
+            }
+            StreamSendState::Shutdown => return Err(WriteError::Finished),
+            StreamSendState::ShutdownComplete => {
+                if let Some(conn_error) = &exclusive.conn_error {
+                    return Err(WriteError::ConnectionLost(conn_error.clone()));
+                } else {
+                    if let Some(error_code) = &exclusive.send_error_code {
+                        return Err(WriteError::Stopped(*error_code));
+                    } else {
+                        return Ok(());
+                    }
+                }
+            }
+            _ => {
+                return Err(WriteError::Closed);
+            }
+        }
     }
 
     pub(crate) fn poll_abort_read(
@@ -1045,7 +1113,7 @@ impl StreamInner {
             buffer_range.end - buffer_range.start
         );
 
-        let complete_len = if !buffer_range.is_empty(){
+        let complete_len = if !buffer_range.is_empty() {
             let mut exclusive = self.exclusive.lock().unwrap();
             exclusive.read_complete_map.insert(buffer_range);
             let complete_range = exclusive.read_complete_map.first().unwrap();
