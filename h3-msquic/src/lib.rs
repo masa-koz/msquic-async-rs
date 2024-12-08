@@ -349,11 +349,8 @@ where
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all, level = "trace"))]
-    fn close(&mut self, code: h3::error::Code, reason: &[u8]) {
-        // self.conn.close(
-        //     VarInt::from_u64(code.value()).expect("error code VarInt"),
-        //     reason,
-        // );
+    fn close(&mut self, code: h3::error::Code, _reason: &[u8]) {
+        self.conn.shutdown(code.value()).ok();
     }
 }
 
@@ -465,11 +462,8 @@ where
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all, level = "trace"))]
-    fn close(&mut self, code: h3::error::Code, reason: &[u8]) {
-        // self.conn.close(
-        //     VarInt::from_u64(code.value()).expect("error code VarInt"),
-        //     reason,
-        // );
+    fn close(&mut self, code: h3::error::Code, _reason: &[u8]) {
+        self.conn.shutdown(code.value()).ok();
     }
 }
 
