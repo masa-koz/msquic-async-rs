@@ -21,8 +21,7 @@ async fn main() -> anyhow::Result<()> {
             .set_stream_multi_receive_enabled(false),
     )
     .unwrap();
-    let mut cred_config = msquic::CredentialConfig::new_client();
-    cred_config.cred_flags |= msquic::CREDENTIAL_FLAG_NO_CERTIFICATE_VALIDATION;
+    let cred_config = msquic::CredentialConfig::new_client();
     configuration.load_credential(&cred_config).unwrap();
 
     let conn =
@@ -33,7 +32,7 @@ async fn main() -> anyhow::Result<()> {
     
     let drive = async move {
         future::poll_fn(|cx| driver.poll_close(cx)).await?;
-        Ok::<(), Box<dyn std::error::Error>>(())
+        Ok::<(), anyhow::Error>(())
     };
     let request = async move {
         println!("sending request ...");
@@ -62,15 +61,15 @@ async fn main() -> anyhow::Result<()> {
             out.flush().await?;
         }
 
-        Ok::<_, Box<dyn std::error::Error>>(())
+        Ok::<_, anyhow::Error>(())
     };
 
     let (req_res, drive_res) = tokio::join!(request, drive);
-    // req_res?;
-    // drive_res?;
+    req_res?;
+    drive_res?;
 
     // wait for the connection to be closed before exiting
-    let duration = std::time::Duration::from_millis(10000);
-    std::thread::sleep(duration);
+    // let duration = std::time::Duration::from_millis(10000);
+    // std::thread::sleep(duration);
     Ok(())
 }
