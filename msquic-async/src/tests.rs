@@ -275,30 +275,24 @@ async fn stream_validation() {
 
         std::mem::drop(write);
 
-        let mut stream = conn
-            .accept_inbound_stream()
+        let mut read = conn
+            .accept_inbound_uni_stream()
             .await
             .expect("accept_inbound_stream");
 
         let mut buf = [0; 1024];
-        let res = poll_fn(|cx| stream.poll_read(cx, &mut buf)).await;
+        let res = poll_fn(|cx| read.poll_read(cx, &mut buf)).await;
         assert_eq!(res, Ok(11));
         assert_eq!(&buf[0..11], b"hello world");
 
         server_tx.send(()).await.expect("send");
 
-        std::mem::drop(stream);
+        std::mem::drop(read);
 
-        let stream = conn
-            .accept_inbound_stream()
+        let mut read = conn
+            .accept_inbound_uni_stream()
             .await
-            .expect("accept_inbound_stream");
-
-        let (read, write) = stream.split();
-        assert!(read.is_some());
-        assert!(write.is_none());
-
-        let mut read = read.unwrap();
+            .expect("accept_inbound_uni_stream");
 
         let res = poll_fn(|cx| read.poll_read(cx, &mut buf)).await;
         assert_eq!(res, Ok(11));
@@ -573,12 +567,12 @@ async fn stream_recv_buffer_validation() {
         assert!(res.is_ok());
 
         let conn = res.expect("accept");
-        let stream = conn
-            .accept_inbound_stream()
+        let read_stream = conn
+            .accept_inbound_uni_stream()
             .await
             .expect("accept_inbound_stream");
 
-        let res = poll_fn(|cx| stream.poll_read_chunk(cx)).await;
+        let res = poll_fn(|cx| read_stream.poll_read_chunk(cx)).await;
         assert!(res.is_ok());
         let chunk = res.expect("poll_read_chunk");
         assert!(chunk.is_some());
@@ -592,7 +586,7 @@ async fn stream_recv_buffer_validation() {
 
         server_tx.send(()).await.expect("send");
 
-        let res = poll_fn(|cx| stream.poll_read_chunk(cx)).await;
+        let res = poll_fn(|cx| read_stream.poll_read_chunk(cx)).await;
         assert!(res.is_ok());
         let chunk = res.expect("poll_read_chunk");
         assert!(chunk.is_some());

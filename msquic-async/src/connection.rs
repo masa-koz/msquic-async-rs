@@ -1,5 +1,5 @@
 use crate::buffer::WriteBuffer;
-use crate::stream::{StartError as StreamStartError, Stream, StreamType};
+use crate::stream::{StartError as StreamStartError, Stream, ReadStream, StreamType};
 
 use std::collections::VecDeque;
 use std::future::Future;
@@ -28,7 +28,9 @@ struct ConnectionInnerExclusive {
     error: Option<ConnectionError>,
     start_waiters: Vec<Waker>,
     inbound_stream_waiters: Vec<Waker>,
+    inbound_uni_stream_waiters: Vec<Waker>,
     inbound_streams: VecDeque<crate::stream::Stream>,
+    inbound_uni_streams: VecDeque<crate::stream::ReadStream>,
     recv_buffers: VecDeque<Bytes>,
     recv_waiters: Vec<Waker>,
     write_pool: Vec<WriteBuffer>,
@@ -48,7 +50,9 @@ impl Connection {
                 error: None,
                 start_waiters: Vec::new(),
                 inbound_stream_waiters: Vec::new(),
+                inbound_uni_stream_waiters: Vec::new(),
                 inbound_streams: VecDeque::new(),
+                inbound_uni_streams: VecDeque::new(),
                 recv_buffers: VecDeque::new(),
                 recv_waiters: Vec::new(),
                 write_pool: Vec::new(),
@@ -77,7 +81,9 @@ impl Connection {
                 error: None,
                 start_waiters: Vec::new(),
                 inbound_stream_waiters: Vec::new(),
+                inbound_uni_stream_waiters: Vec::new(),
                 inbound_streams: VecDeque::new(),
+                inbound_uni_streams: VecDeque::new(),
                 recv_buffers: VecDeque::new(),
                 recv_waiters: Vec::new(),
                 write_pool: Vec::new(),
@@ -181,6 +187,38 @@ impl Connection {
             return Poll::Ready(Ok(exclusive.inbound_streams.pop_front().unwrap()));
         }
         exclusive.inbound_stream_waiters.push(cx.waker().clone());
+        Poll::Pending
+    }
+
+    pub fn accept_inbound_uni_stream(&self) -> AcceptInboundUniStream<'_> {
+        AcceptInboundUniStream { conn: &self }
+    }
+
+    pub fn poll_accept_inbound_uni_stream(
+        &self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<ReadStream, StreamStartError>> {
+        let mut exclusive = self.0.exclusive.lock().unwrap();
+        match exclusive.state {
+            ConnectionState::Open => {
+                return Poll::Ready(Err(StreamStartError::ConnectionNotStarted));
+            }
+            ConnectionState::Connecting => {
+                exclusive.start_waiters.push(cx.waker().clone());
+                return Poll::Pending;
+            }
+            ConnectionState::Connected => {}
+            ConnectionState::Shutdown | ConnectionState::ShutdownComplete => {
+                return Poll::Ready(Err(StreamStartError::ConnectionLost(
+                    exclusive.error.as_ref().expect("error").clone(),
+                )));
+            }
+        }
+
+        if !exclusive.inbound_uni_streams.is_empty() {
+            return Poll::Ready(Ok(exclusive.inbound_uni_streams.pop_front().unwrap()));
+        }
+        exclusive.inbound_uni_stream_waiters.push(cx.waker().clone());
         Poll::Pending
     }
 
@@ -400,13 +438,26 @@ impl Connection {
         );
 
         let stream = Stream::from_handle(payload.stream, &inner.shared.msquic_api, stream_type);
-        {
-            let mut exclusive = inner.exclusive.lock().unwrap();
-            exclusive.inbound_streams.push_back(stream);
-            exclusive
-                .inbound_stream_waiters
-                .drain(..)
-                .for_each(|waker| waker.wake());
+        if (payload.flags & msquic::STREAM_OPEN_FLAG_UNIDIRECTIONAL) != 0 {
+            if let (Some(read_stream), None) = stream.split() {
+                let mut exclusive = inner.exclusive.lock().unwrap();
+                exclusive.inbound_uni_streams.push_back(read_stream);
+                exclusive
+                    .inbound_uni_stream_waiters
+                    .drain(..)
+                    .for_each(|waker| waker.wake());
+            } else {
+                unreachable!();
+            }
+        } else {
+            {
+                let mut exclusive = inner.exclusive.lock().unwrap();
+                exclusive.inbound_streams.push_back(stream);
+                exclusive
+                    .inbound_stream_waiters
+                    .drain(..)
+                    .for_each(|waker| waker.wake());
+            }
         }
 
         msquic::QUIC_STATUS_SUCCESS
@@ -694,5 +745,16 @@ impl Future for AcceptInboundStream<'_> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.conn.poll_accept_inbound_stream(cx)
+    }
+}
+pub struct AcceptInboundUniStream<'a> {
+    conn: &'a Connection,
+}
+
+impl Future for AcceptInboundUniStream<'_> {
+    type Output = Result<ReadStream, StreamStartError>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.conn.poll_accept_inbound_uni_stream(cx)
     }
 }
