@@ -6,8 +6,7 @@ use std::net::SocketAddr;
 use std::sync::Mutex;
 use std::task::{Context, Poll, Waker};
 
-use libc::{c_void, sockaddr};
-use socket2::SockAddr;
+use libc::c_void;
 use thiserror::Error;
 use tracing::trace;
 
@@ -64,11 +63,15 @@ impl Listener {
             },
         });
         {
-            inner.shared.msquic_listener.open(
-                registration,
-                Self::native_callback,
-                &*inner as *const _ as *const c_void,
-            ).unwrap();
+            inner
+                .shared
+                .msquic_listener
+                .open(
+                    registration,
+                    Self::native_callback,
+                    &*inner as *const _ as *const c_void,
+                )
+                .unwrap();
         }
         Self(inner)
     }
@@ -85,13 +88,12 @@ impl Listener {
                 return Err(ListenError::AlreadyStarted);
             }
         }
-        let local_address: Option<SockAddr> = local_address.map(|x| x.into());
-        let local_address: Option<*const sockaddr> =
-            local_address.as_ref().map(|x| x.as_ptr() as _);
+        let local_address: Option<msquic::Addr> = local_address.map(|x| x.into());
         self.0
             .shared
             .msquic_listener
-            .start(alpn.as_ref(), local_address).unwrap();
+            .start(alpn.as_ref(), local_address.as_ref())
+            .unwrap();
         exclusive.state = ListenerState::StartComplete;
         Ok(())
     }
@@ -125,22 +127,12 @@ impl Listener {
     }
 
     pub fn local_addr(&self) -> Result<SocketAddr, ListenError> {
-        unsafe {
-            SockAddr::try_init(|addr, len| {
-                let status = self.0.shared.msquic_listener.get_param(
-                    msquic::PARAM_LISTENER_LOCAL_ADDRESS,
-                    len as _,
-                    addr as _,
-                );
-                if msquic::Status::succeeded(status) {
-                    Ok(())
-                } else {
-                    Err(std::io::Error::from(std::io::ErrorKind::Other))
-                }
-            })
-            .map(|((), addr)| addr.as_socket().expect("socketaddr"))
+        self.0
+            .shared
+            .msquic_listener
+            .get_local_addr()
+            .map(|addr| addr.as_socket().expect("not a socket address"))
             .map_err(|_| ListenError::Failed)
-        }
     }
 
     pub fn poll_stop(&self, cx: &mut Context<'_>) -> Poll<Result<(), ListenError>> {

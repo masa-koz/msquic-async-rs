@@ -90,7 +90,7 @@ enum StreamSendState {
 
 impl Stream {
     pub(crate) fn open(msquic_conn: &msquic::Connection, msquic_api: &msquic::Api, stream_type: StreamType) -> Self {
-        let msquic_stream = msquic::Stream::new(msquic_api as *const _ as *const c_void);
+        let msquic_stream = msquic::Stream::new(msquic_api);
         let flags = if stream_type == StreamType::Unidirectional {
             msquic::STREAM_OPEN_FLAG_UNIDIRECTIONAL
         } else {
@@ -597,8 +597,7 @@ impl StreamInstance {
                 self.0
                     .shared
                     .msquic_stream
-                    .shutdown(msquic::STREAM_SHUTDOWN_FLAG_GRACEFUL, 0)
-                    .unwrap();
+                    .shutdown(msquic::STREAM_SHUTDOWN_FLAG_GRACEFUL, 0);
                 exclusive.send_state = StreamSendState::Shutdown;
             }
             StreamSendState::Shutdown => {}
@@ -636,8 +635,7 @@ impl StreamInstance {
                 self.0
                     .shared
                     .msquic_stream
-                    .shutdown(msquic::STREAM_SHUTDOWN_FLAG_ABORT_SEND, error_code)
-                    .unwrap();
+                    .shutdown(msquic::STREAM_SHUTDOWN_FLAG_ABORT_SEND, error_code);
                 exclusive.send_state = StreamSendState::Shutdown;
             }
             StreamSendState::Shutdown => {}
@@ -675,8 +673,7 @@ impl StreamInstance {
                 self.0
                     .shared
                     .msquic_stream
-                    .shutdown(msquic::STREAM_SHUTDOWN_FLAG_ABORT_RECEIVE, error_code)
-                    .unwrap();
+                    .shutdown(msquic::STREAM_SHUTDOWN_FLAG_ABORT_RECEIVE, error_code);
                 exclusive.recv_state = StreamRecvState::ShutdownComplete;
                 exclusive
                     .read_waiters
@@ -714,12 +711,12 @@ impl StreamInstance {
             inner,
             inner.shared.id.read(),
             payload.status,
-            payload.flags.peer_accepted(),
+            payload.bit_flags.peer_accepted(),
             payload.id,
         );
         let mut exclusive = inner.exclusive.lock().unwrap();
         exclusive.start_status = Some(payload.status);
-        if msquic::Status::succeeded(payload.status) && payload.flags.peer_accepted() == 1 {
+        if msquic::Status::succeeded(payload.status) && payload.bit_flags.peer_accepted() == 1 {
             exclusive.state = StreamState::StartComplete;
             if inner.shared.stream_type == StreamType::Bidirectional {
                 exclusive.recv_state = StreamRecvState::StartComplete;
@@ -728,7 +725,7 @@ impl StreamInstance {
         }
 
         if payload.status == msquic::QUIC_STATUS_STREAM_LIMIT_REACHED
-            || payload.flags.peer_accepted() == 1
+            || payload.bit_flags.peer_accepted() == 1
         {
             exclusive
                 .start_waiters
@@ -1023,7 +1020,7 @@ impl Drop for StreamInstance {
                         | msquic::STREAM_SHUTDOWN_FLAG_ABORT_RECEIVE
                         | msquic::STREAM_SHUTDOWN_FLAG_IMMEDIATE,
                     0,
-                ).unwrap();
+                );
             }
             StreamState::ShutdownComplete => {}
         }

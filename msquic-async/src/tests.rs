@@ -21,19 +21,20 @@ use tokio::task::JoinSet;
 use tokio::time::timeout;
 
 #[test(tokio::test)]
-async fn connection_validation() {
+async fn connection_validation() -> Result<()> {
     let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let api = msquic::Api::new().unwrap();
-    let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
+    let api =
+        msquic::Api::new().map_err(|status| anyhow::anyhow!("Api::new failed: 0x{:x}", status))?;
+    let registration = msquic::Registration::new(&api, ptr::null())
+        .map_err(|status| anyhow::anyhow!("Registration::new failed: 0x{:x}", status))?;
 
-    let listener = new_server(&registration, &api).expect("new_server");
-    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let listener = new_server(&registration, &api)?;
+    let addr: SocketAddr = "127.0.0.1:0".parse()?;
     listener
-        .start(&[msquic::Buffer::from("test")], Some(addr))
-        .expect("listener start");
-    let server_addr = listener.local_addr().expect("listener local_addr");
+        .start(&[msquic::Buffer::from("test")], Some(addr))?;
+    let server_addr = listener.local_addr()?;
 
     let mut set = JoinSet::new();
 
@@ -42,7 +43,7 @@ async fn connection_validation() {
         assert!(res.is_ok());
         server_rx.recv().await.expect("recv");
 
-        let conn = res.expect("accept");
+        let conn = res?;
         let res = conn
             .open_outbound_stream(crate::StreamType::Bidirectional, false)
             .await;
@@ -65,7 +66,7 @@ async fn connection_validation() {
         Ok::<_, anyhow::Error>(())
     });
 
-    let client_config = new_client_config(&registration).expect("new_client_config");
+    let client_config = new_client_config(&registration)?;
     let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
     let conn1 = Connection::new(msquic::Connection::new(&registration), &registration, &api);
     set.spawn(async move {
@@ -114,6 +115,7 @@ async fn connection_validation() {
             }
         }
     });
+    Ok(())
 }
 
 #[test(tokio::test)]
@@ -648,7 +650,11 @@ async fn stream_recv_buffer_validation() {
 
 #[test]
 fn test_stream_recv_buffers() {
-    let buffers = vec![msquic::Buffer::from("hello "), msquic::Buffer::from("world"), msquic::Buffer::from("!")];
+    let buffers = vec![
+        msquic::Buffer::from("hello "),
+        msquic::Buffer::from("world"),
+        msquic::Buffer::from("!"),
+    ];
     let mut buffer = StreamRecvBuffer::new(0, &buffers, false);
     assert_eq!(buffer.remaining(), 12);
     assert_eq!(buffer.fin(), false);
@@ -768,15 +774,13 @@ fn new_server(registration: &msquic::Registration, api: &msquic::Api) -> Result<
             .set_peer_unidi_stream_count(1)
             .set_datagram_receive_enabled(true)
             .set_stream_multi_receive_enabled(false),
-    ).unwrap();
+    )
+    .unwrap();
     let cred_config = SelfSignedCredentialConfig::new()?;
-    configuration.load_credential(cred_config.as_cred_config_ref()).unwrap();
-    let listener = Listener::new(
-        msquic::Listener::new(registration),
-        registration,
-        configuration,
-        api,
-    );
+    configuration
+        .load_credential(cred_config.as_cred_config_ref())
+        .unwrap();
+    let listener = Listener::new(msquic::Listener::new(api), registration, configuration, api);
     Ok(listener)
 }
 
@@ -791,7 +795,8 @@ fn new_client_config(registration: &msquic::Registration) -> Result<msquic::Conf
             .set_peer_unidi_stream_count(1)
             .set_datagram_receive_enabled(true)
             .set_stream_multi_receive_enabled(false),
-    ).unwrap();
+    )
+    .unwrap();
     let mut cred_config = msquic::CredentialConfig::new_client();
     cred_config.cred_flags |= msquic::CREDENTIAL_FLAG_NO_CERTIFICATE_VALIDATION;
     configuration.load_credential(&cred_config).unwrap();
