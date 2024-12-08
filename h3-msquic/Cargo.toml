@@ -12,3 +12,9 @@ h3 = { git = "https://github.com/hyperium/h3.git" }
 msquic-async = { path = "../msquic-async" }
 tokio = { version = "1", features = ["io-util"], default-features = false }
 tokio-util = { version = "0.7.9" }
+
+[dev-dependencies]
+anyhow = "1.0.80"
+http = "1"
+msquic = { path = "../../msquic" }
+tokio = { version = "1.27", features = ["full"] }
