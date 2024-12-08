@@ -57,7 +57,7 @@ impl Connection {
 
 /// The error type for [`Connection`]
 ///
-/// Wraps reasons a Quinn connection might be lost.
+/// Wraps reasons a msquic connection might be lost.
 #[derive(Debug)]
 pub struct ConnectionError(msquic_async::ConnectionError);
 
@@ -71,15 +71,21 @@ impl fmt::Display for ConnectionError {
 
 impl Error for ConnectionError {
     fn is_timeout(&self) -> bool {
-        // matches!(self.0, quinn::ConnectionError::TimedOut)
-        false
+        matches!(
+            self.0,
+            msquic_async::ConnectionError::ShutdownByTransport(
+                msquic::QUIC_STATUS_CONNECTION_TIMEOUT,
+                _
+            ) | msquic_async::ConnectionError::ShutdownByTransport(
+                msquic::QUIC_STATUS_CONNECTION_IDLE,
+                _
+            )
+        )
     }
 
     fn err_code(&self) -> Option<u64> {
         match self.0 {
-            msquic_async::ConnectionError::ShutdownByPeer(error_code) => {
-                Some(error_code)
-            }
+            msquic_async::ConnectionError::ShutdownByPeer(error_code) => Some(error_code),
             _ => None,
         }
     }
@@ -104,8 +110,20 @@ impl fmt::Display for StreamStartError {
 
 impl Error for StreamStartError {
     fn is_timeout(&self) -> bool {
-        // matches!(self.0, quinn::ConnectionError::TimedOut)
-        false
+        matches!(
+            self.0,
+            msquic_async::StreamStartError::ConnectionLost(
+                msquic_async::ConnectionError::ShutdownByTransport(
+                    msquic::QUIC_STATUS_CONNECTION_TIMEOUT,
+                    _
+                )
+            ) | msquic_async::StreamStartError::ConnectionLost(
+                msquic_async::ConnectionError::ShutdownByTransport(
+                    msquic::QUIC_STATUS_CONNECTION_IDLE,
+                    _
+                )
+            )
+        )
     }
 
     fn err_code(&self) -> Option<u64> {
@@ -137,8 +155,20 @@ impl fmt::Display for RecvDatagramError {
 
 impl Error for RecvDatagramError {
     fn is_timeout(&self) -> bool {
-        // matches!(self.0, quinn::ConnectionError::TimedOut)
-        false
+        matches!(
+            self.0,
+            msquic_async::DgramReceiveError::ConnectionLost(
+                msquic_async::ConnectionError::ShutdownByTransport(
+                    msquic::QUIC_STATUS_CONNECTION_TIMEOUT,
+                    _
+                )
+            ) | msquic_async::DgramReceiveError::ConnectionLost(
+                msquic_async::ConnectionError::ShutdownByTransport(
+                    msquic::QUIC_STATUS_CONNECTION_IDLE,
+                    _
+                )
+            )
+        )
     }
 
     fn err_code(&self) -> Option<u64> {
@@ -284,13 +314,12 @@ where
             })));
         }
 
-        let stream =
-            ready!(self.opening.as_mut().unwrap().poll_next_unpin(cx)).unwrap()?;
+        let stream = ready!(self.opening.as_mut().unwrap().poll_next_unpin(cx)).unwrap()?;
         if let (Some(read), Some(write)) = stream.split() {
             Poll::Ready(Ok(Self::BidiStream {
                 send: Self::SendStream::new(write),
                 recv: RecvStream::new(read),
-            }))    
+            }))
         } else {
             unreachable!("msquic-async should always return a bidirectional stream");
         }
@@ -303,7 +332,11 @@ where
     ) -> Poll<Result<Self::SendStream, Self::OpenError>> {
         if self.opening_uni.is_none() {
             self.opening_uni = Some(Box::pin(stream::unfold(self.conn.clone(), |conn| async {
-                Some((conn.open_outbound_stream(msquic_async::StreamType::Unidirectional, false).await, conn))
+                Some((
+                    conn.open_outbound_stream(msquic_async::StreamType::Unidirectional, false)
+                        .await,
+                    conn,
+                ))
             })));
         }
 
@@ -382,6 +415,7 @@ where
     type BidiStream = BidiStream<B>;
     type OpenError = StreamStartError;
 
+    #[cfg_attr(feature = "tracing", instrument(skip_all, level = "trace"))]
     fn poll_open_bidi(
         &mut self,
         cx: &mut task::Context<'_>,
@@ -407,6 +441,7 @@ where
         }
     }
 
+    #[cfg_attr(feature = "tracing", instrument(skip_all, level = "trace"))]
     fn poll_open_send(
         &mut self,
         cx: &mut task::Context<'_>,
@@ -429,6 +464,7 @@ where
         }
     }
 
+    #[cfg_attr(feature = "tracing", instrument(skip_all, level = "trace"))]
     fn close(&mut self, code: h3::error::Code, reason: &[u8]) {
         // self.conn.close(
         //     VarInt::from_u64(code.value()).expect("error code VarInt"),
@@ -560,6 +596,7 @@ impl quic::RecvStream for RecvStream {
     type Buf = msquic_async::StreamRecvBuffer;
     type Error = ReadError;
 
+    #[cfg_attr(feature = "tracing", instrument(skip_all, level = "trace"))]
     fn poll_data(
         &mut self,
         cx: &mut task::Context<'_>,
@@ -578,11 +615,7 @@ impl quic::RecvStream for RecvStream {
 
     #[cfg_attr(feature = "tracing", instrument(skip_all, level = "trace"))]
     fn stop_sending(&mut self, error_code: u64) {
-        // self.stream
-        //     .as_mut()
-        //     .unwrap()
-        //     .stop(VarInt::from_u64(error_code).expect("invalid error_code"))
-        //     .ok();
+        self.stream.as_mut().unwrap().abort_read(error_code).ok();
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all, level = "trace"))]
@@ -635,11 +668,20 @@ impl From<msquic_async::ReadError> for ReadError {
 
 impl Error for ReadError {
     fn is_timeout(&self) -> bool {
-        // matches!(
-        //     self.0,
-        //     quinn::ReadError::ConnectionLost(quinn::ConnectionError::TimedOut)
-        // )
-        false
+        matches!(
+            self.0,
+            msquic_async::ReadError::ConnectionLost(
+                msquic_async::ConnectionError::ShutdownByTransport(
+                    msquic::QUIC_STATUS_CONNECTION_TIMEOUT,
+                    _
+                )
+            ) | msquic_async::ReadError::ConnectionLost(
+                msquic_async::ConnectionError::ShutdownByTransport(
+                    msquic::QUIC_STATUS_CONNECTION_IDLE,
+                    _
+                )
+            )
+        )
     }
 
     fn err_code(&self) -> Option<u64> {
@@ -689,6 +731,7 @@ where
 {
     type Error = SendStreamError;
 
+    #[cfg_attr(feature = "tracing", instrument(skip_all, level = "trace"))]
     fn poll_ready(&mut self, cx: &mut task::Context<'_>) -> Poll<Result<(), Self::Error>> {
         if let Some(ref mut data) = self.writing {
             while data.has_remaining() {
@@ -714,6 +757,7 @@ where
         Poll::Ready(Ok(()))
     }
 
+    #[cfg_attr(feature = "tracing", instrument(skip_all, level = "trace"))]
     fn poll_finish(&mut self, cx: &mut task::Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.stream
             .as_mut()
@@ -722,10 +766,12 @@ where
             .map_err(|e| e.into())
     }
 
+    #[cfg_attr(feature = "tracing", instrument(skip_all, level = "trace"))]
     fn reset(&mut self, reset_code: u64) {
         let _ = self.stream.as_mut().unwrap().abort_write(reset_code);
     }
 
+    #[cfg_attr(feature = "tracing", instrument(skip_all, level = "trace"))]
     fn send_data<D: Into<WriteBuf<B>>>(&mut self, data: D) -> Result<(), Self::Error> {
         if self.writing.is_some() {
             return Err(Self::Error::NotReady);
@@ -734,6 +780,7 @@ where
         Ok(())
     }
 
+    #[cfg_attr(feature = "tracing", instrument(skip_all, level = "trace"))]
     fn send_id(&self) -> StreamId {
         self.stream
             .as_ref()
@@ -749,6 +796,7 @@ impl<B> quic::SendStreamUnframed<B> for SendStream<B>
 where
     B: Buf,
 {
+    #[cfg_attr(feature = "tracing", instrument(skip_all, level = "trace"))]
     fn poll_send<D: Buf>(
         &mut self,
         cx: &mut task::Context<'_>,
@@ -759,30 +807,17 @@ where
             panic!("poll_send called while send stream is not ready")
         }
 
-        let s = Pin::new(self.stream.as_mut().unwrap());
-
-        let res = ready!(futures::io::AsyncWrite::poll_write(s, cx, buf.chunk()));
+        let res = ready!(self
+            .stream
+            .as_mut()
+            .unwrap()
+            .poll_write(cx, buf.chunk(), false));
         match res {
             Ok(written) => {
                 buf.advance(written);
                 Poll::Ready(Ok(written))
             }
-            Err(err) => {
-                // We are forced to use AsyncWrite for now because we cannot store
-                // the result of a call to:
-                // quinn::send_stream::write<'a>(&'a mut self, buf: &'a [u8]) -> Result<usize, WriteError>.
-                //
-                // This is why we have to unpack the error from io::Error instead of having it
-                // returned directly. This should not panic as long as quinn's AsyncWrite impl
-                // doesn't change.
-                let err = err
-                    .into_inner()
-                    .expect("write stream returned an empty error")
-                    .downcast::<msquic_async::WriteError>()
-                    .expect("write stream returned an error which type is not WriteError");
-
-                Poll::Ready(Err(SendStreamError::Write(*err)))
-            }
+            Err(err) => Poll::Ready(Err(SendStreamError::Write(err))),
         }
     }
 }
@@ -828,13 +863,20 @@ impl From<msquic_async::WriteError> for SendStreamError {
 
 impl Error for SendStreamError {
     fn is_timeout(&self) -> bool {
-        // matches!(
-        //     self,
-        //     Self::Write(quinn::WriteError::ConnectionLost(
-        //         quinn::ConnectionError::TimedOut
-        //     ))
-        // )
-        false
+        matches!(
+            self,
+            Self::Write(msquic_async::WriteError::ConnectionLost(
+                msquic_async::ConnectionError::ShutdownByTransport(
+                    msquic::QUIC_STATUS_CONNECTION_TIMEOUT,
+                    _
+                )
+            )) | Self::Write(msquic_async::WriteError::ConnectionLost(
+                msquic_async::ConnectionError::ShutdownByTransport(
+                    msquic::QUIC_STATUS_CONNECTION_IDLE,
+                    _
+                )
+            ))
+        )
     }
 
     fn err_code(&self) -> Option<u64> {

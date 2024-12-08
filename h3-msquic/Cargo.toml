@@ -9,12 +9,16 @@ edition = "2021"
 bytes = "1"
 futures = { version = "0.3.28" }
 h3 = { git = "https://github.com/hyperium/h3.git" }
+msquic = { path = "../../msquic" }
 msquic-async = { path = "../msquic-async" }
 tokio = { version = "1", features = ["io-util"], default-features = false }
 tokio-util = { version = "0.7.9" }
+tracing = { version = "0.1.40", optional = true }
 
 [dev-dependencies]
 anyhow = "1.0.80"
 http = "1"
-msquic = { path = "../../msquic" }
 tokio = { version = "1.27", features = ["full"] }
+
+[features]
+tracing = ["dep:tracing"]

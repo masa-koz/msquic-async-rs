@@ -311,6 +311,10 @@ impl Stream {
     ) -> Poll<Result<(), ReadError>> {
         self.0.poll_abort_read(cx, error_code)
     }
+
+    pub fn abort_read(&mut self, error_code: u64) -> Result<(), ReadError> {
+        self.0.abort_read(error_code)
+    }
 }
 
 impl ReadStream {
@@ -339,6 +343,13 @@ impl ReadStream {
         error_code: u64,
     ) -> Poll<Result<(), ReadError>> {
         self.0.poll_abort_read(cx, error_code)
+    }
+
+    pub fn abort_read(
+        &mut self,
+        error_code: u64,
+    ) -> Result<(), ReadError> {
+        self.0.abort_read(error_code)
     }
 }
 
@@ -697,9 +708,6 @@ impl StreamInstance {
     pub(crate) fn abort_write(&self, error_code: u64) -> Result<(), WriteError> {
         let mut exclusive = self.0.exclusive.lock().unwrap();
         match exclusive.send_state {
-            StreamSendState::Start => {
-                return Err(WriteError::Closed);
-            }
             StreamSendState::StartComplete => {
                 self.0
                     .shared
@@ -707,18 +715,6 @@ impl StreamInstance {
                     .shutdown(msquic::STREAM_SHUTDOWN_FLAG_ABORT_SEND, error_code);
                 exclusive.send_state = StreamSendState::Shutdown;
                 return Ok(());
-            }
-            StreamSendState::Shutdown => return Err(WriteError::Finished),
-            StreamSendState::ShutdownComplete => {
-                if let Some(conn_error) = &exclusive.conn_error {
-                    return Err(WriteError::ConnectionLost(conn_error.clone()));
-                } else {
-                    if let Some(error_code) = &exclusive.send_error_code {
-                        return Err(WriteError::Stopped(*error_code));
-                    } else {
-                        return Ok(());
-                    }
-                }
             }
             _ => {
                 return Err(WriteError::Closed);
@@ -764,6 +760,26 @@ impl StreamInstance {
             }
         }
         Poll::Ready(Ok(()))
+    }
+
+    pub(crate) fn abort_read(
+        &self,
+        error_code: u64,
+    ) -> Result<(), ReadError> {
+        let mut exclusive = self.0.exclusive.lock().unwrap();
+        match exclusive.recv_state {
+            StreamRecvState::StartComplete => {
+                self.0
+                    .shared
+                    .msquic_stream
+                    .shutdown(msquic::STREAM_SHUTDOWN_FLAG_ABORT_RECEIVE, error_code);
+                exclusive.recv_state = StreamRecvState::ShutdownComplete;
+            }
+            _ => {
+                return Err(ReadError::Closed);
+            }
+        }
+        Ok(())
     }
 
     fn handle_event_start_complete(
