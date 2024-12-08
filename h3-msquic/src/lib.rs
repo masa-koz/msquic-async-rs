@@ -390,10 +390,10 @@ impl quic::RecvDatagramExt for Connection {
     }
 }
 
-/// Stream opener backed by a Quinn connection
+/// Stream opener backed by a msquic connection
 ///
-/// Implements [`quic::OpenStreams`] using [`quinn::Connection`],
-/// [`quinn::OpenBi`], [`quinn::OpenUni`].
+/// Implements [`quic::OpenStreams`] using [`msquic_async::Connection`],
+/// [`msquic_async::OpenOutboundStream`].
 pub struct OpenStreams {
     conn: msquic_async::Connection,
     opening: Option<
@@ -477,7 +477,7 @@ impl Clone for OpenStreams {
     }
 }
 
-/// Quinn-backed bidirectional stream
+/// msquic-backed bidirectional stream
 ///
 /// Implements [`quic::BidiStream`] which allows the stream to be split
 /// into two structs each implementing one direction.
@@ -560,9 +560,9 @@ where
     }
 }
 
-/// Quinn-backed receive stream
+/// msquic-backed receive stream
 ///
-/// Implements a [`quic::RecvStream`] backed by a [`quinn::RecvStream`].
+/// Implements a [`quic::RecvStream`] backed by a [`msquic_async::ReadStream`].
 pub struct RecvStream {
     stream: Option<msquic_async::ReadStream>,
     read_chunk_fut: ReadChunkFuture,
@@ -821,7 +821,7 @@ where
 /// Wraps errors that can happen writing to or polling a send stream.
 #[derive(Debug)]
 pub enum SendStreamError {
-    /// Errors when writing, wrapping a [`quinn::WriteError`]
+    /// Errors when writing, wrapping a [`msquic_async::WriteError`]
     Write(msquic_async::WriteError),
     /// Error when the stream is not ready, because it is still sending
     /// data from a previous call
