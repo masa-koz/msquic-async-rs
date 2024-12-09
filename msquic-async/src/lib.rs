@@ -10,6 +10,7 @@ mod stream;
 pub use connection::{
     Connection, ConnectionError, ShutdownError as ConnectionShutdownError,
     StartError as ConnectionStartError, DgramReceiveError, DgramSendError,
+    OpenOutboundStream, AcceptInboundStream, AcceptInboundUniStream,
 };
 pub use credential::{CredentialConfig, CredentialConfigCertFile};
 pub use listener::{ListenError, Listener};
