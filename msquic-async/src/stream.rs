@@ -21,72 +21,9 @@ pub enum StreamType {
     Unidirectional,
 }
 
+/// A stream represents a bidirectional or unidirectional stream.
 #[derive(Debug)]
 pub struct Stream(Arc<StreamInstance>);
-
-#[derive(Debug)]
-pub struct ReadStream(Arc<StreamInstance>);
-
-#[derive(Debug)]
-pub struct WriteStream(Arc<StreamInstance>);
-
-#[derive(Clone, Debug)]
-struct StreamInstance(Arc<StreamInner>);
-
-#[derive(Debug)]
-pub(crate) struct StreamInner {
-    exclusive: Mutex<StreamInnerExclusive>,
-    pub(crate) shared: StreamInnerShared,
-}
-
-struct StreamInnerExclusive {
-    state: StreamState,
-    start_status: Option<u32>,
-    recv_state: StreamRecvState,
-    recv_buffers: VecDeque<StreamRecvBuffer>,
-    read_complete_map: RangeSet<usize>,
-    read_complete_cursor: usize,
-    send_state: StreamSendState,
-    write_pool: Vec<WriteBuffer>,
-    recv_error_code: Option<u64>,
-    send_error_code: Option<u64>,
-    conn_error: Option<ConnectionError>,
-    start_waiters: Vec<Waker>,
-    read_waiters: Vec<Waker>,
-    write_shutdown_waiters: Vec<Waker>,
-}
-
-pub(crate) struct StreamInnerShared {
-    stream_type: StreamType,
-    local_open: bool,
-    id: RwLock<Option<u64>>,
-    pub(crate) msquic_stream: msquic::Stream,
-}
-
-#[derive(Debug, PartialEq)]
-enum StreamState {
-    Open,
-    Start,
-    StartComplete,
-    ShutdownComplete,
-}
-
-#[derive(Debug, PartialEq)]
-enum StreamRecvState {
-    Closed,
-    Start,
-    StartComplete,
-    ShutdownComplete,
-}
-
-#[derive(Debug, PartialEq)]
-enum StreamSendState {
-    Closed,
-    Start,
-    StartComplete,
-    Shutdown,
-    ShutdownComplete,
-}
 
 impl Stream {
     pub(crate) fn open(
@@ -100,37 +37,14 @@ impl Stream {
         } else {
             msquic::STREAM_OPEN_FLAG_NONE
         };
-        let inner = Arc::new(StreamInner {
-            exclusive: Mutex::new(StreamInnerExclusive {
-                state: StreamState::Open,
-                start_status: None,
-                recv_state: StreamRecvState::Closed,
-                recv_buffers: VecDeque::new(),
-                read_complete_map: RangeSet::new(),
-                read_complete_cursor: 0,
-                send_state: StreamSendState::Closed,
-                write_pool: Vec::new(),
-                recv_error_code: None,
-                send_error_code: None,
-                conn_error: None,
-                start_waiters: Vec::new(),
-                read_waiters: Vec::new(),
-                write_shutdown_waiters: Vec::new(),
-            }),
-            shared: StreamInnerShared {
-                msquic_stream,
-                local_open: true,
-                id: RwLock::new(None),
-                stream_type,
-            },
-        });
+        let inner = Arc::new(StreamInner::new(msquic_stream, stream_type, StreamSendState::Closed, true));
         inner
             .shared
             .msquic_stream
             .open(
                 msquic_conn,
                 flags,
-                StreamInstance::native_callback,
+                StreamInner::native_callback,
                 Arc::into_raw(inner.clone()) as *const c_void,
             )
             .unwrap();
@@ -140,42 +54,19 @@ impl Stream {
     }
 
     pub(crate) fn from_handle(
-        stream: msquic::Handle,
+        handle: msquic::Handle,
         msquic_api: &msquic::Api,
         stream_type: StreamType,
     ) -> Self {
-        let msquic_stream = msquic::Stream::from_parts(stream, msquic_api);
+        let msquic_stream = msquic::Stream::from_parts(handle, msquic_api);
         let send_state = if stream_type == StreamType::Bidirectional {
             StreamSendState::StartComplete
         } else {
             StreamSendState::Closed
         };
-        let inner = Arc::new(StreamInner {
-            exclusive: Mutex::new(StreamInnerExclusive {
-                state: StreamState::StartComplete,
-                start_status: None,
-                recv_state: StreamRecvState::StartComplete,
-                recv_buffers: VecDeque::new(),
-                read_complete_map: RangeSet::new(),
-                read_complete_cursor: 0,
-                send_state,
-                write_pool: Vec::new(),
-                recv_error_code: None,
-                send_error_code: None,
-                conn_error: None,
-                start_waiters: Vec::new(),
-                read_waiters: Vec::new(),
-                write_shutdown_waiters: Vec::new(),
-            }),
-            shared: StreamInnerShared {
-                msquic_stream,
-                local_open: false,
-                id: RwLock::new(None),
-                stream_type,
-            },
-        });
+        let inner = Arc::new(StreamInner::new(msquic_stream, stream_type, send_state, false));
         inner.shared.msquic_stream.set_callback_handler(
-            StreamInstance::native_callback,
+            StreamInner::native_callback,
             Arc::into_raw(inner.clone()) as *const c_void,
         );
         let stream = Self(Arc::new(StreamInstance(inner)));
@@ -238,10 +129,12 @@ impl Stream {
         Poll::Pending
     }
 
+    /// Returns the stream ID.
     pub fn id(&self) -> Option<u64> {
         self.0.id()
     }
 
+    /// Splits the stream into a read stream and a write stream.
     pub fn split(self) -> (Option<ReadStream>, Option<WriteStream>) {
         match (self.0.shared.stream_type, self.0.shared.local_open) {
             (StreamType::Unidirectional, true) => (None, Some(WriteStream(self.0))),
@@ -252,6 +145,7 @@ impl Stream {
         }
     }
 
+    /// Poll to read from the stream into buf.
     pub fn poll_read(
         &mut self,
         cx: &mut Context<'_>,
@@ -260,6 +154,7 @@ impl Stream {
         self.0.poll_read(cx, buf)
     }
 
+    /// Poll to read the next segment of data.
     pub fn poll_read_chunk(
         &self,
         cx: &mut Context<'_>,
@@ -267,6 +162,7 @@ impl Stream {
         self.0.poll_read_chunk(cx)
     }
 
+    /// Poll to write to the stream from buf.
     pub fn poll_write(
         &mut self,
         cx: &mut Context<'_>,
@@ -276,10 +172,12 @@ impl Stream {
         self.0.poll_write(cx, buf, fin)
     }
 
+    /// Write bytes to the stream directly.
     pub fn zerocopy_write<'a>(&'a mut self, buf: &'a Bytes, fin: bool) -> ZeroCopyWrite<'a> {
         self.0.zerocopy_write(buf, fin)
     }
 
+    /// Write bytes to the stream directly.
     pub fn zerocopy_write_vectored<'a>(
         &'a mut self,
         bufs: &'a [Bytes],
@@ -288,10 +186,12 @@ impl Stream {
         self.0.zerocopy_write_vectored(bufs, fin)
     }
 
+    /// Poll to finish writing to the stream.
     pub fn poll_finish_write(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), WriteError>> {
         self.0.poll_finish_write(cx)
     }
 
+    /// Poll to abort writing to the stream.
     pub fn poll_abort_write(
         &mut self,
         cx: &mut Context<'_>,
@@ -300,10 +200,12 @@ impl Stream {
         self.0.poll_abort_write(cx, error_code)
     }
 
+    /// Abort writing to the stream.
     pub fn abort_write(&mut self, error_code: u64) -> Result<(), WriteError> {
         self.0.abort_write(error_code)
     }
 
+    /// Poll to abort reading from the stream.
     pub fn poll_abort_read(
         &mut self,
         cx: &mut Context<'_>,
@@ -312,16 +214,23 @@ impl Stream {
         self.0.poll_abort_read(cx, error_code)
     }
 
+    /// Abort reading from the stream.
     pub fn abort_read(&mut self, error_code: u64) -> Result<(), ReadError> {
         self.0.abort_read(error_code)
     }
 }
 
+/// A stream that can only be read from.
+#[derive(Debug)]
+pub struct ReadStream(Arc<StreamInstance>);
+
 impl ReadStream {
+    /// Returns the stream ID.
     pub fn id(&self) -> Option<u64> {
         self.0.id()
     }
 
+    /// Poll to read from the stream into buf.
     pub fn poll_read(
         &mut self,
         cx: &mut Context<'_>,
@@ -330,6 +239,7 @@ impl ReadStream {
         self.0.poll_read(cx, buf)
     }
 
+    /// Poll to read the next segment of data.
     pub fn poll_read_chunk(
         &self,
         cx: &mut Context<'_>,
@@ -337,6 +247,7 @@ impl ReadStream {
         self.0.poll_read_chunk(cx)
     }
 
+    /// Poll to abort reading from the stream.
     pub fn poll_abort_read(
         &mut self,
         cx: &mut Context<'_>,
@@ -345,6 +256,7 @@ impl ReadStream {
         self.0.poll_abort_read(cx, error_code)
     }
 
+    /// Abort reading from the stream.
     pub fn abort_read(
         &mut self,
         error_code: u64,
@@ -353,11 +265,17 @@ impl ReadStream {
     }
 }
 
+/// A stream that can only be written to.
+#[derive(Debug)]
+pub struct WriteStream(Arc<StreamInstance>);
+
 impl WriteStream {
+    /// Returns the stream ID.
     pub fn id(&self) -> Option<u64> {
         self.0.id()
     }
 
+    /// Poll to write to the stream from buf.
     pub fn poll_write(
         &mut self,
         cx: &mut Context<'_>,
@@ -367,10 +285,12 @@ impl WriteStream {
         self.0.poll_write(cx, buf, fin)
     }
 
+    /// Write bytes to the stream directly.
     pub fn zerocopy_write<'a>(&'a mut self, buf: &'a Bytes, fin: bool) -> ZeroCopyWrite<'a> {
         self.0.zerocopy_write(buf, fin)
     }
 
+    /// Write bytes to the stream directly.
     pub fn zerocopy_write_vectored<'a>(
         &'a mut self,
         bufs: &'a [Bytes],
@@ -379,10 +299,12 @@ impl WriteStream {
         self.0.zerocopy_write_vectored(bufs, fin)
     }
 
+    /// Poll to finish writing to the stream.
     pub fn poll_finish_write(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), WriteError>> {
         self.0.poll_finish_write(cx)
     }
 
+    /// Poll to abort writing to the stream.
     pub fn poll_abort_write(
         &mut self,
         cx: &mut Context<'_>,
@@ -391,6 +313,7 @@ impl WriteStream {
         self.0.poll_abort_write(cx, error_code)
     }
 
+    /// Abort writing to the stream.
     pub fn abort_write(
         &mut self,
         error_code: u64,
@@ -781,6 +704,164 @@ impl StreamInstance {
         }
         Ok(())
     }
+}
+#[derive(Clone, Debug)]
+struct StreamInstance(Arc<StreamInner>);
+
+impl Drop for StreamInstance {
+    fn drop(&mut self) {
+        trace!("StreamInstance({:p}) dropping", &*self.0);
+        let mut exclusive = self.0.exclusive.lock().unwrap();
+        exclusive.recv_buffers.clear();
+        match exclusive.state {
+            StreamState::Open => unsafe {
+                Arc::from_raw(Arc::as_ptr(&self.0));
+            },
+            StreamState::Start | StreamState::StartComplete => {
+                trace!("StreamInstance({:p}) shutdown while dropping", &*self.0);
+                self.0.shared.msquic_stream.shutdown(
+                    msquic::STREAM_SHUTDOWN_FLAG_ABORT_SEND
+                        | msquic::STREAM_SHUTDOWN_FLAG_ABORT_RECEIVE
+                        | msquic::STREAM_SHUTDOWN_FLAG_IMMEDIATE,
+                    0,
+                );
+            }
+            StreamState::ShutdownComplete => {}
+        }
+    }
+}
+
+impl Deref for StreamInstance {
+    type Target = StreamInner;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct StreamInner {
+    exclusive: Mutex<StreamInnerExclusive>,
+    pub(crate) shared: StreamInnerShared,
+}
+
+struct StreamInnerExclusive {
+    state: StreamState,
+    start_status: Option<u32>,
+    recv_state: StreamRecvState,
+    recv_buffers: VecDeque<StreamRecvBuffer>,
+    read_complete_map: RangeSet<usize>,
+    read_complete_cursor: usize,
+    send_state: StreamSendState,
+    write_pool: Vec<WriteBuffer>,
+    recv_error_code: Option<u64>,
+    send_error_code: Option<u64>,
+    conn_error: Option<ConnectionError>,
+    start_waiters: Vec<Waker>,
+    read_waiters: Vec<Waker>,
+    write_shutdown_waiters: Vec<Waker>,
+}
+
+pub(crate) struct StreamInnerShared {
+    stream_type: StreamType,
+    local_open: bool,
+    id: RwLock<Option<u64>>,
+    pub(crate) msquic_stream: msquic::Stream,
+}
+
+#[derive(Debug, PartialEq)]
+enum StreamState {
+    Open,
+    Start,
+    StartComplete,
+    ShutdownComplete,
+}
+
+#[derive(Debug, PartialEq)]
+enum StreamRecvState {
+    Closed,
+    Start,
+    StartComplete,
+    ShutdownComplete,
+}
+
+#[derive(Debug, PartialEq)]
+enum StreamSendState {
+    Closed,
+    Start,
+    StartComplete,
+    Shutdown,
+    ShutdownComplete,
+}
+
+impl StreamInner {
+    fn new(msquic_stream: msquic::Stream, stream_type: StreamType, send_state: StreamSendState, local_open: bool) -> Self {
+        StreamInner {
+            exclusive: Mutex::new(StreamInnerExclusive {
+                state: StreamState::Open,
+                start_status: None,
+                recv_state: StreamRecvState::Closed,
+                recv_buffers: VecDeque::new(),
+                read_complete_map: RangeSet::new(),
+                read_complete_cursor: 0,
+                send_state,
+                write_pool: Vec::new(),
+                recv_error_code: None,
+                send_error_code: None,
+                conn_error: None,
+                start_waiters: Vec::new(),
+                read_waiters: Vec::new(),
+                write_shutdown_waiters: Vec::new(),
+            }),
+            shared: StreamInnerShared {
+                msquic_stream,
+                local_open,
+                id: RwLock::new(None),
+                stream_type,
+            },
+        }
+    }
+
+    pub(crate) fn read_complete(&self, buffer: &StreamRecvBuffer) {
+        let buffer_range = buffer.range();
+        trace!(
+            "StreamInner({:p}) read complete offset={} len={}",
+            self,
+            buffer_range.start,
+            buffer_range.end - buffer_range.start
+        );
+
+        let complete_len = if !buffer_range.is_empty() {
+            let mut exclusive = self.exclusive.lock().unwrap();
+            exclusive.read_complete_map.insert(buffer_range);
+            let complete_range = exclusive.read_complete_map.first().unwrap();
+            trace!(
+                "StreamInner({:p}) complete read offset={} len={}",
+                self,
+                complete_range.start,
+                complete_range.end - complete_range.start
+            );
+            if complete_range.start == 0 && exclusive.read_complete_cursor < complete_range.end {
+                let complete_len = complete_range.end - exclusive.read_complete_cursor;
+                exclusive.read_complete_cursor = complete_range.end;
+                complete_len
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+        if complete_len > 0 {
+            trace!(
+                "StreamInner({:p}) call receive_complete len={}",
+                self,
+                complete_len
+            );
+            self.shared
+                .msquic_stream
+                .receive_complete(complete_len as u64);
+        }
+    }
 
     fn handle_event_start_complete(
         _stream: msquic::Handle,
@@ -1084,80 +1165,6 @@ impl StreamInstance {
                 trace!("Stream({:p}) Other callback {}", inner, event.event_type);
                 msquic::QUIC_STATUS_SUCCESS
             }
-        }
-    }
-}
-
-impl Drop for StreamInstance {
-    fn drop(&mut self) {
-        trace!("StreamInstance({:p}) dropping", &*self.0);
-        let mut exclusive = self.0.exclusive.lock().unwrap();
-        exclusive.recv_buffers.clear();
-        match exclusive.state {
-            StreamState::Open => unsafe {
-                Arc::from_raw(Arc::as_ptr(&self.0));
-            },
-            StreamState::Start | StreamState::StartComplete => {
-                trace!("StreamInstance({:p}) shutdown while dropping", &*self.0);
-                self.0.shared.msquic_stream.shutdown(
-                    msquic::STREAM_SHUTDOWN_FLAG_ABORT_SEND
-                        | msquic::STREAM_SHUTDOWN_FLAG_ABORT_RECEIVE
-                        | msquic::STREAM_SHUTDOWN_FLAG_IMMEDIATE,
-                    0,
-                );
-            }
-            StreamState::ShutdownComplete => {}
-        }
-    }
-}
-
-impl Deref for StreamInstance {
-    type Target = StreamInner;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl StreamInner {
-    pub(crate) fn read_complete(&self, buffer: &StreamRecvBuffer) {
-        let buffer_range = buffer.range();
-        trace!(
-            "StreamInner({:p}) read complete offset={} len={}",
-            self,
-            buffer_range.start,
-            buffer_range.end - buffer_range.start
-        );
-
-        let complete_len = if !buffer_range.is_empty() {
-            let mut exclusive = self.exclusive.lock().unwrap();
-            exclusive.read_complete_map.insert(buffer_range);
-            let complete_range = exclusive.read_complete_map.first().unwrap();
-            trace!(
-                "StreamInner({:p}) complete read offset={} len={}",
-                self,
-                complete_range.start,
-                complete_range.end - complete_range.start
-            );
-            if complete_range.start == 0 && exclusive.read_complete_cursor < complete_range.end {
-                let complete_len = complete_range.end - exclusive.read_complete_cursor;
-                exclusive.read_complete_cursor = complete_range.end;
-                complete_len
-            } else {
-                0
-            }
-        } else {
-            0
-        };
-        if complete_len > 0 {
-            trace!(
-                "StreamInner({:p}) call receive_complete len={}",
-                self,
-                complete_len
-            );
-            self.shared
-                .msquic_stream
-                .receive_complete(complete_len as u64);
         }
     }
 }
