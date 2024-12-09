@@ -37,7 +37,13 @@ impl Stream {
         } else {
             msquic::STREAM_OPEN_FLAG_NONE
         };
-        let inner = Arc::new(StreamInner::new(msquic_stream, stream_type, StreamSendState::Closed, true));
+        let inner = Arc::new(StreamInner::new(
+            msquic_stream,
+            stream_type,
+            StreamSendState::Closed,
+            StreamRecvState::Closed,
+            true,
+        ));
         inner
             .shared
             .msquic_stream
@@ -64,7 +70,13 @@ impl Stream {
         } else {
             StreamSendState::Closed
         };
-        let inner = Arc::new(StreamInner::new(msquic_stream, stream_type, send_state, false));
+        let inner = Arc::new(StreamInner::new(
+            msquic_stream,
+            stream_type,
+            send_state,
+            StreamRecvState::StartComplete,
+            false,
+        ));
         inner.shared.msquic_stream.set_callback_handler(
             StreamInner::native_callback,
             Arc::into_raw(inner.clone()) as *const c_void,
@@ -257,10 +269,7 @@ impl ReadStream {
     }
 
     /// Abort reading from the stream.
-    pub fn abort_read(
-        &mut self,
-        error_code: u64,
-    ) -> Result<(), ReadError> {
+    pub fn abort_read(&mut self, error_code: u64) -> Result<(), ReadError> {
         self.0.abort_read(error_code)
     }
 }
@@ -314,10 +323,7 @@ impl WriteStream {
     }
 
     /// Abort writing to the stream.
-    pub fn abort_write(
-        &mut self,
-        error_code: u64,
-    ) -> Result<(), WriteError> {
+    pub fn abort_write(&mut self, error_code: u64) -> Result<(), WriteError> {
         self.0.abort_write(error_code)
     }
 }
@@ -685,10 +691,7 @@ impl StreamInstance {
         Poll::Ready(Ok(()))
     }
 
-    pub(crate) fn abort_read(
-        &self,
-        error_code: u64,
-    ) -> Result<(), ReadError> {
+    pub(crate) fn abort_read(&self, error_code: u64) -> Result<(), ReadError> {
         let mut exclusive = self.0.exclusive.lock().unwrap();
         match exclusive.recv_state {
             StreamRecvState::StartComplete => {
@@ -795,12 +798,18 @@ enum StreamSendState {
 }
 
 impl StreamInner {
-    fn new(msquic_stream: msquic::Stream, stream_type: StreamType, send_state: StreamSendState, local_open: bool) -> Self {
+    fn new(
+        msquic_stream: msquic::Stream,
+        stream_type: StreamType,
+        send_state: StreamSendState,
+        recv_state: StreamRecvState,
+        local_open: bool,
+    ) -> Self {
         StreamInner {
             exclusive: Mutex::new(StreamInnerExclusive {
                 state: StreamState::Open,
                 start_status: None,
-                recv_state: StreamRecvState::Closed,
+                recv_state,
                 recv_buffers: VecDeque::new(),
                 read_complete_map: RangeSet::new(),
                 read_complete_cursor: 0,

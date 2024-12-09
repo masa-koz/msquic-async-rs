@@ -1,5 +1,5 @@
 use crate::buffer::WriteBuffer;
-use crate::stream::{StartError as StreamStartError, Stream, ReadStream, StreamType};
+use crate::stream::{ReadStream, StartError as StreamStartError, Stream, StreamType};
 
 use std::collections::VecDeque;
 use std::future::Future;
@@ -20,20 +20,36 @@ impl Connection {
     /// Create a new connection.
     ///
     /// The connection is not started until `start` is called.
-    pub fn new(msquic_conn: msquic::Connection, registration: &msquic::Registration, api: &msquic::Api) -> Self {
-        let inner = Arc::new(ConnectionInner::new(msquic_conn, api));
-        inner.shared.msquic_conn.open(
-            registration,
-            ConnectionInner::native_callback,
-            Arc::into_raw(inner.clone()) as *const c_void,
-        ).unwrap();
+    pub fn new(
+        msquic_conn: msquic::Connection,
+        registration: &msquic::Registration,
+        api: &msquic::Api,
+    ) -> Self {
+        let inner = Arc::new(ConnectionInner::new(
+            msquic_conn,
+            api,
+            ConnectionState::Open,
+        ));
+        inner
+            .shared
+            .msquic_conn
+            .open(
+                registration,
+                ConnectionInner::native_callback,
+                Arc::into_raw(inner.clone()) as *const c_void,
+            )
+            .unwrap();
         trace!("Connection({:p}) Open by local", &*inner);
         Self(Arc::new(ConnectionInstance(inner)))
     }
 
     pub(crate) fn from_handle(conn: msquic::Handle, api: &msquic::Api) -> Self {
         let msquic_conn = msquic::Connection::from_parts(conn, api);
-        let inner = Arc::new(ConnectionInner::new(msquic_conn, api));
+        let inner = Arc::new(ConnectionInner::new(
+            msquic_conn,
+            api,
+            ConnectionState::Connected,
+        ));
         inner.shared.msquic_conn.set_callback_handler(
             ConnectionInner::native_callback,
             Arc::into_raw(inner.clone()) as *const c_void,
@@ -68,7 +84,11 @@ impl Connection {
         let mut exclusive = self.0.exclusive.lock().unwrap();
         match exclusive.state {
             ConnectionState::Open => {
-                self.0.shared.msquic_conn.start(configuration, host, port).unwrap();
+                self.0
+                    .shared
+                    .msquic_conn
+                    .start(configuration, host, port)
+                    .unwrap();
                 exclusive.state = ConnectionState::Connecting;
             }
             ConnectionState::Connecting => {}
@@ -84,7 +104,11 @@ impl Connection {
     }
 
     pub(crate) fn set_configuration(&self, configuration: &msquic::Configuration) {
-        self.0.shared.msquic_conn.set_configuration(configuration).unwrap();
+        self.0
+            .shared
+            .msquic_conn
+            .set_configuration(configuration)
+            .unwrap();
     }
 
     /// Open a new outbound stream.
@@ -165,7 +189,9 @@ impl Connection {
         if !exclusive.inbound_uni_streams.is_empty() {
             return Poll::Ready(Ok(exclusive.inbound_uni_streams.pop_front().unwrap()));
         }
-        exclusive.inbound_uni_stream_waiters.push(cx.waker().clone());
+        exclusive
+            .inbound_uni_stream_waiters
+            .push(cx.waker().clone());
         Poll::Pending
     }
 
@@ -190,12 +216,12 @@ impl Connection {
                 )));
             }
         }
-        
+
         if let Some(buf) = exclusive.recv_buffers.pop_front() {
             Poll::Ready(Ok(buf))
         } else {
             exclusive.recv_waiters.push(cx.waker().clone());
-            return Poll::Pending
+            return Poll::Pending;
         }
     }
 
@@ -228,20 +254,21 @@ impl Connection {
             .unwrap_or_else(|| WriteBuffer::new());
         let _ = write_buf.put_zerocopy(buf);
         let (buffer, buffer_count) = write_buf.get_buffer();
-        self.0.shared.msquic_conn.datagram_send(
-            buffer,
-            buffer_count,
-            msquic::SEND_FLAG_NONE,
-            write_buf.into_raw() as *const _ as *const c_void,
-        ).unwrap();
+        self.0
+            .shared
+            .msquic_conn
+            .datagram_send(
+                buffer,
+                buffer_count,
+                msquic::SEND_FLAG_NONE,
+                write_buf.into_raw() as *const _ as *const c_void,
+            )
+            .unwrap();
         Poll::Ready(Ok(()))
     }
 
     /// Send a datagram.
-    pub fn send_datagram(
-        &self,
-        buf: &Bytes,
-    ) -> Result<(), DgramSendError> {
+    pub fn send_datagram(&self, buf: &Bytes) -> Result<(), DgramSendError> {
         let mut exclusive = self.0.exclusive.lock().unwrap();
         match exclusive.state {
             ConnectionState::Open => {
@@ -264,12 +291,16 @@ impl Connection {
             .unwrap_or_else(|| WriteBuffer::new());
         let _ = write_buf.put_zerocopy(buf);
         let (buffer, buffer_count) = write_buf.get_buffer();
-        self.0.shared.msquic_conn.datagram_send(
-            buffer,
-            buffer_count,
-            msquic::SEND_FLAG_NONE,
-            write_buf.into_raw() as *const _ as *const c_void,
-        ).unwrap();
+        self.0
+            .shared
+            .msquic_conn
+            .datagram_send(
+                buffer,
+                buffer_count,
+                msquic::SEND_FLAG_NONE,
+                write_buf.into_raw() as *const _ as *const c_void,
+            )
+            .unwrap();
         Ok(())
     }
 
@@ -312,10 +343,7 @@ impl Connection {
     }
 
     /// Shutdown the connection.
-    pub fn shutdown(
-        &self,
-        error_code: u64,
-    ) -> Result<(), ShutdownError> {
+    pub fn shutdown(&self, error_code: u64) -> Result<(), ShutdownError> {
         let mut exclusive = self.0.exclusive.lock().unwrap();
         match exclusive.state {
             ConnectionState::Open | ConnectionState::Connecting => {
@@ -328,7 +356,7 @@ impl Connection {
                     .shutdown(msquic::CONNECTION_SHUTDOWN_FLAG_NONE, error_code);
                 exclusive.state = ConnectionState::Shutdown;
             }
-            _ => {},
+            _ => {}
         }
         Ok(())
     }
@@ -390,10 +418,10 @@ struct ConnectionInnerShared {
 }
 
 impl ConnectionInner {
-    fn new(msquic_conn: msquic::Connection, api: &msquic::Api) -> Self {
+    fn new(msquic_conn: msquic::Connection, api: &msquic::Api, state: ConnectionState) -> Self {
         ConnectionInner {
             exclusive: Mutex::new(ConnectionInnerExclusive {
-                state: ConnectionState::Open,
+                state,
                 error: None,
                 start_waiters: Vec::new(),
                 inbound_stream_waiters: Vec::new(),
@@ -433,7 +461,8 @@ impl ConnectionInner {
     ) -> u32 {
         trace!(
             "Connection({:p}) Transport shutdown 0x{:x}",
-            inner, payload.status
+            inner,
+            payload.status
         );
 
         let mut exclusive = inner.exclusive.lock().unwrap();
@@ -459,7 +488,8 @@ impl ConnectionInner {
     ) -> u32 {
         trace!(
             "Connection({:p}) App shutdown {}",
-            inner, payload.error_code
+            inner,
+            payload.error_code
         );
 
         let mut exclusive = inner.exclusive.lock().unwrap();
@@ -480,10 +510,7 @@ impl ConnectionInner {
         inner: &ConnectionInner,
         _payload: &msquic::ConnectionEventShutdownComplete,
     ) -> u32 {
-        trace!(
-            "Connection({:p}) Connection Shutdown complete",
-            inner
-        );
+        trace!("Connection({:p}) Connection Shutdown complete", inner);
 
         {
             let mut exclusive = inner.exclusive.lock().unwrap();
@@ -521,7 +548,8 @@ impl ConnectionInner {
         };
         trace!(
             "Connection({:p}) Peer stream started {:?}",
-            inner, stream_type
+            inner,
+            stream_type
         );
 
         let stream = Stream::from_handle(payload.stream, &inner.shared.msquic_api, stream_type);
@@ -554,7 +582,12 @@ impl ConnectionInner {
         inner: &ConnectionInner,
         payload: &msquic::ConnectionEventStreamsAvailable,
     ) -> u32 {
-        trace!("Connection({:p}) Streams available bidirectional_count:{} unidirectional_count:{}", inner, payload.bidirectional_count, payload.unidirectional_count);
+        trace!(
+            "Connection({:p}) Streams available bidirectional_count:{} unidirectional_count:{}",
+            inner,
+            payload.bidirectional_count,
+            payload.unidirectional_count
+        );
         msquic::QUIC_STATUS_SUCCESS
     }
 
@@ -562,7 +595,12 @@ impl ConnectionInner {
         inner: &ConnectionInner,
         payload: &msquic::ConnectionEventDatagramStateChanged,
     ) -> u32 {
-        trace!("Connection({:p}) Datagram state changed send_enabled:{} max_send_length:{}", inner, payload.send_enabled, payload.max_send_length);
+        trace!(
+            "Connection({:p}) Datagram state changed send_enabled:{} max_send_length:{}",
+            inner,
+            payload.send_enabled,
+            payload.max_send_length
+        );
         msquic::QUIC_STATUS_SUCCESS
     }
 
@@ -592,7 +630,8 @@ impl ConnectionInner {
     ) -> u32 {
         trace!(
             "Connection({:p}) Datagram send state changed state:{}",
-            inner, payload.state
+            inner,
+            payload.state
         );
         match payload.state {
             msquic::DATAGRAM_SEND_SENT | msquic::DATAGRAM_SEND_CANCELED => {
@@ -659,7 +698,8 @@ impl ConnectionInner {
             _ => {
                 trace!(
                     "Connection({:p}) Other callback {}",
-                    inner, event.event_type
+                    inner,
+                    event.event_type
                 );
                 msquic::QUIC_STATUS_SUCCESS
             }

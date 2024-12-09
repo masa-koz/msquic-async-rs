@@ -21,7 +21,11 @@ impl Listener {
         configuration: msquic::Configuration,
         msquic_api: &msquic::Api,
     ) -> Self {
-        let inner = Box::new(ListenerInner::new(msquic_listener, configuration, msquic_api));
+        let inner = Box::new(ListenerInner::new(
+            msquic_listener,
+            configuration,
+            msquic_api,
+        ));
         {
             inner
                 .shared
