@@ -16,92 +16,33 @@ use tracing::trace;
 #[derive(Clone)]
 pub struct Connection(Arc<ConnectionInstance>);
 
-struct ConnectionInstance(Arc<ConnectionInner>);
-
-struct ConnectionInner {
-    exclusive: Mutex<ConnectionInnerExclusive>,
-    shared: ConnectionInnerShared,
-}
-
-struct ConnectionInnerExclusive {
-    state: ConnectionState,
-    error: Option<ConnectionError>,
-    start_waiters: Vec<Waker>,
-    inbound_stream_waiters: Vec<Waker>,
-    inbound_uni_stream_waiters: Vec<Waker>,
-    inbound_streams: VecDeque<crate::stream::Stream>,
-    inbound_uni_streams: VecDeque<crate::stream::ReadStream>,
-    recv_buffers: VecDeque<Bytes>,
-    recv_waiters: Vec<Waker>,
-    write_pool: Vec<WriteBuffer>,
-    shutdown_waiters: Vec<Waker>,
-}
-
-struct ConnectionInnerShared {
-    msquic_conn: msquic::Connection,
-    msquic_api: msquic::Api,
-}
-
 impl Connection {
+    /// Create a new connection.
+    ///
+    /// The connection is not started until `start` is called.
     pub fn new(msquic_conn: msquic::Connection, registration: &msquic::Registration, api: &msquic::Api) -> Self {
-        let inner = Arc::new(ConnectionInner {
-            exclusive: Mutex::new(ConnectionInnerExclusive {
-                state: ConnectionState::Open,
-                error: None,
-                start_waiters: Vec::new(),
-                inbound_stream_waiters: Vec::new(),
-                inbound_uni_stream_waiters: Vec::new(),
-                inbound_streams: VecDeque::new(),
-                inbound_uni_streams: VecDeque::new(),
-                recv_buffers: VecDeque::new(),
-                recv_waiters: Vec::new(),
-                write_pool: Vec::new(),
-                shutdown_waiters: Vec::new(),
-            }),
-            shared: ConnectionInnerShared {
-                msquic_conn,
-                msquic_api: api.clone(),
-            },
-        });
+        let inner = Arc::new(ConnectionInner::new(msquic_conn, api));
         inner.shared.msquic_conn.open(
             registration,
-            Self::native_callback,
+            ConnectionInner::native_callback,
             Arc::into_raw(inner.clone()) as *const c_void,
         ).unwrap();
         trace!("Connection({:p}) Open by local", &*inner);
-
         Self(Arc::new(ConnectionInstance(inner)))
     }
 
     pub(crate) fn from_handle(conn: msquic::Handle, api: &msquic::Api) -> Self {
         let msquic_conn = msquic::Connection::from_parts(conn, api);
-        let inner = Arc::new(ConnectionInner {
-            exclusive: Mutex::new(ConnectionInnerExclusive {
-                state: ConnectionState::Connected,
-                error: None,
-                start_waiters: Vec::new(),
-                inbound_stream_waiters: Vec::new(),
-                inbound_uni_stream_waiters: Vec::new(),
-                inbound_streams: VecDeque::new(),
-                inbound_uni_streams: VecDeque::new(),
-                recv_buffers: VecDeque::new(),
-                recv_waiters: Vec::new(),
-                write_pool: Vec::new(),
-                shutdown_waiters: Vec::new(),
-            }),
-            shared: ConnectionInnerShared {
-                msquic_conn,
-                msquic_api: api.clone(),
-            },
-        });
+        let inner = Arc::new(ConnectionInner::new(msquic_conn, api));
         inner.shared.msquic_conn.set_callback_handler(
-            Self::native_callback,
+            ConnectionInner::native_callback,
             Arc::into_raw(inner.clone()) as *const c_void,
         );
         trace!("Connection({:p}) Open by peer", &*inner);
         Self(Arc::new(ConnectionInstance(inner)))
     }
 
+    /// Start the connection.
     pub fn start<'a>(
         &'a self,
         configuration: &'a msquic::Configuration,
@@ -116,6 +57,7 @@ impl Connection {
         }
     }
 
+    /// Poll to start the connection.
     fn poll_start(
         &self,
         cx: &mut Context<'_>,
@@ -145,6 +87,7 @@ impl Connection {
         self.0.shared.msquic_conn.set_configuration(configuration).unwrap();
     }
 
+    /// Open a new outbound stream.
     pub fn open_outbound_stream(
         &self,
         stream_type: StreamType,
@@ -158,10 +101,12 @@ impl Connection {
         }
     }
 
+    /// Accept an inbound bidilectional stream.
     pub fn accept_inbound_stream(&self) -> AcceptInboundStream<'_> {
         AcceptInboundStream { conn: &self }
     }
 
+    /// Poll to accept an inbound bidilectional stream.
     pub fn poll_accept_inbound_stream(
         &self,
         cx: &mut Context<'_>,
@@ -190,10 +135,12 @@ impl Connection {
         Poll::Pending
     }
 
+    /// Accept an inbound unidirectional stream.
     pub fn accept_inbound_uni_stream(&self) -> AcceptInboundUniStream<'_> {
         AcceptInboundUniStream { conn: &self }
     }
 
+    /// Poll to accept an inbound unidirectional stream.
     pub fn poll_accept_inbound_uni_stream(
         &self,
         cx: &mut Context<'_>,
@@ -222,6 +169,7 @@ impl Connection {
         Poll::Pending
     }
 
+    /// Poll to receive a datagram.
     pub fn poll_receive_datagram(
         &self,
         cx: &mut Context<'_>,
@@ -251,6 +199,7 @@ impl Connection {
         }
     }
 
+    /// Poll to send a datagram.
     pub fn poll_send_datagram(
         &self,
         cx: &mut Context<'_>,
@@ -288,6 +237,7 @@ impl Connection {
         Poll::Ready(Ok(()))
     }
 
+    /// Send a datagram.
     pub fn send_datagram(
         &self,
         buf: &Bytes,
@@ -323,6 +273,7 @@ impl Connection {
         Ok(())
     }
 
+    /// Poll to shutdown the connection.
     pub fn poll_shutdown(
         &self,
         cx: &mut Context<'_>,
@@ -360,6 +311,7 @@ impl Connection {
         Poll::Pending
     }
 
+    /// Shutdown the connection.
     pub fn shutdown(
         &self,
         error_code: u64,
@@ -379,6 +331,85 @@ impl Connection {
             _ => {},
         }
         Ok(())
+    }
+}
+
+struct ConnectionInstance(Arc<ConnectionInner>);
+
+impl Deref for ConnectionInstance {
+    type Target = ConnectionInner;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Drop for ConnectionInstance {
+    fn drop(&mut self) {
+        trace!("Connection({:p}) dropping", &*self.0);
+        {
+            let exclusive = self.0.exclusive.lock().unwrap();
+            match exclusive.state {
+                ConnectionState::Open
+                | ConnectionState::Connecting
+                | ConnectionState::Connected => {
+                    trace!("Connection({:p}) shutdown while dropping", &*self.0);
+                    self.0
+                        .shared
+                        .msquic_conn
+                        .shutdown(msquic::CONNECTION_SHUTDOWN_FLAG_NONE, 0);
+                }
+                ConnectionState::Shutdown | ConnectionState::ShutdownComplete => {}
+            }
+        }
+    }
+}
+
+struct ConnectionInner {
+    exclusive: Mutex<ConnectionInnerExclusive>,
+    shared: ConnectionInnerShared,
+}
+
+struct ConnectionInnerExclusive {
+    state: ConnectionState,
+    error: Option<ConnectionError>,
+    start_waiters: Vec<Waker>,
+    inbound_stream_waiters: Vec<Waker>,
+    inbound_uni_stream_waiters: Vec<Waker>,
+    inbound_streams: VecDeque<crate::stream::Stream>,
+    inbound_uni_streams: VecDeque<crate::stream::ReadStream>,
+    recv_buffers: VecDeque<Bytes>,
+    recv_waiters: Vec<Waker>,
+    write_pool: Vec<WriteBuffer>,
+    shutdown_waiters: Vec<Waker>,
+}
+
+struct ConnectionInnerShared {
+    msquic_conn: msquic::Connection,
+    msquic_api: msquic::Api,
+}
+
+impl ConnectionInner {
+    fn new(msquic_conn: msquic::Connection, api: &msquic::Api) -> Self {
+        ConnectionInner {
+            exclusive: Mutex::new(ConnectionInnerExclusive {
+                state: ConnectionState::Open,
+                error: None,
+                start_waiters: Vec::new(),
+                inbound_stream_waiters: Vec::new(),
+                inbound_uni_stream_waiters: Vec::new(),
+                inbound_streams: VecDeque::new(),
+                inbound_uni_streams: VecDeque::new(),
+                recv_buffers: VecDeque::new(),
+                recv_waiters: Vec::new(),
+                write_pool: Vec::new(),
+                shutdown_waiters: Vec::new(),
+            }),
+            shared: ConnectionInnerShared {
+                msquic_conn,
+                msquic_api: api.clone(),
+            },
+        }
     }
 
     fn handle_event_connected(
@@ -635,36 +666,6 @@ impl Connection {
         }
     }
 }
-
-impl Drop for ConnectionInstance {
-    fn drop(&mut self) {
-        trace!("Connection({:p}) dropping", &*self.0);
-        {
-            let exclusive = self.0.exclusive.lock().unwrap();
-            match exclusive.state {
-                ConnectionState::Open
-                | ConnectionState::Connecting
-                | ConnectionState::Connected => {
-                    trace!("Connection({:p}) shutdown while dropping", &*self.0);
-                    self.0
-                        .shared
-                        .msquic_conn
-                        .shutdown(msquic::CONNECTION_SHUTDOWN_FLAG_NONE, 0);
-                }
-                ConnectionState::Shutdown | ConnectionState::ShutdownComplete => {}
-            }
-        }
-    }
-}
-
-impl Deref for ConnectionInstance {
-    type Target = ConnectionInner;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
 impl Drop for ConnectionInner {
     fn drop(&mut self) {
         trace!("ConnectionInner({:p}) dropping", self);
@@ -680,6 +681,7 @@ enum ConnectionState {
     ShutdownComplete,
 }
 
+/// Errors that can occur when managing a connection.
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum ConnectionError {
     #[error("connection shutdown by transport: status 0x{0:x}, error 0x{1:x}")]
@@ -692,6 +694,7 @@ pub enum ConnectionError {
     ConnectionClosed,
 }
 
+/// Errors that can occur when receiving a datagram.
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum DgramReceiveError {
     #[error("connection not started yet")]
@@ -700,6 +703,7 @@ pub enum DgramReceiveError {
     ConnectionLost(#[from] ConnectionError),
 }
 
+/// Errors that can occur when sending a datagram.
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum DgramSendError {
     #[error("connection not started yet")]
@@ -712,12 +716,14 @@ pub enum DgramSendError {
     ConnectionLost(#[from] ConnectionError),
 }
 
+/// Errors that can occur when starting a connection.
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum StartError {
     #[error("connection lost")]
     ConnectionLost(#[from] ConnectionError),
 }
 
+/// Errors that can occur when shutdowning a connection.
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum ShutdownError {
     #[error("connection not started yet")]
@@ -726,6 +732,7 @@ pub enum ShutdownError {
     ConnectionLost(#[from] ConnectionError),
 }
 
+/// Future produced by [`Connection::start()`].
 pub struct ConnectionStart<'a> {
     conn: &'a Connection,
     configuration: &'a msquic::Configuration,
@@ -742,6 +749,7 @@ impl Future for ConnectionStart<'_> {
     }
 }
 
+/// Future produced by [`Connection::open_outbound_stream()`].
 pub struct OpenOutboundStream<'a> {
     conn: &'a ConnectionInner,
     stream_type: Option<crate::stream::StreamType>,
@@ -792,6 +800,8 @@ impl Future for OpenOutboundStream<'_> {
             .map(|res| res.map(|_| stream.take().unwrap()))
     }
 }
+
+/// Future produced by [`Connection::accept_inbound_stream()`].
 pub struct AcceptInboundStream<'a> {
     conn: &'a Connection,
 }
@@ -803,6 +813,8 @@ impl Future for AcceptInboundStream<'_> {
         self.conn.poll_accept_inbound_stream(cx)
     }
 }
+
+/// Future produced by [`Connection::accept_inbound_uni_stream()`].
 pub struct AcceptInboundUniStream<'a> {
     conn: &'a Connection,
 }
