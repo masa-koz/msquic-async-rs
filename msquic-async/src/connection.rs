@@ -360,6 +360,27 @@ impl Connection {
         Poll::Pending
     }
 
+    pub fn shutdown(
+        &self,
+        error_code: u64,
+    ) -> Result<(), ShutdownError> {
+        let mut exclusive = self.0.exclusive.lock().unwrap();
+        match exclusive.state {
+            ConnectionState::Open | ConnectionState::Connecting => {
+                return Err(ShutdownError::ConnectionNotStarted);
+            }
+            ConnectionState::Connected => {
+                self.0
+                    .shared
+                    .msquic_conn
+                    .shutdown(msquic::CONNECTION_SHUTDOWN_FLAG_NONE, error_code);
+                exclusive.state = ConnectionState::Shutdown;
+            }
+            _ => {},
+        }
+        Ok(())
+    }
+
     fn handle_event_connected(
         inner: &ConnectionInner,
         _payload: &msquic::ConnectionEventConnected,
