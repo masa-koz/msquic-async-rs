@@ -10,7 +10,123 @@ use libc::c_void;
 use thiserror::Error;
 use tracing::trace;
 
+/// Listener for incoming connections.
 pub struct Listener(Box<ListenerInner>);
+
+impl Listener {
+    /// Create a new listener.
+    pub fn new(
+        msquic_listener: msquic::Listener,
+        registration: &msquic::Registration,
+        configuration: msquic::Configuration,
+        msquic_api: &msquic::Api,
+    ) -> Self {
+        let inner = Box::new(ListenerInner::new(msquic_listener, configuration, msquic_api));
+        {
+            inner
+                .shared
+                .msquic_listener
+                .open(
+                    registration,
+                    ListenerInner::native_callback,
+                    &*inner as *const _ as *const c_void,
+                )
+                .unwrap();
+        }
+        Self(inner)
+    }
+
+    /// Start the listener.
+    pub fn start<T: AsRef<[msquic::Buffer]>>(
+        &self,
+        alpn: &T,
+        local_address: Option<SocketAddr>,
+    ) -> Result<(), ListenError> {
+        let mut exclusive = self.0.exclusive.lock().unwrap();
+        match exclusive.state {
+            ListenerState::Open | ListenerState::ShutdownComplete => {}
+            ListenerState::StartComplete | ListenerState::Shutdown => {
+                return Err(ListenError::AlreadyStarted);
+            }
+        }
+        let local_address: Option<msquic::Addr> = local_address.map(|x| x.into());
+        self.0
+            .shared
+            .msquic_listener
+            .start(alpn.as_ref(), local_address.as_ref())
+            .unwrap();
+        exclusive.state = ListenerState::StartComplete;
+        Ok(())
+    }
+
+    /// Accept a new connection.
+    pub fn accept(&self) -> Accept {
+        Accept(self)
+    }
+
+    /// Poll to accept a new connection.
+    pub fn poll_accept(&self, cx: &mut Context<'_>) -> Poll<Result<Connection, ListenError>> {
+        let mut exclusive = self.0.exclusive.lock().unwrap();
+
+        if !exclusive.new_connections.is_empty() {
+            return Poll::Ready(Ok(exclusive.new_connections.pop_front().unwrap()));
+        }
+
+        match exclusive.state {
+            ListenerState::Open => {
+                return Poll::Ready(Err(ListenError::NotStarted));
+            }
+            ListenerState::StartComplete | ListenerState::Shutdown => {}
+            ListenerState::ShutdownComplete => {
+                return Poll::Ready(Err(ListenError::Finished));
+            }
+        }
+        exclusive.new_connection_waiters.push(cx.waker().clone());
+        Poll::Pending
+    }
+
+    /// Stop the listener.
+    pub fn stop(&self) -> Stop {
+        Stop(self)
+    }
+
+    /// Poll to stop the listener.
+    pub fn poll_stop(&self, cx: &mut Context<'_>) -> Poll<Result<(), ListenError>> {
+        let mut call_stop = false;
+        {
+            let mut exclusive = self.0.exclusive.lock().unwrap();
+
+            match exclusive.state {
+                ListenerState::Open => {
+                    return Poll::Ready(Err(ListenError::NotStarted));
+                }
+                ListenerState::StartComplete => {
+                    call_stop = true;
+                    exclusive.state = ListenerState::Shutdown;
+                }
+                ListenerState::Shutdown => {}
+                ListenerState::ShutdownComplete => {
+                    return Poll::Ready(Ok(()));
+                }
+            }
+            exclusive.shutdown_complete_waiters.push(cx.waker().clone());
+        }
+        if call_stop {
+            self.0.shared.msquic_listener.stop();
+        }
+        Poll::Pending
+    }
+
+    /// Get the local address the listener is bound to.
+    pub fn local_addr(&self) -> Result<SocketAddr, ListenError> {
+        self.0
+            .shared
+            .msquic_listener
+            .get_local_addr()
+            .map(|addr| addr.as_socket().expect("not a socket address"))
+            .map_err(|_| ListenError::Failed)
+    }
+}
 
 struct ListenerInner {
     exclusive: Mutex<ListenerInnerExclusive>,
@@ -42,14 +158,13 @@ enum ListenerState {
     ShutdownComplete,
 }
 
-impl Listener {
-    pub fn new(
+impl ListenerInner {
+    fn new(
         msquic_listener: msquic::Listener,
-        registration: &msquic::Registration,
         configuration: msquic::Configuration,
         msquic_api: &msquic::Api,
     ) -> Self {
-        let inner = Box::new(ListenerInner {
+        ListenerInner {
             exclusive: Mutex::new(ListenerInnerExclusive {
                 state: ListenerState::Open,
                 new_connections: VecDeque::new(),
@@ -61,104 +176,7 @@ impl Listener {
                 configuration,
                 msquic_api: msquic_api.clone(),
             },
-        });
-        {
-            inner
-                .shared
-                .msquic_listener
-                .open(
-                    registration,
-                    Self::native_callback,
-                    &*inner as *const _ as *const c_void,
-                )
-                .unwrap();
         }
-        Self(inner)
-    }
-
-    pub fn start<T: AsRef<[msquic::Buffer]>>(
-        &self,
-        alpn: &T,
-        local_address: Option<SocketAddr>,
-    ) -> Result<(), ListenError> {
-        let mut exclusive = self.0.exclusive.lock().unwrap();
-        match exclusive.state {
-            ListenerState::Open | ListenerState::ShutdownComplete => {}
-            ListenerState::StartComplete | ListenerState::Shutdown => {
-                return Err(ListenError::AlreadyStarted);
-            }
-        }
-        let local_address: Option<msquic::Addr> = local_address.map(|x| x.into());
-        self.0
-            .shared
-            .msquic_listener
-            .start(alpn.as_ref(), local_address.as_ref())
-            .unwrap();
-        exclusive.state = ListenerState::StartComplete;
-        Ok(())
-    }
-
-    pub fn accept(&self) -> Accept {
-        Accept(self)
-    }
-
-    pub fn stop(&self) -> Stop {
-        Stop(self)
-    }
-
-    pub fn poll_accept(&self, cx: &mut Context<'_>) -> Poll<Result<Connection, ListenError>> {
-        let mut exclusive = self.0.exclusive.lock().unwrap();
-
-        if !exclusive.new_connections.is_empty() {
-            return Poll::Ready(Ok(exclusive.new_connections.pop_front().unwrap()));
-        }
-
-        match exclusive.state {
-            ListenerState::Open => {
-                return Poll::Ready(Err(ListenError::NotStarted));
-            }
-            ListenerState::StartComplete | ListenerState::Shutdown => {}
-            ListenerState::ShutdownComplete => {
-                return Poll::Ready(Err(ListenError::Finished));
-            }
-        }
-        exclusive.new_connection_waiters.push(cx.waker().clone());
-        Poll::Pending
-    }
-
-    pub fn local_addr(&self) -> Result<SocketAddr, ListenError> {
-        self.0
-            .shared
-            .msquic_listener
-            .get_local_addr()
-            .map(|addr| addr.as_socket().expect("not a socket address"))
-            .map_err(|_| ListenError::Failed)
-    }
-
-    pub fn poll_stop(&self, cx: &mut Context<'_>) -> Poll<Result<(), ListenError>> {
-        let mut call_stop = false;
-        {
-            let mut exclusive = self.0.exclusive.lock().unwrap();
-
-            match exclusive.state {
-                ListenerState::Open => {
-                    return Poll::Ready(Err(ListenError::NotStarted));
-                }
-                ListenerState::StartComplete => {
-                    call_stop = true;
-                    exclusive.state = ListenerState::Shutdown;
-                }
-                ListenerState::Shutdown => {}
-                ListenerState::ShutdownComplete => {
-                    return Poll::Ready(Ok(()));
-                }
-            }
-            exclusive.shutdown_complete_waiters.push(cx.waker().clone());
-        }
-        if call_stop {
-            self.0.shared.msquic_listener.stop();
-        }
-        Poll::Pending
     }
 
     fn handle_event_new_connection(
@@ -221,6 +239,7 @@ impl Listener {
     }
 }
 
+/// Future generated by `[Listener::accept()]`.
 pub struct Accept<'a>(&'a Listener);
 
 impl Future for Accept<'_> {
@@ -231,6 +250,7 @@ impl Future for Accept<'_> {
     }
 }
 
+/// Future generated by `[Listener::stop()]`.
 pub struct Stop<'a>(&'a Listener);
 
 impl Future for Stop<'_> {
