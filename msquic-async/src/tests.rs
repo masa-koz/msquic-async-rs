@@ -1,19 +1,19 @@
 use super::{
-    Connection, ConnectionError, ConnectionStartError, CredentialConfigCertFile, ListenError,
+    Connection, ConnectionError, ConnectionStartError, ListenError,
     Listener, ReadError, StreamRecvBuffer, StreamStartError, WriteError,
 };
 
+use std::ffi::CString;
 use std::future::poll_fn;
 use std::io::Write;
 use std::net::SocketAddr;
-use std::pin::Pin;
 use std::ptr;
 
 use anyhow::Result;
 
 use bytes::{Buf, Bytes};
 
-use tempfile::{NamedTempFile, TempPath};
+use tempfile::NamedTempFile;
 
 use test_log::test;
 use tokio::sync::mpsc;
@@ -32,8 +32,7 @@ async fn connection_validation() -> Result<()> {
 
     let listener = new_server(&registration, &api)?;
     let addr: SocketAddr = "127.0.0.1:0".parse()?;
-    listener
-        .start(&[msquic::Buffer::from("test")], Some(addr))?;
+    listener.start(&[msquic::Buffer::from("test")], Some(addr))?;
     let server_addr = listener.local_addr()?;
 
     let mut set = JoinSet::new();
@@ -770,10 +769,40 @@ fn new_server(registration: &msquic::Registration, api: &msquic::Api) -> Result<
             .set_stream_multi_receive_enabled(false),
     )
     .unwrap();
-    let cred_config = SelfSignedCredentialConfig::new()?;
-    configuration
-        .load_credential(cred_config.as_cred_config_ref())
+
+    let cert = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()]).unwrap();
+    let mut cert_file = NamedTempFile::new().unwrap();
+    cert_file
+        .write_all(cert.serialize_pem().unwrap().as_bytes())
         .unwrap();
+    let cert_path = cert_file.into_temp_path();
+    let cert_path = CString::new(cert_path.to_str().unwrap().as_bytes()).unwrap();
+
+    let mut key_file = NamedTempFile::new().unwrap();
+    key_file
+        .write_all(cert.serialize_private_key_pem().as_bytes())
+        .unwrap();
+    let key_path = key_file.into_temp_path();
+    let key_path = CString::new(key_path.to_str().unwrap().as_bytes()).unwrap();
+
+    let certificate_file = msquic::CertificateFile {
+        private_key_file: key_path.as_ptr(),
+        certificate_file: cert_path.as_ptr(),
+    };
+
+    let cred_config = msquic::CredentialConfig {
+        cred_type: msquic::CREDENTIAL_TYPE_CERTIFICATE_FILE,
+        cred_flags: msquic::CREDENTIAL_FLAG_NONE,
+        certificate: msquic::CertificateUnion {
+            file: &certificate_file,
+        },
+        principle: ptr::null(),
+        reserved: ptr::null(),
+        async_handler: None,
+        allowed_cipher_suites: 0,
+    };
+
+    configuration.load_credential(&cred_config).unwrap();
     let listener = Listener::new(msquic::Listener::new(api), registration, configuration, api);
     Ok(listener)
 }
@@ -795,34 +824,4 @@ fn new_client_config(registration: &msquic::Registration) -> Result<msquic::Conf
     cred_config.cred_flags |= msquic::CREDENTIAL_FLAG_NO_CERTIFICATE_VALIDATION;
     configuration.load_credential(&cred_config).unwrap();
     Ok(configuration)
-}
-
-struct SelfSignedCredentialConfig {
-    inner: Pin<Box<CredentialConfigCertFile>>,
-    _cert_path: TempPath,
-    _key_path: TempPath,
-}
-
-impl SelfSignedCredentialConfig {
-    fn new() -> Result<Self> {
-        let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
-
-        let mut cert_file = NamedTempFile::new()?;
-        cert_file.write_all(cert.serialize_pem()?.as_bytes())?;
-        let cert_path = cert_file.into_temp_path();
-
-        let mut key_file = NamedTempFile::new()?;
-        key_file.write_all(cert.serialize_private_key_pem().as_bytes())?;
-        let key_path = key_file.into_temp_path();
-
-        Ok(Self {
-            inner: CredentialConfigCertFile::new(&cert_path, &key_path),
-            _cert_path: cert_path,
-            _key_path: key_path,
-        })
-    }
-
-    fn as_cred_config_ref(&self) -> &msquic::CredentialConfig {
-        &self.inner.as_ref().get_ref().cred_config
-    }
 }

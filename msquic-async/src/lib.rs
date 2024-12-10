@@ -3,7 +3,6 @@
 
 mod buffer;
 mod connection;
-mod credential;
 mod listener;
 mod stream;
 
@@ -12,7 +11,6 @@ pub use connection::{
     StartError as ConnectionStartError, DgramReceiveError, DgramSendError,
     OpenOutboundStream, AcceptInboundStream, AcceptInboundUniStream,
 };
-pub use credential::{CredentialConfig, CredentialConfigCertFile};
 pub use listener::{ListenError, Listener};
 pub use stream::{
     ReadError, ReadStream, StartError as StreamStartError, Stream, StreamType, WriteError,
