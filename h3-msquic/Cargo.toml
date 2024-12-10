@@ -6,19 +6,19 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-bytes = "1"
-futures = { version = "0.3.28" }
-h3 = { git = "https://github.com/hyperium/h3.git" }
-msquic = { path = "../../msquic" }
-msquic-async = { path = "../msquic-async" }
-tokio = { version = "1", features = ["io-util"], default-features = false }
-tokio-util = { version = "0.7.9" }
-tracing = { version = "0.1.40", optional = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+h3 = { workspace = true }
+msquic = { workspace = true }
+msquic-async = { workspace = true }
+tokio = { workspace = true, default-features = false, features = ["io-util"] }
+tokio-util = { workspace = true }
+tracing = { workspace = true, optional = true }
 
 [dev-dependencies]
-anyhow = "1.0.80"
-http = "1"
-tokio = { version = "1.27", features = ["full"] }
+anyhow = { workspace = true }
+http = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
 
 [features]
 tracing = ["dep:tracing"]
