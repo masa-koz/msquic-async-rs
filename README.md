@@ -5,6 +5,12 @@ msquic based quic library that supports async operation.
 [![CI](https://github.com/masa-koz/msquic-async-rs/actions/workflows/CI.yaml/badge.svg?branch=main)](https://github.com/masa-koz/msquic-async-rs/actions/workflows/CI.yaml)
 
 ## Getting Started
+
+Add msquic-async in dependencies of your Cargo.toml.
+```toml
+msquic-async = { git = "https://github.com/masa-koz/msquic-async-rs.git" }
+```
+
 The [examples](./msquic-async/examples) directory can help get started.
 
 ### Server

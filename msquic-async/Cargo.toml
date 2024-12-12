@@ -1,9 +1,22 @@
 [package]
 name = "msquic-async"
 version = "0.1.0"
+authors = ["Masahiro Kozuka <masa.koz@outlook.com>"]
 edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+description = "msquic based quic library that supports async operation"
+repository = "https://github.com/masa-koz/msquic-async-rs"
+readme = "README.md"
+keywords = ["quic", "async"]
+categories = ["network-programming"]
+license = "MIT"
+rust-version = "1.83"
+include = [
+    "/*.md",
+    "/*.toml",
+    "/LICENSE",
+    "/examples",
+    "/src",
+]
 
 [features]
 default = ["tokio"]
@@ -28,4 +41,4 @@ futures = { workspace = true }
 rcgen = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "time", "macros", "sync"] }
-tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "ansi", "env-filter", "time", "tracing-log"] }
+tracing-subscriber = { workspace = true, features = ["fmt", "ansi", "env-filter", "time", "tracing-log"] }

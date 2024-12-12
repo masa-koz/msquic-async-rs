@@ -23,6 +23,7 @@ socket2 = "0.5.8"
 tempfile = "3.10.1"
 test-log = "0.2.15"
 thiserror = "1.0.57"
-tokio = "1.36.0"
+tokio = "1.42.0"
 tokio-util = "0.7.9"
 tracing = "0.1.40"
+tracing-subscriber = { version = "0.3", default-features = false }
