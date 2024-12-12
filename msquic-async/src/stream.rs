@@ -521,10 +521,7 @@ impl StreamInstance {
                 }
             }
         }
-        let mut write_buf = exclusive
-            .write_pool
-            .pop()
-            .unwrap_or(WriteBuffer::new());
+        let mut write_buf = exclusive.write_pool.pop().unwrap_or(WriteBuffer::new());
         let status = write_fn(&mut write_buf);
         let (buffer, buffer_count) = write_buf.get_buffer();
         match status {
@@ -637,9 +634,7 @@ impl StreamInstance {
                 exclusive.send_state = StreamSendState::Shutdown;
                 Ok(())
             }
-            _ => {
-                Err(WriteError::Closed)
-            }
+            _ => Err(WriteError::Closed),
         }
     }
 

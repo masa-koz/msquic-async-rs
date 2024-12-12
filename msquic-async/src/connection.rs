@@ -248,10 +248,7 @@ impl Connection {
             }
         }
 
-        let mut write_buf = exclusive
-            .write_pool
-            .pop()
-            .unwrap_or(WriteBuffer::new());
+        let mut write_buf = exclusive.write_pool.pop().unwrap_or(WriteBuffer::new());
         let _ = write_buf.put_zerocopy(buf);
         let (buffer, buffer_count) = write_buf.get_buffer();
         self.0
@@ -285,10 +282,7 @@ impl Connection {
             }
         }
 
-        let mut write_buf = exclusive
-            .write_pool
-            .pop()
-            .unwrap_or(WriteBuffer::new());
+        let mut write_buf = exclusive.write_pool.pop().unwrap_or(WriteBuffer::new());
         let _ = write_buf.put_zerocopy(buf);
         let (buffer, buffer_count) = write_buf.get_buffer();
         self.0
@@ -440,10 +434,7 @@ impl ConnectionInner {
         }
     }
 
-    fn handle_event_connected(
-        inner: &Self,
-        _payload: &msquic::ConnectionEventConnected,
-    ) -> u32 {
+    fn handle_event_connected(inner: &Self, _payload: &msquic::ConnectionEventConnected) -> u32 {
         trace!("Connection({:p}) Connected", inner);
 
         let mut exclusive = inner.exclusive.lock().unwrap();
