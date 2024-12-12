@@ -14,6 +14,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{self, Poll};
 use tokio_util::sync::ReusableBoxFuture;
+#[cfg(feature = "tracing")]
+use tracing::instrument;
 
 /// BoxStream with Sync trait
 type BoxStreamSync<'a, T> = Pin<Box<dyn Stream<Item = T> + Sync + Send + 'a>>;
