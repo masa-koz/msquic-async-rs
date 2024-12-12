@@ -35,8 +35,7 @@ async fn main() -> anyhow::Result<()> {
 
     let conn =
         msquic_async::Connection::new(msquic::Connection::new(&registration), &registration, &api);
-    conn.start(&configuration, "127.0.0.1", 8443)
-        .await?;
+    conn.start(&configuration, "127.0.0.1", 8443).await?;
     let h3_conn = h3_msquic::Connection::new(conn);
     let (mut driver, mut send_request) = h3::client::new(h3_conn).await?;
 
