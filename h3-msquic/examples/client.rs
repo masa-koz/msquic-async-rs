@@ -22,8 +22,8 @@ async fn main() -> anyhow::Result<()> {
         &alpn,
         msquic::Settings::new()
             .set_idle_timeout_ms(10000)
-            .set_peer_bidi_stream_count(1)
-            .set_peer_unidi_stream_count(1)
+            .set_peer_bidi_stream_count(100)
+            .set_peer_unidi_stream_count(100)
             .set_datagram_receive_enabled(true)
             .set_stream_multi_receive_enabled(true),
     )
