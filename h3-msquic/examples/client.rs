@@ -4,12 +4,11 @@ use tokio::io::AsyncWriteExt;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    #[cfg(feature = "tracing")]
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_span_events(tracing_subscriber::fmt::format::FmtSpan::FULL)
         .with_writer(std::io::stderr)
-        .with_max_level(tracing::Level::INFO)
+        .with_max_level(tracing::Level::TRACE)
         .init();
 
     let api =
@@ -26,15 +25,16 @@ async fn main() -> anyhow::Result<()> {
             .set_peer_bidi_stream_count(1)
             .set_peer_unidi_stream_count(1)
             .set_datagram_receive_enabled(true)
-            .set_stream_multi_receive_enabled(false),
+            .set_stream_multi_receive_enabled(true),
     )
     .unwrap();
-    let cred_config = msquic::CredentialConfig::new_client();
+    let mut cred_config = msquic::CredentialConfig::new_client();
+    cred_config.cred_flags |= msquic::CREDENTIAL_FLAG_NO_CERTIFICATE_VALIDATION;
     configuration.load_credential(&cred_config).unwrap();
 
     let conn =
         msquic_async::Connection::new(msquic::Connection::new(&registration), &registration, &api);
-    conn.start(&configuration, "www.cloudflare.com", 443)
+    conn.start(&configuration, "127.0.0.1", 8443)
         .await?;
     let h3_conn = h3_msquic::Connection::new(conn);
     let (mut driver, mut send_request) = h3::client::new(h3_conn).await?;
@@ -47,7 +47,7 @@ async fn main() -> anyhow::Result<()> {
         println!("sending request ...");
 
         let req = http::Request::builder()
-            .uri("https://www.cloudflare.com/")
+            .uri("https://127.0.0.1:8443/")
             .body(())?;
 
         // sending request results in a bidirectional stream,

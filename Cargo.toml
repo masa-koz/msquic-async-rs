@@ -7,6 +7,7 @@ resolver = "2"
 
 [workspace.dependencies]
 anyhow = "1.0.80"
+argh = "0.1.10"
 bytes = "1.5.0"
 futures = "0.3.30"
 futures-io = "0.3.30"
