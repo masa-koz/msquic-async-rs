@@ -17,7 +17,7 @@ env:
   RUST_BACKTRACE: 1
   toolchain_style: stable
   toolchain_msrv: 1.83.0
-  toolchain_h3_quinn_msrv: 1.83.0
+  toolchain_h3_msquic_msrv: 1.83.0
   toolchain_doc: nightly-2024-12-11
   toolchain_lint: stable
   toolchain_fuzz: nightly-2024-12-11
@@ -68,3 +68,41 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: clippy
+
+  msrv:
+    name: Check MSRV
+    needs: [style]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Install Rust ${{ env.toolchain_msrv }}
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: ${{ env.toolchain_msrv }}
+          override: true
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo check -p msquic-async
+        uses: actions-rs/cargo@v1
+        with:
+          command: check
+          args: -p msquic-async
+
+  msrv_h3_msquic:
+    name: Check MSRV of `h3-msquic`
+    needs: [style]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Install Rust ${{ env.toolchain_h3_msquic_msrv }}
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: ${{ env.toolchain_h3_msquic_msrv }}
+          override: true
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo check -p h3-msquic
+        uses: actions-rs/cargo@v1
+        with:
+          command: check
+          args: -p h3-msquic
