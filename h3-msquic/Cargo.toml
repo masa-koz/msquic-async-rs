@@ -9,9 +9,9 @@ edition = "2021"
 bytes = { workspace = true }
 futures = { workspace = true }
 h3 = { workspace = true }
-msquic = { workspace = true }
+msquic = { workspace = true, features = ["static"] }
 msquic-async = { workspace = true }
-tokio = { workspace = true, default-features = false, features = ["io-util"] }
+tokio = { workspace = true, features = ["io-util"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true, optional = true }
 
@@ -19,6 +19,13 @@ tracing = { workspace = true, optional = true }
 anyhow = { workspace = true }
 http = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = [
+    "fmt",
+    "ansi",
+    "env-filter",
+    "time",
+    "tracing-log",
+] }
 
 [features]
 tracing = ["dep:tracing"]
