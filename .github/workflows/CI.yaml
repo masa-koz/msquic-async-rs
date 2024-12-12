@@ -32,6 +32,7 @@ jobs:
       - msrv
       - msrv_h3_msquic
       - test
+      - doc
     steps:
       - run: exit 0
 
@@ -131,3 +132,22 @@ jobs:
         with:
           command: test
           args: -p msquic-async
+
+  doc:
+    name: Build docs
+    needs: [test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Install Rust ${{ env.toolchain_doc }}
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: ${{ env.toolchain_doc }}
+          override: true
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo rustdoc -p msquic-async -- -D rustdoc::broken_intra_doc_links
+        uses: actions-rs/cargo@v1
+        with:
+          command: rustdoc
+          args: -p msquic-async -- -D rustdoc::broken_intra_doc_links
