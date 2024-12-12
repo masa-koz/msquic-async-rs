@@ -13,6 +13,15 @@ on:
 
 permissions: read-all
 
+env:
+  RUST_BACKTRACE: 1
+  toolchain_style: stable
+  toolchain_msrv: 1.83.0
+  toolchain_h3_quinn_msrv: 1.83.0
+  toolchain_doc: nightly-2024-12-11
+  toolchain_lint: stable
+  toolchain_fuzz: nightly-2024-12-11
+
 jobs:
   ci-pass:
     name: CI is green
@@ -21,15 +30,6 @@ jobs:
       - style
     steps:
       - run: exit 0
-
-env:
-  RUST_BACKTRACE: 1
-  toolchain_style: stable
-  toolchain_msrv: 1.83.0
-  toolchain_h3_msquic_msrv: 1.83.0
-  toolchain_doc: nightly-2024-12-11
-  toolchain_lint: stable
-  toolchain_fuzz: nightly-2024-12-11
 
   style:
     name: Check Style
