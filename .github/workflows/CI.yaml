@@ -55,7 +55,7 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: fmt
-          args: --all -- --check
+          args: -p msquic-async -p h3-msquic -- --check
 
   lint:
     name: Lint
