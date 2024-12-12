@@ -29,6 +29,9 @@ jobs:
     needs:
       - style
       - lint
+      - msrv
+      - msrv_h3_msquic
+      - test
     steps:
       - run: exit 0
 
@@ -106,3 +109,25 @@ jobs:
         with:
           command: check
           args: -p h3-msquic
+
+  test:
+    name: Test ${{ matrix.os }}
+    needs: [style]
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v3
+      - name: Install Rust stable
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo test
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: -p msquic-async
