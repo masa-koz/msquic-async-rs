@@ -14,7 +14,7 @@ futures-io = "0.3.30"
 h3 = { git = "https://github.com/hyperium/h3.git" }
 http = "1"
 libc = "0.2.153"
-msquic = { git = "https://github.com/masa-koz/msquic.git", branch = "msquic-async-20241206" }
+msquic = { path = "./msquic" }
 msquic-async = { path = "./msquic-async" }
 once_cell = "1.19.0"
 rangemap = "1.5.1"
