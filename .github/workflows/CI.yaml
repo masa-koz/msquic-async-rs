@@ -51,7 +51,7 @@ jobs:
           override: true
           components: rustfmt
       - uses: Swatinem/rust-cache@v2
-      - name: cargo fmt --all -- --check
+      - name: cargo fmt -p msquic-async -p h3-msquic -- --check
         uses: actions-rs/cargo@v1
         with:
           command: fmt
