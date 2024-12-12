@@ -2,6 +2,7 @@
 members = [
     "msquic-async",
     "h3-msquic",
+    "msquic",
 ]
 resolver = "2"
 
