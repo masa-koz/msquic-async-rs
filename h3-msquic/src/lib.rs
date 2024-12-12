@@ -9,6 +9,7 @@ use h3::{
     ext::Datagram,
     quic::{self, Error, StreamId, WriteBuf},
 };
+use msquic_async::msquic;
 use std::fmt::{self, Display};
 use std::pin::Pin;
 use std::sync::Arc;

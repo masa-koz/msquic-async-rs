@@ -9,7 +9,6 @@ edition = "2021"
 bytes = { workspace = true }
 futures = { workspace = true }
 h3 = { workspace = true }
-msquic = { workspace = true }
 msquic-async = { workspace = true }
 tokio = { workspace = true, features = ["io-util"] }
 tokio-util = { workspace = true }

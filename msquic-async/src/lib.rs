@@ -6,6 +6,8 @@ mod connection;
 mod listener;
 mod stream;
 
+pub use msquic;
+
 pub use buffer::StreamRecvBuffer;
 pub use connection::{
     AcceptInboundStream, AcceptInboundUniStream, Connection, ConnectionError, DgramReceiveError,
