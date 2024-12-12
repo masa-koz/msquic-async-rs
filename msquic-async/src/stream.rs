@@ -717,9 +717,6 @@ impl Drop for StreamInstance {
         let mut exclusive = self.0.exclusive.lock().unwrap();
         exclusive.recv_buffers.clear();
         match exclusive.state {
-            StreamState::Open => unsafe {
-                Arc::from_raw(Arc::as_ptr(&self.0));
-            },
             StreamState::Start | StreamState::StartComplete => {
                 trace!("StreamInstance({:p}) shutdown while dropping", &*self.0);
                 self.0.shared.msquic_stream.shutdown(
@@ -729,7 +726,7 @@ impl Drop for StreamInstance {
                     0,
                 );
             }
-            StreamState::ShutdownComplete => {}
+            _ => {}
         }
     }
 }
