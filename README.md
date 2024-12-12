@@ -1,4 +1,4 @@
-# msquic-async-rs
+# msquic-async
 msquic based quic library that supports async operation.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
