@@ -1,3 +1,4 @@
+/// This file is based on the `server.rs` example from the `h3` crate.
 use std::{ffi::CString, io::Write, net::SocketAddr, path::PathBuf, ptr, sync::Arc};
 
 use argh::FromArgs;
@@ -6,7 +7,7 @@ use http::{Request, StatusCode};
 use msquic_async::msquic;
 use tempfile::NamedTempFile;
 use tokio::{fs::File, io::AsyncReadExt};
-use tracing::{error, info, trace_span};
+use tracing::{error, info};
 
 use h3::{error::ErrorLevel, quic::BidiStream, server::RequestStream};
 
@@ -24,7 +25,7 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_span_events(tracing_subscriber::fmt::format::FmtSpan::FULL)
         .with_writer(std::io::stderr)
-        .with_max_level(tracing::Level::TRACE)
+        .with_max_level(tracing::Level::INFO)
         .init();
 
     let cmd_opts: CmdOptions = argh::from_env();
@@ -98,17 +99,11 @@ async fn main() -> anyhow::Result<()> {
     // handle incoming connections and requests
 
     while let Ok(conn) = listener.accept().await {
-        trace_span!("New connection being attempted");
-
+        info!("new connection established");
         let root = root.clone();
-
         tokio::spawn(async move {
-            info!("new connection established");
-
             let mut h3_conn = h3::server::Connection::new(h3_msquic::Connection::new(conn))
-                .await
-                .unwrap();
-
+                .await?;
             loop {
                 match h3_conn.accept().await {
                     Ok(Some((req, stream))) => {
@@ -137,6 +132,7 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
             }
+            Ok::<_, anyhow::Error>(())
         });
     }
 
@@ -147,7 +143,7 @@ async fn handle_request<T>(
     req: Request<()>,
     mut stream: RequestStream<T, Bytes>,
     serve_root: Arc<Option<PathBuf>>,
-) -> Result<(), Box<dyn std::error::Error>>
+) -> anyhow::Result<()>
 where
     T: BidiStream<Bytes>,
 {

@@ -1,3 +1,4 @@
+/// This file is based on the `lib.rs` from the `h3-quinn` crate.
 use bytes::{Buf, Bytes, BytesMut};
 use futures::{
     future::poll_fn,

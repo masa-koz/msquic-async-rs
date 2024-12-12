@@ -1,7 +1,9 @@
+/// This file is based on the `client.rs` example from the `h3` crate.
 use futures::future;
 use msquic_async::msquic;
 use std::ptr;
 use tokio::io::AsyncWriteExt;
+use tracing::info;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -9,7 +11,7 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_span_events(tracing_subscriber::fmt::format::FmtSpan::FULL)
         .with_writer(std::io::stderr)
-        .with_max_level(tracing::Level::TRACE)
+        .with_max_level(tracing::Level::INFO)
         .init();
 
     let api =
@@ -44,7 +46,7 @@ async fn main() -> anyhow::Result<()> {
         Ok::<(), anyhow::Error>(())
     };
     let request = async move {
-        println!("sending request ...");
+        info!("sending request ...");
 
         let req = http::Request::builder()
             .uri("https://127.0.0.1:8443/")
@@ -57,12 +59,12 @@ async fn main() -> anyhow::Result<()> {
         // finish on the sending side
         stream.finish().await?;
 
-        println!("receiving response ...");
+        info!("receiving response ...");
 
         let resp = stream.recv_response().await?;
 
-        println!("response: {:?} {}", resp.version(), resp.status());
-        println!("headers: {:#?}", resp.headers());
+        info!("response: {:?} {}", resp.version(), resp.status());
+        info!("headers: {:#?}", resp.headers());
 
         // `recv_data()` must be called after `recv_response()` for
         // receiving potential response body
@@ -79,8 +81,5 @@ async fn main() -> anyhow::Result<()> {
     req_res?;
     drive_res?;
 
-    // wait for the connection to be closed before exiting
-    // let duration = std::time::Duration::from_millis(10000);
-    // std::thread::sleep(duration);
     Ok(())
 }
