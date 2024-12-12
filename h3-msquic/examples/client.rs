@@ -4,6 +4,14 @@ use tokio::io::AsyncWriteExt;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    #[cfg(feature = "tracing")]
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_span_events(tracing_subscriber::fmt::format::FmtSpan::FULL)
+        .with_writer(std::io::stderr)
+        .with_max_level(tracing::Level::INFO)
+        .init();
+
     let api =
         msquic::Api::new().map_err(|status| anyhow::anyhow!("Api::new failed: 0x{:x}", status))?;
     let registration = msquic::Registration::new(&api, ptr::null())
@@ -26,10 +34,11 @@ async fn main() -> anyhow::Result<()> {
 
     let conn =
         msquic_async::Connection::new(msquic::Connection::new(&registration), &registration, &api);
-    conn.start(&configuration, "www.cloudflare.com", 443).await?;
+    conn.start(&configuration, "www.cloudflare.com", 443)
+        .await?;
     let h3_conn = h3_msquic::Connection::new(conn);
     let (mut driver, mut send_request) = h3::client::new(h3_conn).await?;
-    
+
     let drive = async move {
         future::poll_fn(|cx| driver.poll_close(cx)).await?;
         Ok::<(), anyhow::Error>(())
@@ -37,7 +46,9 @@ async fn main() -> anyhow::Result<()> {
     let request = async move {
         println!("sending request ...");
 
-        let req = http::Request::builder().uri("https://www.cloudflare.com/").body(())?;
+        let req = http::Request::builder()
+            .uri("https://www.cloudflare.com/")
+            .body(())?;
 
         // sending request results in a bidirectional stream,
         // which is also used for receiving response
