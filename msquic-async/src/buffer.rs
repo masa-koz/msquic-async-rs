@@ -192,7 +192,7 @@ unsafe impl Send for WriteBufferInner {}
 
 impl WriteBuffer {
     pub(crate) fn new() -> Self {
-        WriteBuffer(Box::new(WriteBufferInner {
+        Self(Box::new(WriteBufferInner {
             internal: Vec::new(),
             zerocopy: Vec::new(),
             msquic_buffer: Vec::new(),
@@ -200,7 +200,7 @@ impl WriteBuffer {
     }
 
     pub(crate) unsafe fn from_raw(inner: *const c_void) -> Self {
-        WriteBuffer(unsafe { Box::from_raw(inner as *mut WriteBufferInner) })
+        Self(unsafe { Box::from_raw(inner as *mut WriteBufferInner) })
     }
 
     pub(crate) fn put_zerocopy(&mut self, buf: &Bytes) -> usize {

@@ -429,12 +429,10 @@ impl StreamInstance {
                 StreamRecvState::ShutdownComplete => {
                     if let Some(conn_error) = &exclusive.conn_error {
                         return Poll::Ready(Err(ReadError::ConnectionLost(conn_error.clone())));
+                    } else if let Some(error_code) = &exclusive.recv_error_code {
+                        return Poll::Ready(Err(ReadError::Reset(*error_code)));
                     } else {
-                        if let Some(error_code) = &exclusive.recv_error_code {
-                            return Poll::Ready(Err(ReadError::Reset(*error_code)));
-                        } else {
-                            return Poll::Ready(Ok(None));
-                        }
+                        return Poll::Ready(Ok(None));
                     }
                 }
             }
@@ -516,19 +514,17 @@ impl StreamInstance {
             StreamSendState::ShutdownComplete => {
                 if let Some(conn_error) = &exclusive.conn_error {
                     return Poll::Ready(Err(WriteError::ConnectionLost(conn_error.clone())));
+                } else if let Some(error_code) = &exclusive.send_error_code {
+                    return Poll::Ready(Err(WriteError::Stopped(*error_code)));
                 } else {
-                    if let Some(error_code) = &exclusive.send_error_code {
-                        return Poll::Ready(Err(WriteError::Stopped(*error_code)));
-                    } else {
-                        return Poll::Ready(Err(WriteError::Finished));
-                    }
+                    return Poll::Ready(Err(WriteError::Finished));
                 }
             }
         }
         let mut write_buf = exclusive
             .write_pool
             .pop()
-            .unwrap_or_else(|| WriteBuffer::new());
+            .unwrap_or(WriteBuffer::new());
         let status = write_fn(&mut write_buf);
         let (buffer, buffer_count) = write_buf.get_buffer();
         match status {
@@ -540,7 +536,7 @@ impl StreamInstance {
                         buffer,
                         buffer_count,
                         msquic::SEND_FLAG_NONE,
-                        write_buf.into_raw() as *const _ as *const c_void,
+                        write_buf.into_raw() as *const _,
                     )
                     .unwrap();
                 Poll::Ready(Ok(Some(val)))
@@ -554,7 +550,7 @@ impl StreamInstance {
                         buffer,
                         buffer_count,
                         msquic::SEND_FLAG_FIN,
-                        write_buf.into_raw() as *const _ as *const c_void,
+                        write_buf.into_raw() as *const _,
                     )
                     .unwrap();
                 Poll::Ready(Ok(val))
@@ -580,12 +576,10 @@ impl StreamInstance {
             StreamSendState::ShutdownComplete => {
                 if let Some(conn_error) = &exclusive.conn_error {
                     return Poll::Ready(Err(WriteError::ConnectionLost(conn_error.clone())));
+                } else if let Some(error_code) = &exclusive.send_error_code {
+                    return Poll::Ready(Err(WriteError::Stopped(*error_code)));
                 } else {
-                    if let Some(error_code) = &exclusive.send_error_code {
-                        return Poll::Ready(Err(WriteError::Stopped(*error_code)));
-                    } else {
-                        return Poll::Ready(Ok(()));
-                    }
+                    return Poll::Ready(Ok(()));
                 }
             }
             _ => {
@@ -618,12 +612,10 @@ impl StreamInstance {
             StreamSendState::ShutdownComplete => {
                 if let Some(conn_error) = &exclusive.conn_error {
                     return Poll::Ready(Err(WriteError::ConnectionLost(conn_error.clone())));
+                } else if let Some(error_code) = &exclusive.send_error_code {
+                    return Poll::Ready(Err(WriteError::Stopped(*error_code)));
                 } else {
-                    if let Some(error_code) = &exclusive.send_error_code {
-                        return Poll::Ready(Err(WriteError::Stopped(*error_code)));
-                    } else {
-                        return Poll::Ready(Ok(()));
-                    }
+                    return Poll::Ready(Ok(()));
                 }
             }
             _ => {
@@ -643,10 +635,10 @@ impl StreamInstance {
                     .msquic_stream
                     .shutdown(msquic::STREAM_SHUTDOWN_FLAG_ABORT_SEND, error_code);
                 exclusive.send_state = StreamSendState::Shutdown;
-                return Ok(());
+                Ok(())
             }
             _ => {
-                return Err(WriteError::Closed);
+                Err(WriteError::Closed)
             }
         }
     }
@@ -676,12 +668,10 @@ impl StreamInstance {
             StreamRecvState::ShutdownComplete => {
                 if let Some(conn_error) = &exclusive.conn_error {
                     return Poll::Ready(Err(ReadError::ConnectionLost(conn_error.clone())));
+                } else if let Some(error_code) = &exclusive.recv_error_code {
+                    return Poll::Ready(Err(ReadError::Reset(*error_code)));
                 } else {
-                    if let Some(error_code) = &exclusive.recv_error_code {
-                        return Poll::Ready(Err(ReadError::Reset(*error_code)));
-                    } else {
-                        return Poll::Ready(Ok(()));
-                    }
+                    return Poll::Ready(Ok(()));
                 }
             }
             _ => {
@@ -802,7 +792,7 @@ impl StreamInner {
         recv_state: StreamRecvState,
         local_open: bool,
     ) -> Self {
-        StreamInner {
+        Self {
             exclusive: Mutex::new(StreamInnerExclusive {
                 state: StreamState::Open,
                 start_status: None,
@@ -871,7 +861,7 @@ impl StreamInner {
 
     fn handle_event_start_complete(
         _stream: msquic::Handle,
-        inner: &StreamInner,
+        inner: &Self,
         payload: &msquic::StreamEventStartComplete,
     ) -> u32 {
         if msquic::Status::succeeded(payload.status) {
@@ -908,7 +898,7 @@ impl StreamInner {
 
     fn handle_event_receive(
         _stream: msquic::Handle,
-        inner: &StreamInner,
+        inner: &Self,
         payload: &msquic::StreamEventReceive,
     ) -> u32 {
         trace!(
@@ -923,7 +913,7 @@ impl StreamInner {
         let buffers =
             unsafe { std::slice::from_raw_parts(payload.buffer, payload.buffer_count as usize) };
 
-        let arc_inner: Arc<StreamInner> = unsafe { Arc::from_raw(inner as *const _) };
+        let arc_inner: Arc<Self> = unsafe { Arc::from_raw(inner as *const _) };
 
         let recv_buffer = StreamRecvBuffer::new(
             payload.absolute_offset as usize,
@@ -944,7 +934,7 @@ impl StreamInner {
 
     fn handle_event_send_complete(
         _stream: msquic::Handle,
-        inner: &StreamInner,
+        inner: &Self,
         payload: &msquic::StreamEventSendComplete,
     ) -> u32 {
         trace!(
@@ -960,7 +950,7 @@ impl StreamInner {
         msquic::QUIC_STATUS_SUCCESS
     }
 
-    fn handle_event_peer_send_shutdown(_stream: msquic::Handle, inner: &StreamInner) -> u32 {
+    fn handle_event_peer_send_shutdown(_stream: msquic::Handle, inner: &Self) -> u32 {
         trace!(
             "Stream({:p}, id={:?}) Peer send shutdown",
             inner,
@@ -977,7 +967,7 @@ impl StreamInner {
 
     fn handle_event_peer_send_aborted(
         _stream: msquic::Handle,
-        inner: &StreamInner,
+        inner: &Self,
         payload: &msquic::StreamEventPeerSendAborted,
     ) -> u32 {
         trace!(
@@ -997,7 +987,7 @@ impl StreamInner {
 
     fn handle_event_peer_receive_aborted(
         _stream: msquic::Handle,
-        inner: &StreamInner,
+        inner: &Self,
         payload: &msquic::StreamEventPeerReceiveAborted,
     ) -> u32 {
         trace!(
@@ -1017,7 +1007,7 @@ impl StreamInner {
 
     fn handle_event_send_shutdown_complete(
         _stream: msquic::Handle,
-        inner: &StreamInner,
+        inner: &Self,
         _payload: &msquic::StreamEventSendShutdownComplete,
     ) -> u32 {
         trace!(
@@ -1036,7 +1026,7 @@ impl StreamInner {
 
     fn handle_event_shutdown_complete(
         _stream: msquic::Handle,
-        inner: &StreamInner,
+        inner: &Self,
         payload: &msquic::StreamEventShutdownComplete,
     ) -> u32 {
         trace!(
@@ -1087,7 +1077,7 @@ impl StreamInner {
 
     fn handle_event_ideal_send_buffer_size(
         _stream: msquic::Handle,
-        inner: &StreamInner,
+        inner: &Self,
         _payload: &msquic::StreamEventIdealSendBufferSize,
     ) -> u32 {
         trace!(
@@ -1098,7 +1088,7 @@ impl StreamInner {
         msquic::QUIC_STATUS_SUCCESS
     }
 
-    fn handle_event_peer_accepted(_stream: msquic::Handle, inner: &StreamInner) -> u32 {
+    fn handle_event_peer_accepted(_stream: msquic::Handle, inner: &Self) -> u32 {
         trace!(
             "Stream({:p}, id={:?}) Peer accepted",
             inner,
@@ -1122,7 +1112,7 @@ impl StreamInner {
         context: *mut c_void,
         event: &msquic::StreamEvent,
     ) -> u32 {
-        let inner = unsafe { &*(context as *const StreamInner) };
+        let inner = unsafe { &*(context as *const Self) };
 
         match event.event_type {
             msquic::STREAM_EVENT_START_COMPLETE => {
@@ -1270,7 +1260,7 @@ impl tokio::io::AsyncWrite for Stream {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<std::io::Result<usize>> {
-        let len = ready!(Stream::poll_write(self.get_mut(), cx, buf, false))?;
+        let len = ready!(Self::poll_write(self.get_mut(), cx, buf, false))?;
         Poll::Ready(Ok(len))
     }
 
@@ -1279,7 +1269,7 @@ impl tokio::io::AsyncWrite for Stream {
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context) -> Poll<std::io::Result<()>> {
-        let _ = ready!(Stream::poll_finish_write(self.get_mut(), cx))?;
+        ready!(Self::poll_finish_write(self.get_mut(), cx))?;
         Poll::Ready(Ok(()))
     }
 }
@@ -1313,7 +1303,7 @@ impl tokio::io::AsyncWrite for WriteStream {
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context) -> Poll<std::io::Result<()>> {
-        let _ = ready!(Self::poll_finish_write(self.get_mut(), cx))?;
+        ready!(Self::poll_finish_write(self.get_mut(), cx))?;
         Poll::Ready(Ok(()))
     }
 }
@@ -1344,7 +1334,7 @@ impl futures_io::AsyncWrite for Stream {
     }
 
     fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        let _ = ready!(Self::poll_finish_write(self.get_mut(), cx))?;
+        ready!(Self::poll_finish_write(self.get_mut(), cx))?;
         Poll::Ready(Ok(()))
     }
 }
@@ -1375,7 +1365,7 @@ impl futures_io::AsyncWrite for WriteStream {
     }
 
     fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        let _ = ready!(Self::poll_finish_write(self.get_mut(), cx))?;
+        ready!(Self::poll_finish_write(self.get_mut(), cx))?;
         Poll::Ready(Ok(()))
     }
 }

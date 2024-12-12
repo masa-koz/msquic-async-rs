@@ -168,7 +168,7 @@ impl ListenerInner {
         configuration: msquic::Configuration,
         msquic_api: &msquic::Api,
     ) -> Self {
-        ListenerInner {
+        Self {
             exclusive: Mutex::new(ListenerInnerExclusive {
                 state: ListenerState::Open,
                 new_connections: VecDeque::new(),
@@ -184,7 +184,7 @@ impl ListenerInner {
     }
 
     fn handle_event_new_connection(
-        inner: &ListenerInner,
+        inner: &Self,
         payload: &msquic::ListenerEventNewConnection,
     ) -> u32 {
         trace!("Listener({:p}) new connection event", inner);
@@ -202,7 +202,7 @@ impl ListenerInner {
     }
 
     fn handle_event_stop_complete(
-        inner: &ListenerInner,
+        inner: &Self,
         _payload: &msquic::ListenerEventStopComplete,
     ) -> u32 {
         trace!("Listener({:p}) stop complete", inner);
@@ -226,7 +226,7 @@ impl ListenerInner {
         context: *mut c_void,
         event: &msquic::ListenerEvent,
     ) -> u32 {
-        let inner = unsafe { &mut *(context as *mut ListenerInner) };
+        let inner = unsafe { &mut *(context as *mut Self) };
         match event.event_type {
             msquic::LISTENER_EVENT_NEW_CONNECTION => {
                 Self::handle_event_new_connection(inner, unsafe { &event.payload.new_connection })

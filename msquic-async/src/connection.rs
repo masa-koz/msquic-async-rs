@@ -66,7 +66,7 @@ impl Connection {
         port: u16,
     ) -> ConnectionStart<'a> {
         ConnectionStart {
-            conn: &self,
+            conn: self,
             configuration,
             host,
             port,
@@ -127,7 +127,7 @@ impl Connection {
 
     /// Accept an inbound bidilectional stream.
     pub fn accept_inbound_stream(&self) -> AcceptInboundStream<'_> {
-        AcceptInboundStream { conn: &self }
+        AcceptInboundStream { conn: self }
     }
 
     /// Poll to accept an inbound bidilectional stream.
@@ -161,7 +161,7 @@ impl Connection {
 
     /// Accept an inbound unidirectional stream.
     pub fn accept_inbound_uni_stream(&self) -> AcceptInboundUniStream<'_> {
-        AcceptInboundUniStream { conn: &self }
+        AcceptInboundUniStream { conn: self }
     }
 
     /// Poll to accept an inbound unidirectional stream.
@@ -221,7 +221,7 @@ impl Connection {
             Poll::Ready(Ok(buf))
         } else {
             exclusive.recv_waiters.push(cx.waker().clone());
-            return Poll::Pending;
+            Poll::Pending
         }
     }
 
@@ -251,7 +251,7 @@ impl Connection {
         let mut write_buf = exclusive
             .write_pool
             .pop()
-            .unwrap_or_else(|| WriteBuffer::new());
+            .unwrap_or(WriteBuffer::new());
         let _ = write_buf.put_zerocopy(buf);
         let (buffer, buffer_count) = write_buf.get_buffer();
         self.0
@@ -261,7 +261,7 @@ impl Connection {
                 buffer,
                 buffer_count,
                 msquic::SEND_FLAG_NONE,
-                write_buf.into_raw() as *const _ as *const c_void,
+                write_buf.into_raw() as *const _,
             )
             .unwrap();
         Poll::Ready(Ok(()))
@@ -288,7 +288,7 @@ impl Connection {
         let mut write_buf = exclusive
             .write_pool
             .pop()
-            .unwrap_or_else(|| WriteBuffer::new());
+            .unwrap_or(WriteBuffer::new());
         let _ = write_buf.put_zerocopy(buf);
         let (buffer, buffer_count) = write_buf.get_buffer();
         self.0
@@ -298,7 +298,7 @@ impl Connection {
                 buffer,
                 buffer_count,
                 msquic::SEND_FLAG_NONE,
-                write_buf.into_raw() as *const _ as *const c_void,
+                write_buf.into_raw() as *const _,
             )
             .unwrap();
         Ok(())
@@ -419,7 +419,7 @@ struct ConnectionInnerShared {
 
 impl ConnectionInner {
     fn new(msquic_conn: msquic::Connection, api: &msquic::Api, state: ConnectionState) -> Self {
-        ConnectionInner {
+        Self {
             exclusive: Mutex::new(ConnectionInnerExclusive {
                 state,
                 error: None,
@@ -441,7 +441,7 @@ impl ConnectionInner {
     }
 
     fn handle_event_connected(
-        inner: &ConnectionInner,
+        inner: &Self,
         _payload: &msquic::ConnectionEventConnected,
     ) -> u32 {
         trace!("Connection({:p}) Connected", inner);
@@ -456,7 +456,7 @@ impl ConnectionInner {
     }
 
     fn handle_event_shutdown_initiated_by_transport(
-        inner: &ConnectionInner,
+        inner: &Self,
         payload: &msquic::ConnectionEventConnectionShutdownByTransport,
     ) -> u32 {
         trace!(
@@ -483,7 +483,7 @@ impl ConnectionInner {
     }
 
     fn handle_event_shutdown_initiated_by_peer(
-        inner: &ConnectionInner,
+        inner: &Self,
         payload: &msquic::ConnectionEventConnectionShutdownByPeer,
     ) -> u32 {
         trace!(
@@ -507,7 +507,7 @@ impl ConnectionInner {
     }
 
     fn handle_event_shutdown_complete(
-        inner: &ConnectionInner,
+        inner: &Self,
         _payload: &msquic::ConnectionEventShutdownComplete,
     ) -> u32 {
         trace!("Connection({:p}) Connection Shutdown complete", inner);
@@ -538,7 +538,7 @@ impl ConnectionInner {
     }
 
     fn handle_event_peer_stream_started(
-        inner: &ConnectionInner,
+        inner: &Self,
         payload: &msquic::ConnectionEventPeerStreamStarted,
     ) -> u32 {
         let stream_type = if (payload.flags & msquic::STREAM_OPEN_FLAG_UNIDIRECTIONAL) != 0 {
@@ -579,7 +579,7 @@ impl ConnectionInner {
     }
 
     fn handle_event_streams_available(
-        inner: &ConnectionInner,
+        inner: &Self,
         payload: &msquic::ConnectionEventStreamsAvailable,
     ) -> u32 {
         trace!(
@@ -592,7 +592,7 @@ impl ConnectionInner {
     }
 
     fn handle_event_datagram_state_changed(
-        inner: &ConnectionInner,
+        inner: &Self,
         payload: &msquic::ConnectionEventDatagramStateChanged,
     ) -> u32 {
         trace!(
@@ -605,7 +605,7 @@ impl ConnectionInner {
     }
 
     fn handle_event_datagram_received(
-        inner: &ConnectionInner,
+        inner: &Self,
         payload: &msquic::ConnectionEventDatagramReceived,
     ) -> u32 {
         trace!("Connection({:p}) Datagram received", inner);
@@ -625,7 +625,7 @@ impl ConnectionInner {
     }
 
     fn handle_event_datagram_send_state_changed(
-        inner: &ConnectionInner,
+        inner: &Self,
         payload: &msquic::ConnectionEventDatagramSendStateChanged,
     ) -> u32 {
         trace!(
@@ -650,7 +650,7 @@ impl ConnectionInner {
         context: *mut c_void,
         event: &msquic::ConnectionEvent,
     ) -> u32 {
-        let inner = unsafe { &mut *(context as *mut ConnectionInner) };
+        let inner = unsafe { &*(context as *const Self) };
         match event.event_type {
             msquic::CONNECTION_EVENT_CONNECTED => {
                 Self::handle_event_connected(inner, unsafe { &event.payload.connected })
