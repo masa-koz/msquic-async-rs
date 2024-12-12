@@ -6,17 +6,17 @@ mod connection;
 mod listener;
 mod stream;
 
+pub use buffer::StreamRecvBuffer;
 pub use connection::{
-    Connection, ConnectionError, ShutdownError as ConnectionShutdownError,
-    StartError as ConnectionStartError, DgramReceiveError, DgramSendError,
-    OpenOutboundStream, AcceptInboundStream, AcceptInboundUniStream,
+    AcceptInboundStream, AcceptInboundUniStream, Connection, ConnectionError, DgramReceiveError,
+    DgramSendError, OpenOutboundStream, ShutdownError as ConnectionShutdownError,
+    StartError as ConnectionStartError,
 };
 pub use listener::{ListenError, Listener};
 pub use stream::{
     ReadError, ReadStream, StartError as StreamStartError, Stream, StreamType, WriteError,
     WriteStream,
 };
-pub use buffer::StreamRecvBuffer;
 
 #[cfg(test)]
 mod tests;

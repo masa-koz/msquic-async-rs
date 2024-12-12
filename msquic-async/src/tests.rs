@@ -1,6 +1,6 @@
 use super::{
-    Connection, ConnectionError, ConnectionStartError, ListenError,
-    Listener, ReadError, StreamRecvBuffer, StreamStartError, WriteError,
+    Connection, ConnectionError, ConnectionStartError, ListenError, Listener, ReadError,
+    StreamRecvBuffer, StreamStartError, WriteError,
 };
 
 use std::ffi::CString;

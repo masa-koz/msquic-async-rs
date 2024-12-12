@@ -10,7 +10,7 @@ use libc::c_void;
 use tracing::trace;
 
 /// A buffer for receiving data from a stream.
-/// 
+///
 /// It implements [`bytes::Buf`] and is backed by a list of [`msquic::Buffer`].
 pub struct StreamRecvBuffer {
     stream: Option<Arc<StreamInner>>,
@@ -35,7 +35,10 @@ impl StreamRecvBuffer {
         };
         trace!(
             "StreamRecvBuffer({:p}) created offset={} len={} fin={}",
-            buf.buffers.first().map(|x| x.buffer).unwrap_or(std::ptr::null_mut()),
+            buf.buffers
+                .first()
+                .map(|x| x.buffer)
+                .unwrap_or(std::ptr::null_mut()),
             buf.offset,
             buf.len(),
             buf.fin,
@@ -166,7 +169,10 @@ impl Drop for StreamRecvBuffer {
     fn drop(&mut self) {
         trace!(
             "StreamRecvBuffer({:p}) dropping",
-            self.buffers.first().map(|x| x.buffer).unwrap_or(std::ptr::null_mut())
+            self.buffers
+                .first()
+                .map(|x| x.buffer)
+                .unwrap_or(std::ptr::null_mut())
         );
         if let Some(stream) = self.stream.take() {
             stream.read_complete(self);
