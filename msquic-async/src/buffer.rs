@@ -9,6 +9,9 @@ use bytes::{Buf, Bytes};
 use libc::c_void;
 use tracing::trace;
 
+/// A buffer for receiving data from a stream.
+/// 
+/// It implements [`bytes::Buf`] and is backed by a list of [`msquic::Buffer`].
 pub struct StreamRecvBuffer {
     stream: Option<Arc<StreamInner>>,
     buffers: Vec<msquic::Buffer>,
@@ -44,6 +47,7 @@ impl StreamRecvBuffer {
         self.stream = Some(stream);
     }
 
+    /// Returns the length of the buffer.
     pub fn len(&self) -> usize {
         if self.buffers.len() <= self.read_cursor {
             return 0;
@@ -56,10 +60,12 @@ impl StreamRecvBuffer {
             - self.read_cursor_in_buffer
     }
 
+    /// Returns `true` if the buffer is empty.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
+    /// Returns the buffer as a slice.
     pub fn as_slice_upto_size(&self, size: usize) -> &[u8] {
         if self.buffers.len() <= self.read_cursor {
             return &[];
@@ -71,6 +77,7 @@ impl StreamRecvBuffer {
         unsafe { slice::from_raw_parts(buffer.buffer.add(self.read_cursor_in_buffer), len) }
     }
 
+    /// Consumes and returns the buffer as a slice.
     pub fn get_bytes_upto_size<'a>(&mut self, size: usize) -> Option<&'a [u8]> {
         if self.buffers.len() <= self.read_cursor {
             return None;
@@ -91,14 +98,17 @@ impl StreamRecvBuffer {
         Some(slice)
     }
 
+    /// Return the offset in the stream.
     pub fn offset(&self) -> usize {
         self.offset
     }
 
+    /// Return the range in the stream.
     pub fn range(&self) -> Range<usize> {
         self.offset..self.offset + self.len
     }
 
+    /// Return `true` if the buffer is the end of the stream.
     pub fn fin(&self) -> bool {
         self.fin
     }
