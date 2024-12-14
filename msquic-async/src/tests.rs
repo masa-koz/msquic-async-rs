@@ -52,14 +52,15 @@ async fn test_write_chunk() -> Result<()> {
     let client_config = new_client_config(&registration)?;
     let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
     set.spawn(async move {
-        conn
-            .start(
-                &client_config,
-                &format!("{}", server_addr.ip()),
-                server_addr.port(),
-            )
+        conn.start(
+            &client_config,
+            &format!("{}", server_addr.ip()),
+            server_addr.port(),
+        )
+        .await?;
+        let mut stream = conn
+            .open_outbound_stream(crate::StreamType::Unidirectional, false)
             .await?;
-        let mut stream = conn.open_outbound_stream(crate::StreamType::Unidirectional, false).await?;
 
         let chunk = Bytes::from("hello world");
         let res = stream.write_chunk(&chunk, true).await;
@@ -115,14 +116,15 @@ async fn test_write_chunks() -> Result<()> {
     let client_config = new_client_config(&registration)?;
     let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
     set.spawn(async move {
-        conn
-            .start(
-                &client_config,
-                &format!("{}", server_addr.ip()),
-                server_addr.port(),
-            )
+        conn.start(
+            &client_config,
+            &format!("{}", server_addr.ip()),
+            server_addr.port(),
+        )
+        .await?;
+        let mut stream = conn
+            .open_outbound_stream(crate::StreamType::Unidirectional, false)
             .await?;
-        let mut stream = conn.open_outbound_stream(crate::StreamType::Unidirectional, false).await?;
 
         let chunks = [Bytes::from("hello"), Bytes::from(" world")];
         let res = stream.write_chunks(&chunks, true).await;
@@ -166,9 +168,7 @@ async fn test_read_chunk() {
 
     set.spawn(async move {
         let conn = listener.accept().await?;
-        let read_stream = conn
-            .accept_inbound_uni_stream()
-            .await?;
+        let read_stream = conn.accept_inbound_uni_stream().await?;
 
         let res = read_stream.read_chunk().await;
         assert!(res.is_ok());
