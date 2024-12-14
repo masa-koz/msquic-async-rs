@@ -20,6 +20,132 @@ use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 
+/// Test for ['Stream::write_chunk']
+#[test(tokio::test)]
+async fn test_write_chunk() -> Result<()> {
+    let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
+
+    let api =
+        msquic::Api::new().map_err(|status| anyhow::anyhow!("Api::new failed: 0x{:x}", status))?;
+    let registration = msquic::Registration::new(&api, ptr::null())
+        .map_err(|status| anyhow::anyhow!("Registration::new failed: 0x{:x}", status))?;
+
+    let listener = new_server(&registration, &api)?;
+    let addr: SocketAddr = "127.0.0.1:0".parse()?;
+    listener.start(&[msquic::Buffer::from("test")], Some(addr))?;
+    let server_addr = listener.local_addr()?;
+
+    let mut set = JoinSet::new();
+
+    set.spawn(async move {
+        let conn = listener.accept().await?;
+        let mut stream = conn.accept_inbound_uni_stream().await?;
+
+        let mut buf = [0; 1024];
+        let res = poll_fn(|cx| stream.poll_read(cx, &mut buf)).await;
+        assert_eq!(res, Ok(11));
+
+        server_tx.send(()).await.expect("send");
+        Ok::<_, anyhow::Error>(())
+    });
+
+    let client_config = new_client_config(&registration)?;
+    let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
+    set.spawn(async move {
+        conn
+            .start(
+                &client_config,
+                &format!("{}", server_addr.ip()),
+                server_addr.port(),
+            )
+            .await?;
+        let mut stream = conn.open_outbound_stream(crate::StreamType::Unidirectional, false).await?;
+
+        let chunk = Bytes::from("hello world");
+        let res = stream.write_chunk(&chunk, true).await;
+        assert_eq!(res, Ok(11));
+
+        client_rx.recv().await.expect("recv");
+        Ok::<_, anyhow::Error>(())
+    });
+
+    let mut results = Vec::new();
+    while let Some(res) = set.join_next().await {
+        results.push(res);
+    }
+    results.into_iter().for_each(|res| {
+        if let Err(err) = res {
+            if err.is_panic() {
+                std::panic::resume_unwind(err.into_panic());
+            }
+        }
+    });
+    Ok(())
+}
+
+/// Test for ['Stream::write_chunks']
+#[test(tokio::test)]
+async fn test_write_chunks() -> Result<()> {
+    let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
+
+    let api =
+        msquic::Api::new().map_err(|status| anyhow::anyhow!("Api::new failed: 0x{:x}", status))?;
+    let registration = msquic::Registration::new(&api, ptr::null())
+        .map_err(|status| anyhow::anyhow!("Registration::new failed: 0x{:x}", status))?;
+
+    let listener = new_server(&registration, &api)?;
+    let addr: SocketAddr = "127.0.0.1:0".parse()?;
+    listener.start(&[msquic::Buffer::from("test")], Some(addr))?;
+    let server_addr = listener.local_addr()?;
+
+    let mut set = JoinSet::new();
+
+    set.spawn(async move {
+        let conn = listener.accept().await?;
+        let mut stream = conn.accept_inbound_uni_stream().await?;
+
+        let mut buf = [0; 1024];
+        let res = poll_fn(|cx| stream.poll_read(cx, &mut buf)).await;
+        assert_eq!(res, Ok(11));
+
+        server_tx.send(()).await.expect("send");
+        Ok::<_, anyhow::Error>(())
+    });
+
+    let client_config = new_client_config(&registration)?;
+    let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
+    set.spawn(async move {
+        conn
+            .start(
+                &client_config,
+                &format!("{}", server_addr.ip()),
+                server_addr.port(),
+            )
+            .await?;
+        let mut stream = conn.open_outbound_stream(crate::StreamType::Unidirectional, false).await?;
+
+        let chunks = [Bytes::from("hello"), Bytes::from(" world")];
+        let res = stream.write_chunks(&chunks, true).await;
+        assert_eq!(res, Ok(11));
+
+        client_rx.recv().await.expect("recv");
+        Ok::<_, anyhow::Error>(())
+    });
+
+    let mut results = Vec::new();
+    while let Some(res) = set.join_next().await {
+        results.push(res);
+    }
+    results.into_iter().for_each(|res| {
+        if let Err(err) = res {
+            if err.is_panic() {
+                std::panic::resume_unwind(err.into_panic());
+            }
+        }
+    });
+    Ok(())
+}
+
 #[test(tokio::test)]
 async fn connection_validation() -> Result<()> {
     let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
