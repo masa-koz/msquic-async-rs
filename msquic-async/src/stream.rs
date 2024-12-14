@@ -174,6 +174,11 @@ impl Stream {
         self.0.poll_read_chunk(cx)
     }
 
+    /// Read the next segment of data.
+    pub fn read_chunk(&self) -> ReadChunk<'_> {
+        self.0.read_chunk()
+    }
+
     /// Poll to write to the stream from buf.
     pub fn poll_write(
         &mut self,
@@ -210,11 +215,7 @@ impl Stream {
     }
 
     /// Write the list of bytes to the stream directly.
-    pub fn write_chunks<'a>(
-        &'a mut self,
-        chunks: &'a [Bytes],
-        fin: bool,
-    ) -> WriteChunks<'a> {
+    pub fn write_chunks<'a>(&'a mut self, chunks: &'a [Bytes], fin: bool) -> WriteChunks<'a> {
         self.0.write_chunks(chunks, fin)
     }
 
@@ -279,6 +280,11 @@ impl ReadStream {
         self.0.poll_read_chunk(cx)
     }
 
+    /// Read the next segment of data.
+    pub fn read_chunk(&self) -> ReadChunk<'_> {
+        self.0.read_chunk()
+    }
+
     /// Poll to abort reading from the stream.
     pub fn poll_abort_read(
         &mut self,
@@ -340,11 +346,7 @@ impl WriteStream {
     }
 
     /// Write the list of bytes to the stream directly.
-    pub fn write_chunks<'a>(
-        &'a mut self,
-        chunks: &'a [Bytes],
-        fin: bool,
-    ) -> WriteChunks<'a> {
+    pub fn write_chunks<'a>(&'a mut self, chunks: &'a [Bytes], fin: bool) -> WriteChunks<'a> {
         self.0.write_chunks(chunks, fin)
     }
 
@@ -445,6 +447,10 @@ impl StreamInstance {
         })
     }
 
+    fn read_chunk(&self) -> ReadChunk<'_> {
+        ReadChunk { stream: self }
+    }
+
     fn poll_read_generic<T, U>(
         &self,
         cx: &mut Context<'_>,
@@ -541,27 +547,22 @@ impl StreamInstance {
         chunks: &[Bytes],
         fin: bool,
     ) -> Poll<Result<usize, WriteError>> {
-        self
-            .poll_write_generic(cx, |write_buf| {
-                let (mut total_len, mut total_written) = (0, 0);
-                for buf in chunks {
-                    total_len += buf.len();
-                    total_written += write_buf.put_zerocopy(buf);
-                }
-                if total_written == total_len && !fin {
-                    WriteStatus::Writable(total_written)
-                } else {
-                    (Some(total_written), fin).into()
-                }
-            })
-            .map(|res| res.map(|x| x.unwrap_or(0)))
+        self.poll_write_generic(cx, |write_buf| {
+            let (mut total_len, mut total_written) = (0, 0);
+            for buf in chunks {
+                total_len += buf.len();
+                total_written += write_buf.put_zerocopy(buf);
+            }
+            if total_written == total_len && !fin {
+                WriteStatus::Writable(total_written)
+            } else {
+                (Some(total_written), fin).into()
+            }
+        })
+        .map(|res| res.map(|x| x.unwrap_or(0)))
     }
 
-    pub(crate) fn write_chunks<'a>(
-        &'a self,
-        chunks: &'a [Bytes],
-        fin: bool,
-    ) -> WriteChunks<'a> {
+    pub(crate) fn write_chunks<'a>(&'a self, chunks: &'a [Bytes], fin: bool) -> WriteChunks<'a> {
         WriteChunks {
             stream: self,
             chunks,
@@ -1263,6 +1264,17 @@ impl fmt::Debug for StreamInnerShared {
             .finish()
     }
 }
+pub struct ReadChunk<'a> {
+    stream: &'a StreamInstance,
+}
+
+impl Future for ReadChunk<'_> {
+    type Output = Result<Option<StreamRecvBuffer>, ReadError>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.stream.poll_read_chunk(cx)
+    }
+}
 
 pub struct WriteChunk<'a> {
     stream: &'a StreamInstance,
@@ -1274,8 +1286,7 @@ impl Future for WriteChunk<'_> {
     type Output = Result<usize, WriteError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.stream
-            .poll_write_chunk(cx, self.chunk, self.fin)
+        self.stream.poll_write_chunk(cx, self.chunk, self.fin)
     }
 }
 
@@ -1289,8 +1300,7 @@ impl Future for WriteChunks<'_> {
     type Output = Result<usize, WriteError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.stream
-            .poll_write_chunks(cx, self.chunks, self.fin)
+        self.stream.poll_write_chunks(cx, self.chunks, self.fin)
     }
 }
 
