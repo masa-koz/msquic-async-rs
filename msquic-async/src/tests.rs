@@ -21,7 +21,189 @@ use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 
-/// Test for ['Connection::open_outbound_stream']
+/// Test for ['Connection::start()']
+#[test(tokio::test)]
+async fn test_connection_start() {
+    let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
+    let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
+
+    let api = msquic::Api::new().unwrap();
+    let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
+    let listener = new_server(&registration, &api).expect("new_server");
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    listener
+        .start(&[msquic::Buffer::from("test")], Some(addr))
+        .expect("listener start");
+    let server_addr = listener.local_addr().expect("listener local_addr");
+    let mut set = JoinSet::new();
+
+    set.spawn(async move {
+        let _conn = listener.accept().await.unwrap();
+        server_rx.recv().await.unwrap();
+
+        listener.stop().await.unwrap();
+        server_tx.send(()).await.unwrap();
+    });
+
+    let client_config = new_client_config(&registration).unwrap();
+    let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
+    let conn1 = Connection::new(msquic::Connection::new(&registration), &registration, &api);
+    set.spawn(async move {
+        let res = conn
+            .start(
+                &client_config,
+                &format!("{}", server_addr.ip()),
+                server_addr.port(),
+            )
+            .await;
+        assert!(res.is_ok());
+        client_tx.send(()).await.unwrap();
+
+        client_rx.recv().await.unwrap();
+
+        if let Err(ConnectionStartError::ConnectionLost(ConnectionError::ShutdownByTransport(
+            _status,
+            _error_code,
+        ))) = conn1
+            .start(
+                &client_config,
+                &format!("{}", server_addr.ip()),
+                server_addr.port(),
+            )
+            .await
+        {
+            assert!(true, "ConnectionError::ShutdownByTransport");
+        } else {
+            assert!(false, "ConnectionError::ShutdownByTransport");
+        }
+    });
+
+    let mut results = Vec::new();
+    while let Some(res) = set.join_next().await {
+        results.push(res);
+    }
+    results.into_iter().for_each(|res| {
+        if let Err(err) = res {
+            if err.is_panic() {
+                std::panic::resume_unwind(err.into_panic());
+            }
+        }
+    });
+}
+
+/// Test for ['Connection::shutdown()']
+#[test(tokio::test)]
+async fn test_connection_poll_shutdown() {
+    let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
+
+    let api = msquic::Api::new().unwrap();
+    let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
+    let listener = new_server(&registration, &api).expect("new_server");
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    listener
+        .start(&[msquic::Buffer::from("test")], Some(addr))
+        .expect("listener start");
+    let server_addr = listener.local_addr().expect("listener local_addr");
+
+    let mut set = JoinSet::new();
+
+    set.spawn(async move {
+        let conn = listener.accept().await.unwrap();
+        server_rx.recv().await.unwrap();
+
+        let res = conn
+            .open_outbound_stream(crate::StreamType::Bidirectional, false)
+            .await;
+        assert_eq!(
+            res.err(),
+            Some(StreamStartError::ConnectionLost(
+                ConnectionError::ShutdownByPeer(1)
+            ))
+        );
+    });
+
+    let client_config = new_client_config(&registration).unwrap();
+    let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
+    set.spawn(async move {
+        conn.start(
+            &client_config,
+            &format!("{}", server_addr.ip()),
+            server_addr.port(),
+        )
+        .await
+        .unwrap();
+        let res = poll_fn(|cx| conn.poll_shutdown(cx, 1)).await;
+        assert!(res.is_ok());
+
+        client_tx.send(()).await.expect("send");
+    });
+
+    let mut results = Vec::new();
+    while let Some(res) = set.join_next().await {
+        results.push(res);
+    }
+    results.into_iter().for_each(|res| {
+        if let Err(err) = res {
+            if err.is_panic() {
+                std::panic::resume_unwind(err.into_panic());
+            }
+        }
+    });
+}
+
+/// Test for ['Listener::accept()']
+#[test(tokio::test)]
+async fn test_listener_accept() {
+    let api = msquic::Api::new().unwrap();
+    let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
+    let listener = new_server(&registration, &api).expect("new_server");
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    listener
+        .start(&[msquic::Buffer::from("test")], Some(addr))
+        .expect("listener start");
+    let server_addr = listener.local_addr().expect("listener local_addr");
+    let mut set = JoinSet::new();
+
+    set.spawn(async move {
+        let res = listener.accept().await;
+        assert!(res.is_ok());
+
+        listener.stop().await.unwrap();
+        let res = listener.stop().await;
+        assert!(res.is_ok());
+        if let Err(ListenError::Finished) = listener.accept().await {
+            assert!(true, "ListenError::Finished");
+        } else {
+            assert!(false, "ListenError::Finished");
+        }
+    });
+
+    let client_config = new_client_config(&registration).unwrap();
+    let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
+    set.spawn(async move {
+        let _ = conn
+            .start(
+                &client_config,
+                &format!("{}", server_addr.ip()),
+                server_addr.port(),
+            )
+            .await;
+    });
+
+    let mut results = Vec::new();
+    while let Some(res) = set.join_next().await {
+        results.push(res);
+    }
+    results.into_iter().for_each(|res| {
+        if let Err(err) = res {
+            if err.is_panic() {
+                std::panic::resume_unwind(err.into_panic());
+            }
+        }
+    });
+}
+
+/// Test for ['Connection::open_outbound_stream()']
 #[test(tokio::test)]
 async fn test_open_outbound_stream() {
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
@@ -687,103 +869,6 @@ async fn test_read_chunk() {
             }
         }
     });
-}
-
-#[test(tokio::test)]
-async fn connection_validation() -> Result<()> {
-    let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
-    let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
-
-    let api =
-        msquic::Api::new().map_err(|status| anyhow::anyhow!("Api::new failed: 0x{:x}", status))?;
-    let registration = msquic::Registration::new(&api, ptr::null())
-        .map_err(|status| anyhow::anyhow!("Registration::new failed: 0x{:x}", status))?;
-
-    let listener = new_server(&registration, &api)?;
-    let addr: SocketAddr = "127.0.0.1:0".parse()?;
-    listener.start(&[msquic::Buffer::from("test")], Some(addr))?;
-    let server_addr = listener.local_addr()?;
-
-    let mut set = JoinSet::new();
-
-    set.spawn(async move {
-        let res = listener.accept().await;
-        assert!(res.is_ok());
-        server_rx.recv().await.expect("recv");
-
-        let conn = res?;
-        let res = conn
-            .open_outbound_stream(crate::StreamType::Bidirectional, false)
-            .await;
-        assert_eq!(
-            res.err(),
-            Some(StreamStartError::ConnectionLost(
-                ConnectionError::ShutdownByPeer(1)
-            ))
-        );
-
-        let res = listener.stop().await;
-        assert!(res.is_ok());
-        if let Err(ListenError::Finished) = listener.accept().await {
-            assert!(true, "ListenError::Finished");
-        } else {
-            assert!(false, "ListenError::Finished");
-        }
-        server_tx.send(()).await.expect("send");
-
-        Ok::<_, anyhow::Error>(())
-    });
-
-    let client_config = new_client_config(&registration)?;
-    let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
-    let conn1 = Connection::new(msquic::Connection::new(&registration), &registration, &api);
-    set.spawn(async move {
-        let res = conn
-            .start(
-                &client_config,
-                &format!("{}", server_addr.ip()),
-                server_addr.port(),
-            )
-            .await;
-        assert!(res.is_ok());
-        let res = poll_fn(|cx| conn.poll_shutdown(cx, 1)).await;
-        assert!(res.is_ok());
-
-        client_tx.send(()).await.expect("send");
-
-        client_rx.recv().await.expect("recv");
-
-        if let Err(ConnectionStartError::ConnectionLost(ConnectionError::ShutdownByTransport(
-            _status,
-            _error_code,
-        ))) = conn1
-            .start(
-                &client_config,
-                &format!("{}", server_addr.ip()),
-                server_addr.port(),
-            )
-            .await
-        {
-            assert!(true, "ConnectionError::ShutdownByTransport");
-        } else {
-            assert!(false, "ConnectionError::ShutdownByTransport");
-        }
-
-        Ok::<_, anyhow::Error>(())
-    });
-
-    let mut results = Vec::new();
-    while let Some(res) = set.join_next().await {
-        results.push(res);
-    }
-    results.into_iter().for_each(|res| {
-        if let Err(err) = res {
-            if err.is_panic() {
-                std::panic::resume_unwind(err.into_panic());
-            }
-        }
-    });
-    Ok(())
 }
 
 #[test(tokio::test)]
