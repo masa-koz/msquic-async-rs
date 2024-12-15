@@ -636,6 +636,7 @@ impl StreamInstance {
                         write_buf.into_raw() as *const _,
                     )
                     .unwrap();
+                exclusive.send_state = StreamSendState::Shutdown;
                 Poll::Ready(Ok(val))
             }
         }
