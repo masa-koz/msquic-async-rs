@@ -3,8 +3,9 @@ use std::{ffi::CString, io::Write, net::SocketAddr, path::PathBuf, ptr, sync::Ar
 
 use argh::FromArgs;
 use bytes::{Bytes, BytesMut};
+use h3_msquic::msquic;
+use h3_msquic::msquic_async;
 use http::{Request, StatusCode};
-use msquic_async::msquic;
 use tempfile::NamedTempFile;
 use tokio::{fs::File, io::AsyncReadExt};
 use tracing::{error, info};
