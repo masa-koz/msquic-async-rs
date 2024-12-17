@@ -10,8 +10,8 @@ use h3::{
     ext::Datagram,
     quic::{self, Error, StreamId, WriteBuf},
 };
-pub use msquic_async::msquic;
 pub use msquic_async;
+pub use msquic_async::msquic;
 use std::fmt::{self, Display};
 use std::pin::Pin;
 use std::sync::Arc;
