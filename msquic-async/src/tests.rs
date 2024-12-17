@@ -30,7 +30,12 @@ async fn test_connection_start() {
 
     let api = msquic::Api::new().unwrap();
     let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
-    let listener = new_server(&registration, &api).expect("new_server");
+    let listener = new_server(
+        &registration,
+        &api,
+        msquic::Settings::new().set_idle_timeout_ms(10000),
+    )
+    .unwrap();
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
     listener
         .start(&[msquic::Buffer::from("test")], Some(addr))
@@ -46,7 +51,11 @@ async fn test_connection_start() {
         server_tx.send(()).await.unwrap();
     });
 
-    let client_config = new_client_config(&registration).unwrap();
+    let client_config = new_client_config(
+        &registration,
+        msquic::Settings::new().set_idle_timeout_ms(10000),
+    )
+    .unwrap();
     let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
     let conn1 = Connection::new(msquic::Connection::new(&registration), &registration, &api);
     set.spawn(async move {
@@ -99,7 +108,12 @@ async fn test_connection_poll_shutdown() {
 
     let api = msquic::Api::new().unwrap();
     let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
-    let listener = new_server(&registration, &api).expect("new_server");
+    let listener = new_server(
+        &registration,
+        &api,
+        msquic::Settings::new().set_idle_timeout_ms(10000),
+    )
+    .unwrap();
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
     listener
         .start(&[msquic::Buffer::from("test")], Some(addr))
@@ -123,7 +137,11 @@ async fn test_connection_poll_shutdown() {
         );
     });
 
-    let client_config = new_client_config(&registration).unwrap();
+    let client_config = new_client_config(
+        &registration,
+        msquic::Settings::new().set_idle_timeout_ms(10000),
+    )
+    .unwrap();
     let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
     set.spawn(async move {
         conn.start(
@@ -157,7 +175,12 @@ async fn test_connection_poll_shutdown() {
 async fn test_listener_accept() {
     let api = msquic::Api::new().unwrap();
     let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
-    let listener = new_server(&registration, &api).expect("new_server");
+    let listener = new_server(
+        &registration,
+        &api,
+        msquic::Settings::new().set_idle_timeout_ms(10000),
+    )
+    .unwrap();
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
     listener
         .start(&[msquic::Buffer::from("test")], Some(addr))
@@ -179,7 +202,11 @@ async fn test_listener_accept() {
         }
     });
 
-    let client_config = new_client_config(&registration).unwrap();
+    let client_config = new_client_config(
+        &registration,
+        msquic::Settings::new().set_idle_timeout_ms(10000),
+    )
+    .unwrap();
     let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
     set.spawn(async move {
         let _ = conn
@@ -211,7 +238,16 @@ async fn test_open_outbound_stream() {
 
     let api = msquic::Api::new().unwrap();
     let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
-    let listener = new_server(&registration, &api).expect("new_server");
+
+    let listener = new_server(
+        &registration,
+        &api,
+        msquic::Settings::new()
+            .set_idle_timeout_ms(10000)
+            .set_peer_bidi_stream_count(1)
+            .set_peer_unidi_stream_count(1),
+    )
+    .unwrap();
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
     listener
         .start(&[msquic::Buffer::from("test")], Some(addr))
@@ -234,7 +270,11 @@ async fn test_open_outbound_stream() {
         server_tx.send(()).await.expect("send");
     });
 
-    let client_config = new_client_config(&registration).expect("new_client_config");
+    let client_config = new_client_config(
+        &registration,
+        msquic::Settings::new().set_idle_timeout_ms(10000),
+    )
+    .unwrap();
     let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
     set.spawn(async move {
         conn.start(
@@ -292,7 +332,16 @@ async fn test_open_outbound_stream_exceed_limit() -> Result<(), anyhow::Error> {
 
     let api = msquic::Api::new().unwrap();
     let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
-    let listener = new_server(&registration, &api).expect("new_server");
+
+    let listener = new_server(
+        &registration,
+        &api,
+        msquic::Settings::new()
+            .set_idle_timeout_ms(10000)
+            .set_peer_bidi_stream_count(1)
+            .set_peer_unidi_stream_count(1),
+    )
+    .unwrap();
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
     listener
         .start(&[msquic::Buffer::from("test")], Some(addr))
@@ -317,7 +366,11 @@ async fn test_open_outbound_stream_exceed_limit() -> Result<(), anyhow::Error> {
         Ok::<_, anyhow::Error>(())
     });
 
-    let client_config = new_client_config(&registration).expect("new_client_config");
+    let client_config = new_client_config(
+        &registration,
+        msquic::Settings::new().set_idle_timeout_ms(10000),
+    )
+    .unwrap();
     let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
     set.spawn(async move {
         conn.start(
@@ -402,7 +455,16 @@ async fn test_open_outbound_stream_exceed_limit_and_accepted() {
 
     let api = msquic::Api::new().unwrap();
     let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
-    let listener = new_server(&registration, &api).expect("new_server");
+
+    let listener = new_server(
+        &registration,
+        &api,
+        msquic::Settings::new()
+            .set_idle_timeout_ms(10000)
+            .set_peer_bidi_stream_count(1)
+            .set_peer_unidi_stream_count(1),
+    )
+    .unwrap();
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
     listener
         .start(&[msquic::Buffer::from("test")], Some(addr))
@@ -426,7 +488,11 @@ async fn test_open_outbound_stream_exceed_limit_and_accepted() {
         server_tx.send(()).await.unwrap();
     });
 
-    let client_config = new_client_config(&registration).expect("new_client_config");
+    let client_config = new_client_config(
+        &registration,
+        msquic::Settings::new().set_idle_timeout_ms(10000),
+    )
+    .unwrap();
     let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
     set.spawn(async move {
         conn.start(
@@ -531,7 +597,15 @@ async fn test_poll_write() {
 
     let api = msquic::Api::new().unwrap();
     let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
-    let listener = new_server(&registration, &api).expect("new_server");
+
+    let listener = new_server(
+        &registration,
+        &api,
+        msquic::Settings::new()
+            .set_idle_timeout_ms(10000)
+            .set_peer_unidi_stream_count(1),
+    )
+    .unwrap();
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
     listener
         .start(&[msquic::Buffer::from("test")], Some(addr))
@@ -550,7 +624,11 @@ async fn test_poll_write() {
         server_tx.send(()).await.unwrap();
     });
 
-    let client_config = new_client_config(&registration).unwrap();
+    let client_config = new_client_config(
+        &registration,
+        msquic::Settings::new().set_idle_timeout_ms(10000),
+    )
+    .unwrap();
     let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
     set.spawn(async move {
         conn.start(
@@ -595,7 +673,15 @@ async fn test_write_chunk() {
 
     let api = msquic::Api::new().unwrap();
     let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
-    let listener = new_server(&registration, &api).expect("new_server");
+
+    let listener = new_server(
+        &registration,
+        &api,
+        msquic::Settings::new()
+            .set_idle_timeout_ms(10000)
+            .set_peer_unidi_stream_count(1),
+    )
+    .unwrap();
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
     listener
         .start(&[msquic::Buffer::from("test")], Some(addr))
@@ -614,7 +700,11 @@ async fn test_write_chunk() {
         server_tx.send(()).await.unwrap();
     });
 
-    let client_config = new_client_config(&registration).unwrap();
+    let client_config = new_client_config(
+        &registration,
+        msquic::Settings::new().set_idle_timeout_ms(10000),
+    )
+    .unwrap();
     let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
     set.spawn(async move {
         conn.start(
@@ -658,7 +748,15 @@ async fn test_write_chunks() {
 
     let api = msquic::Api::new().unwrap();
     let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
-    let listener = new_server(&registration, &api).expect("new_server");
+
+    let listener = new_server(
+        &registration,
+        &api,
+        msquic::Settings::new()
+            .set_idle_timeout_ms(10000)
+            .set_peer_unidi_stream_count(1),
+    )
+    .unwrap();
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
     listener
         .start(&[msquic::Buffer::from("test")], Some(addr))
@@ -677,7 +775,11 @@ async fn test_write_chunks() {
         server_tx.send(()).await.unwrap();
     });
 
-    let client_config = new_client_config(&registration).unwrap();
+    let client_config = new_client_config(
+        &registration,
+        msquic::Settings::new().set_idle_timeout_ms(10000),
+    )
+    .unwrap();
     let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
     set.spawn(async move {
         conn.start(
@@ -721,7 +823,15 @@ async fn test_poll_finish_write() {
 
     let api = msquic::Api::new().unwrap();
     let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
-    let listener = new_server(&registration, &api).expect("new_server");
+
+    let listener = new_server(
+        &registration,
+        &api,
+        msquic::Settings::new()
+            .set_idle_timeout_ms(10000)
+            .set_peer_unidi_stream_count(1),
+    )
+    .unwrap();
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
     listener
         .start(&[msquic::Buffer::from("test")], Some(addr))
@@ -740,7 +850,11 @@ async fn test_poll_finish_write() {
         server_tx.send(()).await.unwrap();
     });
 
-    let client_config = new_client_config(&registration).unwrap();
+    let client_config = new_client_config(
+        &registration,
+        msquic::Settings::new().set_idle_timeout_ms(10000),
+    )
+    .unwrap();
     let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
     set.spawn(async move {
         conn.start(
@@ -783,7 +897,15 @@ async fn test_poll_abort_write() {
 
     let api = msquic::Api::new().unwrap();
     let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
-    let listener = new_server(&registration, &api).expect("new_server");
+
+    let listener = new_server(
+        &registration,
+        &api,
+        msquic::Settings::new()
+            .set_idle_timeout_ms(10000)
+            .set_peer_unidi_stream_count(1),
+    )
+    .unwrap();
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
     listener
         .start(&[msquic::Buffer::from("test")], Some(addr))
@@ -803,7 +925,11 @@ async fn test_poll_abort_write() {
         server_tx.send(()).await.unwrap();
     });
 
-    let client_config = new_client_config(&registration).unwrap();
+    let client_config = new_client_config(
+        &registration,
+        msquic::Settings::new().set_idle_timeout_ms(10000),
+    )
+    .unwrap();
     let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
     set.spawn(async move {
         conn.start(
@@ -847,7 +973,14 @@ async fn test_poll_read() {
     let api = msquic::Api::new().unwrap();
     let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
 
-    let listener = new_server(&registration, &api).expect("new_server");
+    let listener = new_server(
+        &registration,
+        &api,
+        msquic::Settings::new()
+            .set_idle_timeout_ms(10000)
+            .set_peer_unidi_stream_count(1),
+    )
+    .unwrap();
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
     listener
         .start(&[msquic::Buffer::from("test")], Some(addr))
@@ -869,7 +1002,11 @@ async fn test_poll_read() {
         server_tx.send(()).await.unwrap();
     });
 
-    let client_config = new_client_config(&registration).expect("new_client_config");
+    let client_config = new_client_config(
+        &registration,
+        msquic::Settings::new().set_idle_timeout_ms(10000),
+    )
+    .unwrap();
     let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
     set.spawn(async move {
         conn.start(
@@ -913,7 +1050,14 @@ async fn test_read_chunk() {
     let api = msquic::Api::new().unwrap();
     let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
 
-    let listener = new_server(&registration, &api).expect("new_server");
+    let listener = new_server(
+        &registration,
+        &api,
+        msquic::Settings::new()
+            .set_idle_timeout_ms(10000)
+            .set_peer_unidi_stream_count(1),
+    )
+    .unwrap();
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
     listener
         .start(&[msquic::Buffer::from("test")], Some(addr))
@@ -944,8 +1088,11 @@ async fn test_read_chunk() {
         assert!(res.is_ok());
         let chunk = res.unwrap();
         assert!(chunk.is_some());
-        let chunk = chunk.unwrap();
+        let mut chunk = chunk.unwrap();
         assert_eq!(chunk.remaining(), 11);
+        let mut dst = [0; 11];
+        chunk.copy_to_slice(&mut dst);
+        assert_eq!(&dst, b"hello world");
 
         let res = read_stream.read_chunk().await;
         assert!(res.is_ok());
@@ -955,31 +1102,135 @@ async fn test_read_chunk() {
         server_tx.send(()).await.unwrap();
     });
 
-    let client_config = new_client_config(&registration).expect("new_client_config");
+    let client_config = new_client_config(
+        &registration,
+        msquic::Settings::new().set_idle_timeout_ms(10000),
+    )
+    .unwrap();
     let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
     set.spawn(async move {
-        let res = conn
-            .start(
-                &client_config,
-                &format!("{}", server_addr.ip()),
-                server_addr.port(),
-            )
-            .await;
-        assert!(res.is_ok());
+        conn.start(
+            &client_config,
+            &format!("{}", server_addr.ip()),
+            server_addr.port(),
+        )
+        .await
+        .unwrap();
 
-        let res = conn
+        let mut stream = conn
             .open_outbound_stream(crate::StreamType::Unidirectional, false)
-            .await;
-        assert!(res.is_ok());
+            .await.unwrap();
 
-        let mut stream = res.expect("open_outbound_stream");
-        let res = poll_fn(|cx| stream.poll_write(cx, b"hello world", false)).await;
-        assert_eq!(res, Ok(11));
+        let _ = poll_fn(|cx| stream.poll_write(cx, b"hello world", false)).await.unwrap();
 
         client_rx.recv().await.expect("recv");
 
-        let res = poll_fn(|cx| stream.poll_write(cx, b"hello world", true)).await;
-        assert_eq!(res, Ok(11));
+        let _ = poll_fn(|cx| stream.poll_write(cx, b"hello world", true)).await.unwrap();
+
+        client_rx.recv().await.expect("recv");
+    });
+
+    let mut results = Vec::new();
+    while let Some(res) = set.join_next().await {
+        results.push(res);
+    }
+    results.into_iter().for_each(|res| {
+        if let Err(err) = res {
+            if err.is_panic() {
+                std::panic::resume_unwind(err.into_panic());
+            }
+        }
+    });
+}
+
+/// Test for [`Stream::read_chunk()`]
+#[test(tokio::test)]
+async fn test_read_chunk_multi_recv() {
+    let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
+
+    let api = msquic::Api::new().unwrap();
+    let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
+
+    let listener = new_server(
+        &registration,
+        &api,
+        msquic::Settings::new()
+            .set_idle_timeout_ms(10000)
+            .set_peer_unidi_stream_count(1)
+            .set_stream_multi_receive_enabled(true),
+    )
+    .unwrap();
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    listener
+        .start(&[msquic::Buffer::from("test")], Some(addr))
+        .expect("listener start");
+    let server_addr = listener.local_addr().expect("listener local_addr");
+
+    let mut set = JoinSet::new();
+
+    set.spawn(async move {
+        let conn = listener.accept().await.unwrap();
+        let read_stream = conn.accept_inbound_uni_stream().await.unwrap();
+
+        let res = read_stream.read_chunk().await;
+        assert!(res.is_ok());
+        let chunk = res.unwrap();
+        assert!(chunk.is_some());
+        let mut chunk = chunk.unwrap();
+
+        server_tx.send(()).await.unwrap();
+
+        let res = read_stream.read_chunk().await;
+        assert!(res.is_ok());
+        let chunk1 = res.unwrap();
+        assert!(chunk1.is_some());
+        let mut chunk1 = chunk1.unwrap();
+
+        assert_eq!(chunk.remaining(), 11);
+        assert_eq!(chunk1.remaining(), 11);
+        let mut dst = [0; 11];
+        chunk.copy_to_slice(&mut dst);
+        assert_eq!(&dst, b"hello world");
+        chunk1.copy_to_slice(&mut dst);
+        assert_eq!(&dst, b"hello world");
+
+        let res = read_stream.read_chunk().await;
+        assert!(res.is_ok());
+        let chunk = res.unwrap();
+        assert!(chunk.is_none());
+
+        server_tx.send(()).await.unwrap();
+    });
+
+    let client_config = new_client_config(
+        &registration,
+        msquic::Settings::new().set_idle_timeout_ms(10000),
+    )
+    .unwrap();
+    let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
+    set.spawn(async move {
+        conn.start(
+            &client_config,
+            &format!("{}", server_addr.ip()),
+            server_addr.port(),
+        )
+        .await
+        .unwrap();
+
+        let mut stream = conn
+            .open_outbound_stream(crate::StreamType::Unidirectional, false)
+            .await
+            .unwrap();
+
+        let _ = poll_fn(|cx| stream.poll_write(cx, b"hello world", false))
+            .await
+            .unwrap();
+
+        client_rx.recv().await.expect("recv");
+
+        let _ = poll_fn(|cx| stream.poll_write(cx, b"hello world", true))
+            .await
+            .unwrap();
 
         client_rx.recv().await.expect("recv");
     });
@@ -1006,7 +1257,14 @@ async fn test_poll_abort_read() {
     let api = msquic::Api::new().unwrap();
     let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
 
-    let listener = new_server(&registration, &api).expect("new_server");
+    let listener = new_server(
+        &registration,
+        &api,
+        msquic::Settings::new()
+            .set_idle_timeout_ms(10000)
+            .set_peer_unidi_stream_count(1),
+    )
+    .unwrap();
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
     listener
         .start(&[msquic::Buffer::from("test")], Some(addr))
@@ -1028,7 +1286,11 @@ async fn test_poll_abort_read() {
         server_rx.recv().await.unwrap();
     });
 
-    let client_config = new_client_config(&registration).expect("new_client_config");
+    let client_config = new_client_config(
+        &registration,
+        msquic::Settings::new().set_idle_timeout_ms(10000),
+    )
+    .unwrap();
     let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
     set.spawn(async move {
         conn.start(
@@ -1130,7 +1392,14 @@ async fn datagram_validation() {
     let api = msquic::Api::new().unwrap();
     let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
 
-    let listener = new_server(&registration, &api).expect("new_server");
+    let listener = new_server(
+        &registration,
+        &api,
+        msquic::Settings::new()
+            .set_idle_timeout_ms(10000)
+            .set_datagram_receive_enabled(true),
+    )
+    .unwrap();
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
     listener
         .start(&[msquic::Buffer::from("test")], Some(addr))
@@ -1151,7 +1420,11 @@ async fn datagram_validation() {
         Ok::<_, anyhow::Error>(())
     });
 
-    let client_config = new_client_config(&registration).expect("new_client_config");
+    let client_config = new_client_config(
+        &registration,
+        msquic::Settings::new().set_idle_timeout_ms(10000),
+    )
+    .unwrap();
     let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
     set.spawn(async move {
         let res = conn
@@ -1183,19 +1456,13 @@ async fn datagram_validation() {
     });
 }
 
-fn new_server(registration: &msquic::Registration, api: &msquic::Api) -> Result<Listener> {
+fn new_server(
+    registration: &msquic::Registration,
+    api: &msquic::Api,
+    settings: &msquic::Settings,
+) -> Result<Listener> {
     let alpn = [msquic::Buffer::from("test")];
-    let configuration = msquic::Configuration::new(
-        registration,
-        &alpn,
-        msquic::Settings::new()
-            .set_idle_timeout_ms(10000)
-            .set_peer_bidi_stream_count(1)
-            .set_peer_unidi_stream_count(1)
-            .set_datagram_receive_enabled(true)
-            .set_stream_multi_receive_enabled(false),
-    )
-    .unwrap();
+    let configuration = msquic::Configuration::new(registration, &alpn, settings).unwrap();
 
     let cert = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()]).unwrap();
     let mut cert_file = NamedTempFile::new().unwrap();
@@ -1234,19 +1501,12 @@ fn new_server(registration: &msquic::Registration, api: &msquic::Api) -> Result<
     Ok(listener)
 }
 
-fn new_client_config(registration: &msquic::Registration) -> Result<msquic::Configuration> {
+fn new_client_config(
+    registration: &msquic::Registration,
+    settings: &msquic::Settings,
+) -> Result<msquic::Configuration> {
     let alpn = [msquic::Buffer::from("test")];
-    let configuration = msquic::Configuration::new(
-        registration,
-        &alpn,
-        msquic::Settings::new()
-            .set_idle_timeout_ms(10000)
-            .set_peer_bidi_stream_count(1)
-            .set_peer_unidi_stream_count(1)
-            .set_datagram_receive_enabled(true)
-            .set_stream_multi_receive_enabled(false),
-    )
-    .unwrap();
+    let configuration = msquic::Configuration::new(registration, &alpn, settings).unwrap();
     let mut cred_config = msquic::CredentialConfig::new_client();
     cred_config.cred_flags |= msquic::CREDENTIAL_FLAG_NO_CERTIFICATE_VALIDATION;
     configuration.load_credential(&cred_config).unwrap();
