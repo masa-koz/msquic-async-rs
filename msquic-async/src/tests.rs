@@ -1119,13 +1119,18 @@ async fn test_read_chunk() {
 
         let mut stream = conn
             .open_outbound_stream(crate::StreamType::Unidirectional, false)
-            .await.unwrap();
+            .await
+            .unwrap();
 
-        let _ = poll_fn(|cx| stream.poll_write(cx, b"hello world", false)).await.unwrap();
+        let _ = poll_fn(|cx| stream.poll_write(cx, b"hello world", false))
+            .await
+            .unwrap();
 
         client_rx.recv().await.expect("recv");
 
-        let _ = poll_fn(|cx| stream.poll_write(cx, b"hello world", true)).await.unwrap();
+        let _ = poll_fn(|cx| stream.poll_write(cx, b"hello world", true))
+            .await
+            .unwrap();
 
         client_rx.recv().await.expect("recv");
     });
