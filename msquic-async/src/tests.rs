@@ -6,8 +6,10 @@ use super::{
 use std::ffi::CString;
 use std::future::poll_fn;
 use std::io::Write;
+use std::mem;
 use std::net::SocketAddr;
 use std::ptr;
+use std::time::Duration;
 
 use anyhow::Result;
 
@@ -20,272 +22,31 @@ use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 
-/// Test for ['Stream::write_chunk']
+/// Test for ['Connection::start()']
 #[test(tokio::test)]
-async fn test_write_chunk() -> Result<()> {
-    let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
-
-    let api =
-        msquic::Api::new().map_err(|status| anyhow::anyhow!("Api::new failed: 0x{:x}", status))?;
-    let registration = msquic::Registration::new(&api, ptr::null())
-        .map_err(|status| anyhow::anyhow!("Registration::new failed: 0x{:x}", status))?;
-
-    let listener = new_server(&registration, &api)?;
-    let addr: SocketAddr = "127.0.0.1:0".parse()?;
-    listener.start(&[msquic::Buffer::from("test")], Some(addr))?;
-    let server_addr = listener.local_addr()?;
-
-    let mut set = JoinSet::new();
-
-    set.spawn(async move {
-        let conn = listener.accept().await?;
-        let mut stream = conn.accept_inbound_uni_stream().await?;
-
-        let mut buf = [0; 1024];
-        let res = poll_fn(|cx| stream.poll_read(cx, &mut buf)).await;
-        assert_eq!(res, Ok(11));
-
-        server_tx.send(()).await.expect("send");
-        Ok::<_, anyhow::Error>(())
-    });
-
-    let client_config = new_client_config(&registration)?;
-    let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
-    set.spawn(async move {
-        conn.start(
-            &client_config,
-            &format!("{}", server_addr.ip()),
-            server_addr.port(),
-        )
-        .await?;
-        let mut stream = conn
-            .open_outbound_stream(crate::StreamType::Unidirectional, false)
-            .await?;
-
-        let chunk = Bytes::from("hello world");
-        let res = stream.write_chunk(&chunk, true).await;
-        assert_eq!(res, Ok(11));
-
-        client_rx.recv().await.expect("recv");
-        Ok::<_, anyhow::Error>(())
-    });
-
-    let mut results = Vec::new();
-    while let Some(res) = set.join_next().await {
-        results.push(res);
-    }
-    results.into_iter().for_each(|res| {
-        if let Err(err) = res {
-            if err.is_panic() {
-                std::panic::resume_unwind(err.into_panic());
-            }
-        }
-    });
-    Ok(())
-}
-
-/// Test for ['Stream::write_chunks']
-#[test(tokio::test)]
-async fn test_write_chunks() -> Result<()> {
-    let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
-
-    let api =
-        msquic::Api::new().map_err(|status| anyhow::anyhow!("Api::new failed: 0x{:x}", status))?;
-    let registration = msquic::Registration::new(&api, ptr::null())
-        .map_err(|status| anyhow::anyhow!("Registration::new failed: 0x{:x}", status))?;
-
-    let listener = new_server(&registration, &api)?;
-    let addr: SocketAddr = "127.0.0.1:0".parse()?;
-    listener.start(&[msquic::Buffer::from("test")], Some(addr))?;
-    let server_addr = listener.local_addr()?;
-
-    let mut set = JoinSet::new();
-
-    set.spawn(async move {
-        let conn = listener.accept().await?;
-        let mut stream = conn.accept_inbound_uni_stream().await?;
-
-        let mut buf = [0; 1024];
-        let res = poll_fn(|cx| stream.poll_read(cx, &mut buf)).await;
-        assert_eq!(res, Ok(11));
-
-        server_tx.send(()).await.expect("send");
-        Ok::<_, anyhow::Error>(())
-    });
-
-    let client_config = new_client_config(&registration)?;
-    let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
-    set.spawn(async move {
-        conn.start(
-            &client_config,
-            &format!("{}", server_addr.ip()),
-            server_addr.port(),
-        )
-        .await?;
-        let mut stream = conn
-            .open_outbound_stream(crate::StreamType::Unidirectional, false)
-            .await?;
-
-        let chunks = [Bytes::from("hello"), Bytes::from(" world")];
-        let res = stream.write_chunks(&chunks, true).await;
-        assert_eq!(res, Ok(11));
-
-        client_rx.recv().await.expect("recv");
-        Ok::<_, anyhow::Error>(())
-    });
-
-    let mut results = Vec::new();
-    while let Some(res) = set.join_next().await {
-        results.push(res);
-    }
-    results.into_iter().for_each(|res| {
-        if let Err(err) = res {
-            if err.is_panic() {
-                std::panic::resume_unwind(err.into_panic());
-            }
-        }
-    });
-    Ok(())
-}
-
-/// Test for [`Stream::read_chunk()`]
-#[test(tokio::test)]
-async fn test_read_chunk() {
-    //let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
+async fn test_connection_start() {
+    let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
     let api = msquic::Api::new().unwrap();
     let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
-
     let listener = new_server(&registration, &api).expect("new_server");
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
     listener
         .start(&[msquic::Buffer::from("test")], Some(addr))
         .expect("listener start");
     let server_addr = listener.local_addr().expect("listener local_addr");
-
     let mut set = JoinSet::new();
 
     set.spawn(async move {
-        let conn = listener.accept().await?;
-        let read_stream = conn.accept_inbound_uni_stream().await?;
+        let _conn = listener.accept().await.unwrap();
+        server_rx.recv().await.unwrap();
 
-        let res = read_stream.read_chunk().await;
-        assert!(res.is_ok());
-        let chunk = res.expect("poll_read_chunk");
-        assert!(chunk.is_some());
-        let mut chunk = chunk.unwrap();
-        assert_eq!(chunk.remaining(), 11);
-        let mut dst = [0; 11];
-        chunk.copy_to_slice(&mut dst);
-        assert_eq!(&dst, b"hello world");
-
-        std::mem::drop(chunk);
-
-        server_tx.send(()).await.expect("send");
-
-        let res = read_stream.read_chunk().await;
-        assert!(res.is_ok());
-        let chunk = res.expect("poll_read_chunk");
-        assert!(chunk.is_some());
-        let chunk = chunk.unwrap();
-        assert_eq!(chunk.remaining(), 11);
-
-        server_tx.send(()).await.expect("send");
-
-        Ok::<_, anyhow::Error>(())
+        listener.stop().await.unwrap();
+        server_tx.send(()).await.unwrap();
     });
 
-    let client_config = new_client_config(&registration).expect("new_client_config");
-    let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
-    set.spawn(async move {
-        let res = conn
-            .start(
-                &client_config,
-                &format!("{}", server_addr.ip()),
-                server_addr.port(),
-            )
-            .await;
-        assert!(res.is_ok());
-
-        let res = conn
-            .open_outbound_stream(crate::StreamType::Unidirectional, false)
-            .await;
-        assert!(res.is_ok());
-
-        let mut stream = res.expect("open_outbound_stream");
-        let res = poll_fn(|cx| stream.poll_write(cx, b"hello world", false)).await;
-        assert_eq!(res, Ok(11));
-
-        client_rx.recv().await.expect("recv");
-
-        let res = poll_fn(|cx| stream.poll_write(cx, b"hello world", true)).await;
-        assert_eq!(res, Ok(11));
-
-        client_rx.recv().await.expect("recv");
-
-        Ok::<_, anyhow::Error>(())
-    });
-
-    let mut results = Vec::new();
-    while let Some(res) = set.join_next().await {
-        results.push(res);
-    }
-    results.into_iter().for_each(|res| {
-        if let Err(err) = res {
-            if err.is_panic() {
-                std::panic::resume_unwind(err.into_panic());
-            }
-        }
-    });
-}
-
-#[test(tokio::test)]
-async fn connection_validation() -> Result<()> {
-    let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
-    let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
-
-    let api =
-        msquic::Api::new().map_err(|status| anyhow::anyhow!("Api::new failed: 0x{:x}", status))?;
-    let registration = msquic::Registration::new(&api, ptr::null())
-        .map_err(|status| anyhow::anyhow!("Registration::new failed: 0x{:x}", status))?;
-
-    let listener = new_server(&registration, &api)?;
-    let addr: SocketAddr = "127.0.0.1:0".parse()?;
-    listener.start(&[msquic::Buffer::from("test")], Some(addr))?;
-    let server_addr = listener.local_addr()?;
-
-    let mut set = JoinSet::new();
-
-    set.spawn(async move {
-        let res = listener.accept().await;
-        assert!(res.is_ok());
-        server_rx.recv().await.expect("recv");
-
-        let conn = res?;
-        let res = conn
-            .open_outbound_stream(crate::StreamType::Bidirectional, false)
-            .await;
-        assert_eq!(
-            res.err(),
-            Some(StreamStartError::ConnectionLost(
-                ConnectionError::ShutdownByPeer(1)
-            ))
-        );
-
-        let res = listener.stop().await;
-        assert!(res.is_ok());
-        if let Err(ListenError::Finished) = listener.accept().await {
-            assert!(true, "ListenError::Finished");
-        } else {
-            assert!(false, "ListenError::Finished");
-        }
-        server_tx.send(()).await.expect("send");
-
-        Ok::<_, anyhow::Error>(())
-    });
-
-    let client_config = new_client_config(&registration)?;
+    let client_config = new_client_config(&registration).unwrap();
     let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
     let conn1 = Connection::new(msquic::Connection::new(&registration), &registration, &api);
     set.spawn(async move {
@@ -297,12 +58,9 @@ async fn connection_validation() -> Result<()> {
             )
             .await;
         assert!(res.is_ok());
-        let res = poll_fn(|cx| conn.poll_shutdown(cx, 1)).await;
-        assert!(res.is_ok());
+        client_tx.send(()).await.unwrap();
 
-        client_tx.send(()).await.expect("send");
-
-        client_rx.recv().await.expect("recv");
+        client_rx.recv().await.unwrap();
 
         if let Err(ConnectionStartError::ConnectionLost(ConnectionError::ShutdownByTransport(
             _status,
@@ -319,6 +77,304 @@ async fn connection_validation() -> Result<()> {
         } else {
             assert!(false, "ConnectionError::ShutdownByTransport");
         }
+    });
+
+    let mut results = Vec::new();
+    while let Some(res) = set.join_next().await {
+        results.push(res);
+    }
+    results.into_iter().for_each(|res| {
+        if let Err(err) = res {
+            if err.is_panic() {
+                std::panic::resume_unwind(err.into_panic());
+            }
+        }
+    });
+}
+
+/// Test for ['Connection::shutdown()']
+#[test(tokio::test)]
+async fn test_connection_poll_shutdown() {
+    let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
+
+    let api = msquic::Api::new().unwrap();
+    let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
+    let listener = new_server(&registration, &api).expect("new_server");
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    listener
+        .start(&[msquic::Buffer::from("test")], Some(addr))
+        .expect("listener start");
+    let server_addr = listener.local_addr().expect("listener local_addr");
+
+    let mut set = JoinSet::new();
+
+    set.spawn(async move {
+        let conn = listener.accept().await.unwrap();
+        server_rx.recv().await.unwrap();
+
+        let res = conn
+            .open_outbound_stream(crate::StreamType::Bidirectional, false)
+            .await;
+        assert_eq!(
+            res.err(),
+            Some(StreamStartError::ConnectionLost(
+                ConnectionError::ShutdownByPeer(1)
+            ))
+        );
+    });
+
+    let client_config = new_client_config(&registration).unwrap();
+    let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
+    set.spawn(async move {
+        conn.start(
+            &client_config,
+            &format!("{}", server_addr.ip()),
+            server_addr.port(),
+        )
+        .await
+        .unwrap();
+        let res = poll_fn(|cx| conn.poll_shutdown(cx, 1)).await;
+        assert!(res.is_ok());
+
+        client_tx.send(()).await.expect("send");
+    });
+
+    let mut results = Vec::new();
+    while let Some(res) = set.join_next().await {
+        results.push(res);
+    }
+    results.into_iter().for_each(|res| {
+        if let Err(err) = res {
+            if err.is_panic() {
+                std::panic::resume_unwind(err.into_panic());
+            }
+        }
+    });
+}
+
+/// Test for ['Listener::accept()']
+#[test(tokio::test)]
+async fn test_listener_accept() {
+    let api = msquic::Api::new().unwrap();
+    let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
+    let listener = new_server(&registration, &api).expect("new_server");
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    listener
+        .start(&[msquic::Buffer::from("test")], Some(addr))
+        .expect("listener start");
+    let server_addr = listener.local_addr().expect("listener local_addr");
+    let mut set = JoinSet::new();
+
+    set.spawn(async move {
+        let res = listener.accept().await;
+        assert!(res.is_ok());
+
+        listener.stop().await.unwrap();
+        let res = listener.stop().await;
+        assert!(res.is_ok());
+        if let Err(ListenError::Finished) = listener.accept().await {
+            assert!(true, "ListenError::Finished");
+        } else {
+            assert!(false, "ListenError::Finished");
+        }
+    });
+
+    let client_config = new_client_config(&registration).unwrap();
+    let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
+    set.spawn(async move {
+        let _ = conn
+            .start(
+                &client_config,
+                &format!("{}", server_addr.ip()),
+                server_addr.port(),
+            )
+            .await;
+    });
+
+    let mut results = Vec::new();
+    while let Some(res) = set.join_next().await {
+        results.push(res);
+    }
+    results.into_iter().for_each(|res| {
+        if let Err(err) = res {
+            if err.is_panic() {
+                std::panic::resume_unwind(err.into_panic());
+            }
+        }
+    });
+}
+
+/// Test for ['Connection::open_outbound_stream()']
+#[test(tokio::test)]
+async fn test_open_outbound_stream() {
+    let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
+
+    let api = msquic::Api::new().unwrap();
+    let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
+    let listener = new_server(&registration, &api).expect("new_server");
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    listener
+        .start(&[msquic::Buffer::from("test")], Some(addr))
+        .expect("listener start");
+    let server_addr = listener.local_addr().expect("listener local_addr");
+
+    let mut set = JoinSet::new();
+
+    set.spawn(async move {
+        let mut buf = [0; 1024];
+
+        let conn = listener.accept().await.unwrap();
+
+        let mut stream = conn.accept_inbound_stream().await.unwrap();
+        let _ = poll_fn(|cx| stream.poll_read(cx, &mut buf)).await.unwrap();
+
+        let mut stream = conn.accept_inbound_uni_stream().await.unwrap();
+        let _ = poll_fn(|cx| stream.poll_read(cx, &mut buf)).await.unwrap();
+
+        server_tx.send(()).await.expect("send");
+    });
+
+    let client_config = new_client_config(&registration).expect("new_client_config");
+    let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
+    set.spawn(async move {
+        conn.start(
+            &client_config,
+            &format!("{}", server_addr.ip()),
+            server_addr.port(),
+        )
+        .await
+        .unwrap();
+
+        let res = timeout(
+            std::time::Duration::from_millis(1000),
+            conn.open_outbound_stream(crate::StreamType::Bidirectional, false),
+        )
+        .await;
+        assert!(res.is_ok());
+
+        let mut stream = res.expect("timeout").expect("open_outbound_stream");
+        let _ = poll_fn(|cx| stream.poll_write(cx, b"hello world", false))
+            .await
+            .unwrap();
+
+        let res = timeout(
+            std::time::Duration::from_millis(1000),
+            conn.open_outbound_stream(crate::StreamType::Unidirectional, false),
+        )
+        .await;
+        assert!(res.is_ok());
+
+        let mut stream = res.expect("timeout").expect("open_outbound_stream");
+        let _ = poll_fn(|cx| stream.poll_write(cx, b"hello world", false))
+            .await
+            .unwrap();
+
+        client_rx.recv().await.expect("recv");
+    });
+
+    let mut results = Vec::new();
+    while let Some(res) = set.join_next().await {
+        results.push(res);
+    }
+    results.into_iter().for_each(|res| {
+        if let Err(err) = res {
+            if err.is_panic() {
+                std::panic::resume_unwind(err.into_panic());
+            }
+        }
+    });
+}
+
+/// Test for ['Connection::open_outbound_stream']
+#[test(tokio::test)]
+async fn test_open_outbound_stream_exceed_limit() -> Result<(), anyhow::Error> {
+    let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
+
+    let api = msquic::Api::new().unwrap();
+    let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
+    let listener = new_server(&registration, &api).expect("new_server");
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    listener
+        .start(&[msquic::Buffer::from("test")], Some(addr))
+        .expect("listener start");
+    let server_addr = listener.local_addr().expect("listener local_addr");
+
+    let mut set = JoinSet::new();
+
+    set.spawn(async move {
+        let mut buf = [0; 1024];
+
+        let conn = listener.accept().await.unwrap();
+
+        let mut stream = conn.accept_inbound_stream().await.unwrap();
+        let _ = poll_fn(|cx| stream.poll_read(cx, &mut buf)).await.unwrap();
+
+        let mut stream1 = conn.accept_inbound_uni_stream().await.unwrap();
+        let _ = poll_fn(|cx| stream1.poll_read(cx, &mut buf)).await.unwrap();
+
+        server_rx.recv().await.expect("recv");
+
+        Ok::<_, anyhow::Error>(())
+    });
+
+    let client_config = new_client_config(&registration).expect("new_client_config");
+    let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
+    set.spawn(async move {
+        conn.start(
+            &client_config,
+            &format!("{}", server_addr.ip()),
+            server_addr.port(),
+        )
+        .await
+        .unwrap();
+
+        // Test for Bidirectional
+        let res = timeout(
+            std::time::Duration::from_millis(1000),
+            conn.open_outbound_stream(crate::StreamType::Bidirectional, false),
+        )
+        .await;
+        assert!(res.is_ok());
+
+        let mut stream = res.expect("timeout").expect("open_outbound_stream");
+        let _ = poll_fn(|cx| stream.poll_write(cx, b"hello world", false)).await?;
+
+        let res = timeout(
+            std::time::Duration::from_millis(1000),
+            conn.open_outbound_stream(crate::StreamType::Bidirectional, false),
+        )
+        .await;
+        assert!(res.is_err());
+
+        let res = conn
+            .open_outbound_stream(crate::StreamType::Bidirectional, true)
+            .await;
+        assert_eq!(res.err(), Some(StreamStartError::LimitReached));
+
+        // Test for Unidirectional
+        let res = timeout(
+            std::time::Duration::from_millis(1000),
+            conn.open_outbound_stream(crate::StreamType::Unidirectional, false),
+        )
+        .await;
+        assert!(res.is_ok());
+
+        let mut stream = res.expect("timeout").expect("open_outbound_stream");
+        let _ = poll_fn(|cx| stream.poll_write(cx, b"hello world", false)).await?;
+
+        let res = timeout(
+            std::time::Duration::from_millis(1000),
+            conn.open_outbound_stream(crate::StreamType::Unidirectional, false),
+        )
+        .await;
+        assert!(res.is_err());
+
+        let res = conn
+            .open_outbound_stream(crate::StreamType::Unidirectional, true)
+            .await;
+        assert_eq!(res.err(), Some(StreamStartError::LimitReached));
+
+        client_tx.send(()).await.expect("send");
 
         Ok::<_, anyhow::Error>(())
     });
@@ -334,11 +390,16 @@ async fn connection_validation() -> Result<()> {
             }
         }
     });
+
     Ok(())
 }
 
+/// Test for ['Connection::open_outbound_stream']
 #[test(tokio::test)]
-async fn stream_validation() {
+async fn test_open_outbound_stream_exceed_limit_and_accepted() {
+    let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
+    let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
+
     let api = msquic::Api::new().unwrap();
     let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
     let listener = new_server(&registration, &api).expect("new_server");
@@ -350,209 +411,33 @@ async fn stream_validation() {
 
     let mut set = JoinSet::new();
 
-    let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
-    let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
     set.spawn(async move {
-        let conn = listener.accept().await.expect("accept");
+        let conn = listener.accept().await.unwrap();
 
-        let mut stream = conn
-            .accept_inbound_stream()
-            .await
-            .expect("accept_inbound_stream");
+        let _ = conn.accept_inbound_stream().await.unwrap();
+        let _ = conn.accept_inbound_stream().await.unwrap();
+        let _ = conn.accept_inbound_stream().await.unwrap();
 
-        server_rx.recv().await.expect("recv");
+        let _ = conn.accept_inbound_uni_stream().await.unwrap();
+        let _ = conn.accept_inbound_uni_stream().await.unwrap();
+        let _ = conn.accept_inbound_uni_stream().await.unwrap();
 
-        let mut buf = [0; 1024];
-        let res = poll_fn(|cx| stream.poll_read(cx, &mut buf)).await;
-        assert_eq!(res, Err(ReadError::Reset(0)));
-
-        let mut stream = conn
-            .accept_inbound_stream()
-            .await
-            .expect("accept_inbound_stream");
-        let res = poll_fn(|cx| stream.poll_read(cx, &mut buf)).await;
-        assert_eq!(res, Err(ReadError::Reset(0)));
-
-        let mut stream = conn
-            .accept_inbound_stream()
-            .await
-            .expect("accept_inbound_stream");
-        let res = poll_fn(|cx| stream.poll_read(cx, &mut buf)).await;
-        assert_eq!(res, Ok(11));
-        assert_eq!(&buf[0..11], b"hello world");
-
-        let res = poll_fn(|cx| stream.poll_finish_write(cx)).await;
-        assert!(res.is_ok());
-
-        let mut stream = conn
-            .accept_inbound_stream()
-            .await
-            .expect("accept_inbound_stream");
-
-        let res = poll_fn(|cx| stream.poll_read(cx, &mut buf)).await;
-        assert_eq!(res, Err(ReadError::Reset(0)));
-
-        let res = poll_fn(|cx| stream.poll_write(cx, b"hello world", true)).await;
-        assert_eq!(res, Ok(11));
-
-        let mut stream = conn
-            .accept_inbound_stream()
-            .await
-            .expect("accept_inbound_stream");
-        assert_eq!(stream.id(), Some(16));
-
-        let res = poll_fn(|cx| stream.poll_write(cx, b"hello world", true)).await;
-        if res.is_err() {
-            assert_eq!(res, Err(WriteError::Stopped(0)));
-        } else {
-            assert_eq!(res, Ok(11));
-        }
-
-        let res = poll_fn(|cx| stream.poll_read(cx, &mut buf)).await;
-        assert_eq!(res, Ok(11));
-        assert_eq!(&buf[0..11], b"hello world");
-
-        std::mem::drop(stream);
-
-        server_tx.send(()).await.expect("send");
-
-        let stream = conn
-            .accept_inbound_stream()
-            .await
-            .expect("accept_inbound_stream");
-        let (read, write) = stream.split();
-        assert!(read.is_some());
-        assert!(write.is_some());
-        let (mut read, mut write) = (read.unwrap(), write.unwrap());
-
-        let res = tokio::io::AsyncReadExt::read(&mut read, &mut buf).await;
-        assert_eq!(res.ok(), Some(11));
-        assert_eq!(&buf[0..11], b"hello world");
-
-        let res = tokio::io::AsyncReadExt::read(&mut read, &mut buf).await;
-        assert_eq!(res.ok(), Some(0));
-
-        let res = futures::io::AsyncWriteExt::write(&mut write, b"hello world").await;
-        assert_eq!(res.ok(), Some(11));
-
-        let res = poll_fn(|cx| write.poll_finish_write(cx)).await;
-        assert!(res.is_ok());
-
-        server_rx.recv().await.expect("recv");
-
-        std::mem::drop(read);
-        std::mem::drop(write);
-
-        let stream = conn
-            .accept_inbound_stream()
-            .await
-            .expect("accept_inbound_stream");
-        let (read, write) = stream.split();
-        assert!(read.is_some());
-        assert!(write.is_some());
-
-        let (mut read, mut write) = (read.unwrap(), write.unwrap());
-
-        let res = tokio::io::copy(&mut read, &mut write).await;
-        assert_eq!(res.ok(), Some(11));
-
-        let res = poll_fn(|cx| write.poll_finish_write(cx)).await;
-        assert!(res.is_ok());
-
-        server_rx.recv().await.expect("recv");
-
-        std::mem::drop(read);
-        std::mem::drop(write);
-
-        let stream = conn
-            .accept_inbound_stream()
-            .await
-            .expect("accept_inbound_stream");
-        let (read, write) = stream.split();
-        assert!(read.is_some());
-        assert!(write.is_some());
-
-        let (mut read, mut write) = (read.unwrap(), write.unwrap());
-
-        let read_task = tokio::task::spawn(async move {
-            let res = poll_fn(|cx| read.poll_read(cx, &mut buf)).await;
-            assert_eq!(res, Ok(11));
-            assert_eq!(&buf[0..11], b"hello world");
-        });
-
-        let res = poll_fn(|cx| write.poll_write(cx, b"hello world", true)).await;
-        assert_eq!(res, Ok(11));
-
-        let (res,) = tokio::join!(read_task);
-        if let Err(err) = res {
-            if err.is_panic() {
-                std::panic::resume_unwind(err.into_panic());
-            }
-        }
-
-        server_rx.recv().await.expect("recv");
-
-        std::mem::drop(write);
-
-        let mut read = conn
-            .accept_inbound_uni_stream()
-            .await
-            .expect("accept_inbound_stream");
-
-        let mut buf = [0; 1024];
-        let res = poll_fn(|cx| read.poll_read(cx, &mut buf)).await;
-        assert_eq!(res, Ok(11));
-        assert_eq!(&buf[0..11], b"hello world");
-
-        server_tx.send(()).await.expect("send");
-
-        std::mem::drop(read);
-
-        let mut read = conn
-            .accept_inbound_uni_stream()
-            .await
-            .expect("accept_inbound_uni_stream");
-
-        let res = poll_fn(|cx| read.poll_read(cx, &mut buf)).await;
-        assert_eq!(res, Ok(11));
-        assert_eq!(&buf[0..11], b"hello world");
-
-        server_tx.send(()).await.expect("send");
-
-        std::mem::drop(read);
-
-        let res = poll_fn(|cx| conn.poll_shutdown(cx, 0)).await;
-        assert!(res.is_ok());
-
-        server_tx.send(()).await.expect("send");
-
-        let res = conn
-            .open_outbound_stream(crate::StreamType::Unidirectional, false)
-            .await;
-        assert_eq!(
-            res.err(),
-            Some(StreamStartError::ConnectionLost(
-                ConnectionError::ShutdownByLocal
-            ))
-        );
-
-        Ok::<_, anyhow::Error>(())
+        server_rx.recv().await.unwrap();
+        server_tx.send(()).await.unwrap();
     });
 
     let client_config = new_client_config(&registration).expect("new_client_config");
     let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
-
     set.spawn(async move {
-        let mut buf = [0; 1024];
+        conn.start(
+            &client_config,
+            &format!("{}", server_addr.ip()),
+            server_addr.port(),
+        )
+        .await
+        .unwrap();
 
-        let res = conn
-            .start(
-                &client_config,
-                &format!("{}", server_addr.ip()),
-                server_addr.port(),
-            )
-            .await;
-        assert!(res.is_ok());
+        // Test for Bidirectional
         let res = timeout(
             std::time::Duration::from_millis(1000),
             conn.open_outbound_stream(crate::StreamType::Bidirectional, false),
@@ -561,8 +446,9 @@ async fn stream_validation() {
         assert!(res.is_ok());
 
         let mut stream = res.expect("timeout").expect("open_outbound_stream");
-        let res = poll_fn(|cx| stream.poll_write(cx, b"hello world", false)).await;
-        assert!(res.is_ok());
+        let _ = poll_fn(|cx| stream.poll_write(cx, b"hello world", false))
+            .await
+            .unwrap();
 
         let res = timeout(
             std::time::Duration::from_millis(1000),
@@ -571,139 +457,515 @@ async fn stream_validation() {
         .await;
         assert!(res.is_err());
 
-        let res = conn
-            .open_outbound_stream(crate::StreamType::Bidirectional, true)
-            .await;
+        // Drop a stream to create capacity.
+        mem::drop(stream);
+
+        let res = timeout(
+            std::time::Duration::from_millis(1000),
+            conn.open_outbound_stream(crate::StreamType::Bidirectional, false),
+        )
+        .await;
+        assert!(res.is_ok());
+
+        let mut stream = res.expect("timeout").expect("open_outbound_stream");
+        let _ = poll_fn(|cx| stream.poll_write(cx, b"hello world", false))
+            .await
+            .unwrap();
+
+        // Test for Unidirectional
+        let res = timeout(
+            std::time::Duration::from_millis(1000),
+            conn.open_outbound_stream(crate::StreamType::Unidirectional, false),
+        )
+        .await;
+        assert!(res.is_ok());
+
+        let mut stream = res.expect("timeout").expect("open_outbound_stream");
+        let _ = poll_fn(|cx| stream.poll_write(cx, b"hello world", false))
+            .await
+            .unwrap();
+
+        let res = timeout(
+            std::time::Duration::from_millis(1000),
+            conn.open_outbound_stream(crate::StreamType::Unidirectional, false),
+        )
+        .await;
         assert!(res.is_err());
 
-        std::mem::drop(stream);
+        // Drop a stream to create capacity.
+        mem::drop(stream);
 
-        let res = conn
-            .open_outbound_stream(crate::StreamType::Bidirectional, false)
-            .await;
+        let res = timeout(
+            std::time::Duration::from_millis(1000),
+            conn.open_outbound_stream(crate::StreamType::Unidirectional, false),
+        )
+        .await;
         assert!(res.is_ok());
 
-        let mut stream = res.expect("open_outbound_stream");
-        let res = poll_fn(|cx| stream.poll_write(cx, b"hello world", true)).await;
-        assert_eq!(res, Ok(11));
+        let mut stream = res.expect("timeout").expect("open_outbound_stream");
+        let _ = poll_fn(|cx| stream.poll_write(cx, b"hello world", false))
+            .await
+            .unwrap();
 
-        client_tx.send(()).await.expect("send");
+        client_tx.send(()).await.unwrap();
+        client_rx.recv().await.unwrap();
+    });
 
-        let res = poll_fn(|cx| stream.poll_read(cx, &mut buf)).await;
-        assert_eq!(res, Ok(0));
-
-        std::mem::drop(stream);
-
-        let res = conn
-            .open_outbound_stream(crate::StreamType::Bidirectional, false)
-            .await;
-        assert!(res.is_ok());
-
-        let mut stream = res.expect("open_outbound_stream");
-        let res = poll_fn(|cx| stream.poll_abort_write(cx, 0)).await;
-        assert_eq!(res, Ok(()));
-
-        let res = poll_fn(|cx| stream.poll_read(cx, &mut buf)).await;
-        assert_eq!(res, Ok(11));
-        assert_eq!(&buf[0..11], b"hello world");
-
-        let res = poll_fn(|cx| stream.poll_read(cx, &mut buf)).await;
-        assert_eq!(res, Ok(0));
-
-        let res = conn
-            .open_outbound_stream(crate::StreamType::Bidirectional, false)
-            .await;
-        assert!(res.is_ok());
-
-        let mut stream = res.expect("open_outbound_stream");
-        let res = poll_fn(|cx| stream.poll_abort_read(cx, 0)).await;
-        assert_eq!(res, Ok(()));
-        // not waiting for the server to receive stopping
-
-        let res = poll_fn(|cx| stream.poll_write(cx, b"hello world", true)).await;
-        assert_eq!(res, Ok(11));
-
-        client_rx.recv().await.expect("recv");
-
-        std::mem::drop(stream);
-
-        let res = conn
-            .open_outbound_stream(crate::StreamType::Bidirectional, false)
-            .await;
-        assert!(res.is_ok());
-
-        let stream = res.expect("open_outbound_stream");
-        let (read, write) = stream.split();
-        assert!(read.is_some());
-        assert!(write.is_some());
-
-        let (mut read, mut write) = (read.unwrap(), write.unwrap());
-
-        let res = tokio::io::AsyncWriteExt::write(&mut write, b"hello world").await;
-        assert_eq!(res.ok(), Some(11));
-
-        let res = poll_fn(|cx| write.poll_finish_write(cx)).await;
-        assert!(res.is_ok());
-
-        let res = futures::io::AsyncReadExt::read(&mut read, &mut buf).await;
-        assert_eq!(res.ok(), Some(11));
-        assert_eq!(&buf[0..11], b"hello world");
-
-        client_tx.send(()).await.expect("send");
-
-        std::mem::drop(read);
-        std::mem::drop(write);
-
-        let res = conn
-            .open_outbound_stream(crate::StreamType::Bidirectional, false)
-            .await;
-        assert!(res.is_ok());
-
-        let mut stream = res.expect("open_outbound_stream");
-
-        // echo
-        let res = poll_fn(|cx| stream.poll_write(cx, b"hello world", true)).await;
-        assert_eq!(res, Ok(11));
-
-        let res = poll_fn(|cx| stream.poll_read(cx, &mut buf)).await;
-        assert_eq!(res, Ok(11));
-        assert_eq!(&buf[0..11], b"hello world");
-
-        client_tx.send(()).await.expect("send");
-
-        std::mem::drop(stream);
-
-        let res = conn
-            .open_outbound_stream(crate::StreamType::Bidirectional, false)
-            .await;
-        assert!(res.is_ok());
-
-        let (read, write) = res.expect("open_outbound_stream").split();
-        assert!(read.is_some());
-        assert!(write.is_some());
-
-        let (mut read, mut write) = (read.unwrap(), write.unwrap());
-
-        // read/write in parallel
-        let write_task = tokio::task::spawn(async move {
-            let res = poll_fn(|cx| write.poll_write(cx, b"hello world", true)).await;
-            assert_eq!(res, Ok(11));
-            Ok::<_, anyhow::Error>(())
-        });
-
-        let res = poll_fn(|cx| read.poll_read(cx, &mut buf)).await;
-        assert_eq!(res, Ok(11));
-        assert_eq!(&buf[0..11], b"hello world");
-
-        let (res,) = tokio::join!(write_task);
+    let mut results = Vec::new();
+    while let Some(res) = set.join_next().await {
+        results.push(res);
+    }
+    results.into_iter().for_each(|res| {
         if let Err(err) = res {
             if err.is_panic() {
                 std::panic::resume_unwind(err.into_panic());
             }
         }
-        client_tx.send(()).await.expect("send");
+    });
+}
 
-        std::mem::drop(read);
+/// Test for ['Stream::poll_write']
+#[test(tokio::test)]
+async fn test_poll_write() {
+    let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
+
+    let api = msquic::Api::new().unwrap();
+    let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
+    let listener = new_server(&registration, &api).expect("new_server");
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    listener
+        .start(&[msquic::Buffer::from("test")], Some(addr))
+        .expect("listener start");
+    let server_addr = listener.local_addr().expect("listener local_addr");
+
+    let mut set = JoinSet::new();
+
+    set.spawn(async move {
+        let mut buf = [0; 1024];
+
+        let conn = listener.accept().await.unwrap();
+        let mut stream = conn.accept_inbound_uni_stream().await.unwrap();
+        let _ = poll_fn(|cx| stream.poll_read(cx, &mut buf)).await;
+
+        server_tx.send(()).await.unwrap();
+    });
+
+    let client_config = new_client_config(&registration).unwrap();
+    let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
+    set.spawn(async move {
+        conn.start(
+            &client_config,
+            &format!("{}", server_addr.ip()),
+            server_addr.port(),
+        )
+        .await
+        .unwrap();
+        let mut stream = conn
+            .open_outbound_stream(crate::StreamType::Unidirectional, false)
+            .await
+            .unwrap();
+
+        let res = poll_fn(|cx| stream.poll_write(cx, b"hello world", false)).await;
+        assert_eq!(res, Ok(11));
+        let res = poll_fn(|cx| stream.poll_write(cx, b"hello world", true)).await;
+        assert_eq!(res, Ok(11));
+        let res = poll_fn(|cx| stream.poll_write(cx, b"hello world", true)).await;
+        assert_eq!(res, Err(WriteError::Finished));
+
+        client_rx.recv().await.expect("recv");
+    });
+
+    let mut results = Vec::new();
+    while let Some(res) = set.join_next().await {
+        results.push(res);
+    }
+    results.into_iter().for_each(|res| {
+        if let Err(err) = res {
+            if err.is_panic() {
+                std::panic::resume_unwind(err.into_panic());
+            }
+        }
+    });
+}
+
+/// Test for ['Stream::write_chunk']
+#[test(tokio::test)]
+async fn test_write_chunk() {
+    let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
+
+    let api = msquic::Api::new().unwrap();
+    let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
+    let listener = new_server(&registration, &api).expect("new_server");
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    listener
+        .start(&[msquic::Buffer::from("test")], Some(addr))
+        .expect("listener start");
+    let server_addr = listener.local_addr().expect("listener local_addr");
+
+    let mut set = JoinSet::new();
+
+    set.spawn(async move {
+        let mut buf = [0; 1024];
+
+        let conn = listener.accept().await.unwrap();
+        let mut stream = conn.accept_inbound_uni_stream().await.unwrap();
+        let _ = poll_fn(|cx| stream.poll_read(cx, &mut buf)).await.unwrap();
+
+        server_tx.send(()).await.unwrap();
+    });
+
+    let client_config = new_client_config(&registration).unwrap();
+    let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
+    set.spawn(async move {
+        conn.start(
+            &client_config,
+            &format!("{}", server_addr.ip()),
+            server_addr.port(),
+        )
+        .await
+        .unwrap();
+        let mut stream = conn
+            .open_outbound_stream(crate::StreamType::Unidirectional, false)
+            .await
+            .unwrap();
+
+        let chunk = Bytes::from("hello world");
+        let res = stream.write_chunk(&chunk, true).await;
+        assert_eq!(res, Ok(11));
+        let res = stream.write_chunk(&chunk, true).await;
+        assert_eq!(res, Err(WriteError::Finished));
+
+        client_rx.recv().await.unwrap();
+    });
+
+    let mut results = Vec::new();
+    while let Some(res) = set.join_next().await {
+        results.push(res);
+    }
+    results.into_iter().for_each(|res| {
+        if let Err(err) = res {
+            if err.is_panic() {
+                std::panic::resume_unwind(err.into_panic());
+            }
+        }
+    });
+}
+
+/// Test for ['Stream::write_chunks']
+#[test(tokio::test)]
+async fn test_write_chunks() {
+    let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
+
+    let api = msquic::Api::new().unwrap();
+    let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
+    let listener = new_server(&registration, &api).expect("new_server");
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    listener
+        .start(&[msquic::Buffer::from("test")], Some(addr))
+        .expect("listener start");
+    let server_addr = listener.local_addr().expect("listener local_addr");
+
+    let mut set = JoinSet::new();
+
+    set.spawn(async move {
+        let mut buf = [0; 1024];
+
+        let conn = listener.accept().await.unwrap();
+        let mut stream = conn.accept_inbound_uni_stream().await.unwrap();
+        let _ = poll_fn(|cx| stream.poll_read(cx, &mut buf)).await.unwrap();
+
+        server_tx.send(()).await.unwrap();
+    });
+
+    let client_config = new_client_config(&registration).unwrap();
+    let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
+    set.spawn(async move {
+        conn.start(
+            &client_config,
+            &format!("{}", server_addr.ip()),
+            server_addr.port(),
+        )
+        .await
+        .unwrap();
+        let mut stream = conn
+            .open_outbound_stream(crate::StreamType::Unidirectional, false)
+            .await
+            .unwrap();
+
+        let chunks = [Bytes::from("hello"), Bytes::from(" world")];
+        let res = stream.write_chunks(&chunks, true).await;
+        assert_eq!(res, Ok(11));
+        let res = stream.write_chunks(&chunks, true).await;
+        assert_eq!(res, Err(WriteError::Finished));
+
+        client_rx.recv().await.unwrap();
+    });
+
+    let mut results = Vec::new();
+    while let Some(res) = set.join_next().await {
+        results.push(res);
+    }
+    results.into_iter().for_each(|res| {
+        if let Err(err) = res {
+            if err.is_panic() {
+                std::panic::resume_unwind(err.into_panic());
+            }
+        }
+    });
+}
+
+/// Test for ['Stream::poll_finish_write']
+#[test(tokio::test)]
+async fn test_poll_finish_write() {
+    let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
+
+    let api = msquic::Api::new().unwrap();
+    let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
+    let listener = new_server(&registration, &api).expect("new_server");
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    listener
+        .start(&[msquic::Buffer::from("test")], Some(addr))
+        .expect("listener start");
+    let server_addr = listener.local_addr().expect("listener local_addr");
+
+    let mut set = JoinSet::new();
+
+    set.spawn(async move {
+        let mut buf = [0; 1024];
+
+        let conn = listener.accept().await.unwrap();
+        let mut stream = conn.accept_inbound_uni_stream().await.unwrap();
+        let _ = poll_fn(|cx| stream.poll_read(cx, &mut buf)).await;
+
+        server_tx.send(()).await.unwrap();
+    });
+
+    let client_config = new_client_config(&registration).unwrap();
+    let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
+    set.spawn(async move {
+        conn.start(
+            &client_config,
+            &format!("{}", server_addr.ip()),
+            server_addr.port(),
+        )
+        .await
+        .unwrap();
+        let mut stream = conn
+            .open_outbound_stream(crate::StreamType::Unidirectional, false)
+            .await
+            .unwrap();
+
+        let res = poll_fn(|cx| stream.poll_finish_write(cx)).await;
+        assert!(res.is_ok());
+        let res = poll_fn(|cx| stream.poll_write(cx, b"hello world", false)).await;
+        assert_eq!(res, Err(WriteError::Finished));
+
+        client_rx.recv().await.expect("recv");
+    });
+
+    let mut results = Vec::new();
+    while let Some(res) = set.join_next().await {
+        results.push(res);
+    }
+    results.into_iter().for_each(|res| {
+        if let Err(err) = res {
+            if err.is_panic() {
+                std::panic::resume_unwind(err.into_panic());
+            }
+        }
+    });
+}
+
+/// Test for ['Stream::poll_abort_write']
+#[test(tokio::test)]
+async fn test_poll_abort_write() {
+    let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
+
+    let api = msquic::Api::new().unwrap();
+    let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
+    let listener = new_server(&registration, &api).expect("new_server");
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    listener
+        .start(&[msquic::Buffer::from("test")], Some(addr))
+        .expect("listener start");
+    let server_addr = listener.local_addr().expect("listener local_addr");
+
+    let mut set = JoinSet::new();
+
+    set.spawn(async move {
+        let mut buf = [0; 1024];
+
+        let conn = listener.accept().await.unwrap();
+        let mut stream = conn.accept_inbound_uni_stream().await.unwrap();
+        let res = poll_fn(|cx| stream.poll_read(cx, &mut buf)).await;
+        assert_eq!(res, Err(ReadError::Reset(0)));
+
+        server_tx.send(()).await.unwrap();
+    });
+
+    let client_config = new_client_config(&registration).unwrap();
+    let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
+    set.spawn(async move {
+        conn.start(
+            &client_config,
+            &format!("{}", server_addr.ip()),
+            server_addr.port(),
+        )
+        .await
+        .unwrap();
+        let mut stream = conn
+            .open_outbound_stream(crate::StreamType::Unidirectional, false)
+            .await
+            .unwrap();
+
+        let res = poll_fn(|cx| stream.poll_abort_write(cx, 0)).await;
+        assert!(res.is_ok());
+        let res = poll_fn(|cx| stream.poll_write(cx, b"hello world", false)).await;
+        assert_eq!(res, Err(WriteError::Finished));
+
+        client_rx.recv().await.expect("recv");
+    });
+
+    let mut results = Vec::new();
+    while let Some(res) = set.join_next().await {
+        results.push(res);
+    }
+    results.into_iter().for_each(|res| {
+        if let Err(err) = res {
+            if err.is_panic() {
+                std::panic::resume_unwind(err.into_panic());
+            }
+        }
+    });
+}
+
+/// Test for [`Stream::poll_read()`]
+#[test(tokio::test)]
+async fn test_poll_read() {
+    let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
+
+    let api = msquic::Api::new().unwrap();
+    let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
+
+    let listener = new_server(&registration, &api).expect("new_server");
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    listener
+        .start(&[msquic::Buffer::from("test")], Some(addr))
+        .expect("listener start");
+    let server_addr = listener.local_addr().expect("listener local_addr");
+
+    let mut set = JoinSet::new();
+
+    set.spawn(async move {
+        let conn = listener.accept().await.unwrap();
+        let mut stream = conn.accept_inbound_uni_stream().await.unwrap();
+
+        let mut buf = [0; 1024];
+        let res = poll_fn(|cx| stream.poll_read(cx, &mut buf)).await;
+        assert_eq!(res, Ok(11));
+        let res = poll_fn(|cx| stream.poll_read(cx, &mut buf)).await;
+        assert_eq!(res, Ok(0));
+
+        server_tx.send(()).await.unwrap();
+    });
+
+    let client_config = new_client_config(&registration).expect("new_client_config");
+    let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
+    set.spawn(async move {
+        conn.start(
+            &client_config,
+            &format!("{}", server_addr.ip()),
+            server_addr.port(),
+        )
+        .await
+        .unwrap();
+
+        let mut stream = conn
+            .open_outbound_stream(crate::StreamType::Unidirectional, false)
+            .await
+            .unwrap();
+
+        let _ = poll_fn(|cx| stream.poll_write(cx, b"hello world", true))
+            .await
+            .unwrap();
+
+        client_rx.recv().await.expect("recv");
+    });
+
+    let mut results = Vec::new();
+    while let Some(res) = set.join_next().await {
+        results.push(res);
+    }
+    results.into_iter().for_each(|res| {
+        if let Err(err) = res {
+            if err.is_panic() {
+                std::panic::resume_unwind(err.into_panic());
+            }
+        }
+    });
+}
+
+/// Test for [`Stream::read_chunk()`]
+#[test(tokio::test)]
+async fn test_read_chunk() {
+    let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
+
+    let api = msquic::Api::new().unwrap();
+    let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
+
+    let listener = new_server(&registration, &api).expect("new_server");
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    listener
+        .start(&[msquic::Buffer::from("test")], Some(addr))
+        .expect("listener start");
+    let server_addr = listener.local_addr().expect("listener local_addr");
+
+    let mut set = JoinSet::new();
+
+    set.spawn(async move {
+        let conn = listener.accept().await.unwrap();
+        let read_stream = conn.accept_inbound_uni_stream().await.unwrap();
+
+        let res = read_stream.read_chunk().await;
+        assert!(res.is_ok());
+        let chunk = res.unwrap();
+        assert!(chunk.is_some());
+        let mut chunk = chunk.unwrap();
+        assert_eq!(chunk.remaining(), 11);
+        let mut dst = [0; 11];
+        chunk.copy_to_slice(&mut dst);
+        assert_eq!(&dst, b"hello world");
+
+        mem::drop(chunk);
+
+        server_tx.send(()).await.unwrap();
+
+        let res = read_stream.read_chunk().await;
+        assert!(res.is_ok());
+        let chunk = res.unwrap();
+        assert!(chunk.is_some());
+        let chunk = chunk.unwrap();
+        assert_eq!(chunk.remaining(), 11);
+
+        let res = read_stream.read_chunk().await;
+        assert!(res.is_ok());
+        let chunk = res.unwrap();
+        assert!(chunk.is_none());
+
+        server_tx.send(()).await.unwrap();
+    });
+
+    let client_config = new_client_config(&registration).expect("new_client_config");
+    let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
+    set.spawn(async move {
+        let res = conn
+            .start(
+                &client_config,
+                &format!("{}", server_addr.ip()),
+                server_addr.port(),
+            )
+            .await;
+        assert!(res.is_ok());
 
         let res = conn
             .open_outbound_stream(crate::StreamType::Unidirectional, false)
@@ -711,44 +973,86 @@ async fn stream_validation() {
         assert!(res.is_ok());
 
         let mut stream = res.expect("open_outbound_stream");
+        let res = poll_fn(|cx| stream.poll_write(cx, b"hello world", false)).await;
+        assert_eq!(res, Ok(11));
+
+        client_rx.recv().await.expect("recv");
 
         let res = poll_fn(|cx| stream.poll_write(cx, b"hello world", true)).await;
         assert_eq!(res, Ok(11));
 
         client_rx.recv().await.expect("recv");
+    });
 
-        std::mem::drop(stream);
+    let mut results = Vec::new();
+    while let Some(res) = set.join_next().await {
+        results.push(res);
+    }
+    results.into_iter().for_each(|res| {
+        if let Err(err) = res {
+            if err.is_panic() {
+                std::panic::resume_unwind(err.into_panic());
+            }
+        }
+    });
+}
 
-        let res = conn
-            .open_outbound_stream(crate::StreamType::Unidirectional, false)
-            .await;
+/// Test for [`Stream::poll_abort_read()`]
+#[test(tokio::test)]
+async fn test_poll_abort_read() {
+    let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
+    let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
+
+    let api = msquic::Api::new().unwrap();
+    let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
+
+    let listener = new_server(&registration, &api).expect("new_server");
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    listener
+        .start(&[msquic::Buffer::from("test")], Some(addr))
+        .expect("listener start");
+    let server_addr = listener.local_addr().expect("listener local_addr");
+
+    let mut set = JoinSet::new();
+
+    set.spawn(async move {
+        let conn = listener.accept().await.unwrap();
+        let mut stream = conn.accept_inbound_uni_stream().await.unwrap();
+
+        let res = poll_fn(|cx| stream.poll_abort_read(cx, 0)).await;
         assert!(res.is_ok());
 
-        let (read, write) = res.expect("open_outbound_stream").split();
-        assert!(read.is_none());
-        assert!(write.is_some());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        server_tx.send(()).await.unwrap();
 
-        let mut write = write.unwrap();
-        let res = poll_fn(|cx| write.poll_write(cx, b"hello world", true)).await;
-        assert_eq!(res, Ok(11));
+        server_rx.recv().await.unwrap();
+    });
 
-        client_rx.recv().await.expect("recv");
+    let client_config = new_client_config(&registration).expect("new_client_config");
+    let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
+    set.spawn(async move {
+        conn.start(
+            &client_config,
+            &format!("{}", server_addr.ip()),
+            server_addr.port(),
+        )
+        .await
+        .unwrap();
 
-        std::mem::drop(write);
-
-        client_rx.recv().await.expect("recv");
-
-        let res = conn
+        let mut stream = conn
             .open_outbound_stream(crate::StreamType::Unidirectional, false)
-            .await;
-        assert_eq!(
-            res.err(),
-            Some(StreamStartError::ConnectionLost(
-                ConnectionError::ShutdownByPeer(0)
-            ))
-        );
+            .await
+            .unwrap();
+        let _ = poll_fn(|cx| stream.poll_write(cx, b"hello world", false))
+            .await
+            .unwrap();
 
-        Ok::<_, anyhow::Error>(())
+        client_rx.recv().await.unwrap();
+
+        let res = poll_fn(|cx| stream.poll_write(cx, b"hello world", true)).await;
+        assert_eq!(res, Err(WriteError::Stopped(0)));
+
+        client_tx.send(()).await.unwrap();
     });
 
     let mut results = Vec::new();

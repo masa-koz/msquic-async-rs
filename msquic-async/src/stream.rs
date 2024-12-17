@@ -472,6 +472,9 @@ impl StreamInstance {
                     return Poll::Pending;
                 }
                 StreamRecvState::StartComplete => {}
+                StreamRecvState::Shutdown => {
+                    return Poll::Ready(Ok(None));
+                }
                 StreamRecvState::ShutdownComplete => {
                     if let Some(conn_error) = &exclusive.conn_error {
                         return Poll::Ready(Err(ReadError::ConnectionLost(conn_error.clone())));
@@ -489,7 +492,10 @@ impl StreamInstance {
                 ReadStatus::Readable(read) | ReadStatus::Blocked(Some(read)) => {
                     Poll::Ready(Ok(Some(read)))
                 }
-                ReadStatus::Finished(read) => Poll::Ready(Ok(read)),
+                ReadStatus::Finished(read) => {
+                    exclusive.recv_state = StreamRecvState::Shutdown;
+                    Poll::Ready(Ok(read))
+                }
                 ReadStatus::Blocked(None) => {
                     exclusive.read_waiters.push(cx.waker().clone());
                     Poll::Pending
@@ -630,6 +636,7 @@ impl StreamInstance {
                         write_buf.into_raw() as *const _,
                     )
                     .unwrap();
+                exclusive.send_state = StreamSendState::Shutdown;
                 Poll::Ready(Ok(val))
             }
         }
@@ -847,6 +854,7 @@ enum StreamRecvState {
     Closed,
     Start,
     StartComplete,
+    Shutdown,
     ShutdownComplete,
 }
 
