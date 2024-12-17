@@ -1,6 +1,7 @@
 /// This file is based on the `client.rs` example from the `h3` crate.
 use futures::future;
-use msquic_async::msquic;
+use h3_msquic::msquic;
+use h3_msquic::msquic_async;
 use std::ptr;
 use tokio::io::AsyncWriteExt;
 use tracing::info;
