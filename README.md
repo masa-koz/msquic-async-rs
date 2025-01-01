@@ -1,5 +1,5 @@
 # msquic-async
-msquic based quic library that supports async operation.
+MsQuic based quic library that supports async operation.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/masa-koz/msquic-async-rs/actions/workflows/CI.yaml/badge.svg?branch=main)](https://github.com/masa-koz/msquic-async-rs/actions/workflows/CI.yaml)
@@ -16,9 +16,7 @@ The [examples](./msquic-async/examples) directory can help get started.
 ### Server
 
 ```rust
-    let api =
-        msquic::Api::new().map_err(|status| anyhow::anyhow!("Api::new failed: 0x{:x}", status))?;
-    let registration = msquic::Registration::new(&api, ptr::null())
+    let registration = msquic::Registration::new(ptr::null())
         .map_err(|status| anyhow::anyhow!("Registration::new failed: 0x{:x}", status))?;
 
     let alpn = [msquic::Buffer::from("sample")];
@@ -53,17 +51,21 @@ The [examples](./msquic-async/examples) directory can help get started.
         allowed_cipher_suites: 0,
     };
 
-    configuration.load_credential(&cred_config).unwrap();
-    let listener = msquic_async::Listener::new(
-        msquic::Listener::new(&api),
-        &registration,
-        configuration,
-        &api,
-    );
+    configuration
+        .load_credential(&cred_config)
+        .map_err(|status| {
+            anyhow::anyhow!("Configuration::load_credential failed: 0x{:x}", status)
+        })?;
+    let listener =
+        msquic_async::Listener::new(msquic::Listener::new(), &registration, configuration);
 
     let addr: SocketAddr = "127.0.0.1:4567".parse()?;
     listener.start(&alpn, Some(addr))?;
+    let server_addr = listener.local_addr()?;
 
+    info!("listening on {}", server_addr);
+
+    // handle incoming connections and streams
     while let Ok(conn) = listener.accept().await {
         info!("new connection established");
         tokio::spawn(async move {
@@ -96,9 +98,7 @@ You can find a full server example in [`msquic-async/examples/server.rs`](./msqu
 ### Client
 
 ``` rust
-    let api =
-        msquic::Api::new().map_err(|status| anyhow::anyhow!("Api::new failed: 0x{:x}", status))?;
-    let registration = msquic::Registration::new(&api, ptr::null())
+    let registration = msquic::Registration::new(ptr::null())
         .map_err(|status| anyhow::anyhow!("Registration::new failed: 0x{:x}", status))?;
 
     let alpn = [msquic::Buffer::from("sample")];
@@ -117,10 +117,13 @@ You can find a full server example in [`msquic-async/examples/server.rs`](./msqu
 
     let mut cred_config = msquic::CredentialConfig::new_client();
     cred_config.cred_flags |= msquic::CREDENTIAL_FLAG_NO_CERTIFICATE_VALIDATION;
-    configuration.load_credential(&cred_config).unwrap();
+    configuration
+        .load_credential(&cred_config)
+        .map_err(|status| {
+            anyhow::anyhow!("Configuration::load_credential failed: 0x{:x}", status)
+        })?;
 
-    let conn =
-        msquic_async::Connection::new(msquic::Connection::new(&registration), &registration, &api);
+    let conn = msquic_async::Connection::new(msquic::Connection::new(), &registration);
     conn.start(&configuration, "127.0.0.1", 4567).await?;
 
     let mut stream = conn
