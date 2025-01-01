@@ -69,10 +69,7 @@ async fn test_connection_start() {
 
         client_rx.recv().await.unwrap();
 
-        if let Err(ConnectionStartError::ConnectionLost(ConnectionError::ShutdownByTransport(
-            _status,
-            _error_code,
-        ))) = conn1
+        match conn1
             .start(
                 &client_config,
                 &format!("{}", server_addr.ip()),
@@ -80,9 +77,13 @@ async fn test_connection_start() {
             )
             .await
         {
-            assert!(true, "ConnectionError::ShutdownByTransport");
-        } else {
-            assert!(false, "ConnectionError::ShutdownByTransport");
+            Err(ConnectionStartError::ConnectionLost(ConnectionError::ShutdownByTransport(
+                _status,
+                _error_code,
+            ))) => {}
+            _ => {
+                panic!("ConnectionStartError::ConnectionLost(ConnectionError::ShutdownByTransport)")
+            }
         }
     });
 
@@ -189,10 +190,11 @@ async fn test_listener_accept() {
         listener.stop().await.unwrap();
         let res = listener.stop().await;
         assert!(res.is_ok());
-        if let Err(ListenError::Finished) = listener.accept().await {
-            assert!(true, "ListenError::Finished");
-        } else {
-            assert!(false, "ListenError::Finished");
+        match listener.accept().await {
+            Err(ListenError::Finished) => {}
+            _ => {
+                panic!("ListenError::Finished");
+            }
         }
     });
 
@@ -1314,7 +1316,7 @@ fn test_stream_recv_buffers() {
     ];
     let mut buffer = StreamRecvBuffer::new(0, &buffers, false);
     assert_eq!(buffer.remaining(), 12);
-    assert_eq!(buffer.fin(), false);
+    assert!(!buffer.fin());
     assert_eq!(buffer.get_bytes_upto_size(10), Some(&b"hello "[..]));
     assert_eq!(buffer.remaining(), 6);
     assert_eq!(buffer.get_bytes_upto_size(10), Some(&b"world"[..]));
@@ -1324,7 +1326,7 @@ fn test_stream_recv_buffers() {
     assert_eq!(buffer.get_bytes_upto_size(10), None);
 
     let mut buffer = StreamRecvBuffer::new(0, &buffers, true);
-    assert_eq!(buffer.fin(), true);
+    assert!(buffer.fin());
     assert_eq!(buffer.get_bytes_upto_size(3), Some(&b"hel"[..]));
     assert_eq!(buffer.remaining(), 9);
     assert_eq!(buffer.get_bytes_upto_size(10), Some(&b"lo "[..]));
