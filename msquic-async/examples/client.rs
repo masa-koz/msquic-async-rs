@@ -31,7 +31,11 @@ async fn main() -> anyhow::Result<()> {
 
     let mut cred_config = msquic::CredentialConfig::new_client();
     cred_config.cred_flags |= msquic::CREDENTIAL_FLAG_NO_CERTIFICATE_VALIDATION;
-    configuration.load_credential(&cred_config).unwrap();
+    configuration
+        .load_credential(&cred_config)
+        .map_err(|status| {
+            anyhow::anyhow!("Configuration::load_credential failed: 0x{:x}", status)
+        })?;
 
     let conn = msquic_async::Connection::new(msquic::Connection::new(), &registration);
     conn.start(&configuration, "127.0.0.1", 4567).await?;

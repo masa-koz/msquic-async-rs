@@ -29,10 +29,14 @@ async fn main() -> anyhow::Result<()> {
             .set_datagram_receive_enabled(true)
             .set_stream_multi_receive_enabled(true),
     )
-    .unwrap();
+    .map_err(|status| anyhow::anyhow!("Configuration::new failed: 0x{:x}", status))?;
     let mut cred_config = msquic::CredentialConfig::new_client();
     cred_config.cred_flags |= msquic::CREDENTIAL_FLAG_NO_CERTIFICATE_VALIDATION;
-    configuration.load_credential(&cred_config).unwrap();
+    configuration
+        .load_credential(&cred_config)
+        .map_err(|status| {
+            anyhow::anyhow!("Configuration::load_credential failed: 0x{:x}", status)
+        })?;
 
     let conn = msquic_async::Connection::new(msquic::Connection::new(), &registration);
     conn.start(&configuration, "127.0.0.1", 8443).await?;

@@ -39,20 +39,16 @@ async fn main() -> anyhow::Result<()> {
     )
     .map_err(|status| anyhow::anyhow!("Configuration::new failed: 0x{:x}", status))?;
 
-    let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
-    let mut cert_file = NamedTempFile::new().unwrap();
-    cert_file
-        .write_all(cert.serialize_pem().unwrap().as_bytes())
-        .unwrap();
+    let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
+    let mut cert_file = NamedTempFile::new()?;
+    cert_file.write_all(cert.serialize_pem()?.as_bytes())?;
     let cert_path = cert_file.into_temp_path();
-    let cert_path = CString::new(cert_path.to_str().unwrap().as_bytes()).unwrap();
+    let cert_path = CString::new(cert_path.to_path_buf().as_os_str().as_encoded_bytes())?;
 
-    let mut key_file = NamedTempFile::new().unwrap();
-    key_file
-        .write_all(cert.serialize_private_key_pem().as_bytes())
-        .unwrap();
+    let mut key_file = NamedTempFile::new()?;
+    key_file.write_all(cert.serialize_private_key_pem().as_bytes())?;
     let key_path = key_file.into_temp_path();
-    let key_path = CString::new(key_path.to_str().unwrap().as_bytes()).unwrap();
+    let key_path = CString::new(key_path.to_path_buf().as_os_str().as_encoded_bytes())?;
 
     let certificate_file = msquic::CertificateFile {
         private_key_file: key_path.as_ptr(),
@@ -71,7 +67,11 @@ async fn main() -> anyhow::Result<()> {
         allowed_cipher_suites: 0,
     };
 
-    configuration.load_credential(&cred_config).unwrap();
+    configuration
+        .load_credential(&cred_config)
+        .map_err(|status| {
+            anyhow::anyhow!("Configuration::load_credential failed: 0x{:x}", status)
+        })?;
     let listener =
         msquic_async::Listener::new(msquic::Listener::new(), &registration, configuration);
 
