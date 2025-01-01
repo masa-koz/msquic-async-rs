@@ -26,12 +26,8 @@ pub enum StreamType {
 pub struct Stream(Arc<StreamInstance>);
 
 impl Stream {
-    pub(crate) fn open(
-        msquic_conn: &msquic::Connection,
-        msquic_api: &msquic::Api,
-        stream_type: StreamType,
-    ) -> Self {
-        let msquic_stream = msquic::Stream::new(msquic_api);
+    pub(crate) fn open(msquic_conn: &msquic::Connection, stream_type: StreamType) -> Self {
+        let msquic_stream = msquic::Stream::new();
         let flags = if stream_type == StreamType::Unidirectional {
             msquic::STREAM_OPEN_FLAG_UNIDIRECTIONAL
         } else {
@@ -59,12 +55,8 @@ impl Stream {
         Self(Arc::new(StreamInstance(inner)))
     }
 
-    pub(crate) fn from_handle(
-        handle: msquic::Handle,
-        msquic_api: &msquic::Api,
-        stream_type: StreamType,
-    ) -> Self {
-        let msquic_stream = msquic::Stream::from_parts(handle, msquic_api);
+    pub(crate) fn from_handle(handle: msquic::Handle, stream_type: StreamType) -> Self {
+        let msquic_stream = msquic::Stream::from_parts(handle);
         let send_state = if stream_type == StreamType::Bidirectional {
             StreamSendState::StartComplete
         } else {
@@ -378,12 +370,12 @@ impl StreamInstance {
         } else {
             let id = 0u64;
             let mut buffer_length = std::mem::size_of_val(&id) as u32;
-            let status = self.0.shared.msquic_stream.get_param(
+            let res = self.0.shared.msquic_stream.get_param(
                 msquic::PARAM_STREAM_ID,
                 &mut buffer_length as *mut _,
                 &id as *const _ as *const c_void,
             );
-            if msquic::Status::succeeded(status) {
+            if res.is_ok() {
                 self.0.shared.id.write().unwrap().replace(id);
                 Some(id)
             } else {
@@ -616,7 +608,7 @@ impl StreamInstance {
                     .shared
                     .msquic_stream
                     .send(
-                        buffer,
+                        unsafe { &*buffer },
                         buffer_count,
                         msquic::SEND_FLAG_NONE,
                         write_buf.into_raw() as *const _,
@@ -630,7 +622,7 @@ impl StreamInstance {
                     .shared
                     .msquic_stream
                     .send(
-                        buffer,
+                        unsafe { &*buffer },
                         buffer_count,
                         msquic::SEND_FLAG_FIN,
                         write_buf.into_raw() as *const _,
@@ -650,7 +642,8 @@ impl StreamInstance {
                 return Poll::Pending;
             }
             StreamSendState::StartComplete => {
-                self.0
+                let _ = self
+                    .0
                     .shared
                     .msquic_stream
                     .shutdown(msquic::STREAM_SHUTDOWN_FLAG_GRACEFUL, 0);
@@ -686,7 +679,8 @@ impl StreamInstance {
                 return Poll::Pending;
             }
             StreamSendState::StartComplete => {
-                self.0
+                let _ = self
+                    .0
                     .shared
                     .msquic_stream
                     .shutdown(msquic::STREAM_SHUTDOWN_FLAG_ABORT_SEND, error_code);
@@ -714,7 +708,8 @@ impl StreamInstance {
         let mut exclusive = self.0.exclusive.lock().unwrap();
         match exclusive.send_state {
             StreamSendState::StartComplete => {
-                self.0
+                let _ = self
+                    .0
                     .shared
                     .msquic_stream
                     .shutdown(msquic::STREAM_SHUTDOWN_FLAG_ABORT_SEND, error_code);
@@ -737,7 +732,8 @@ impl StreamInstance {
                 return Poll::Pending;
             }
             StreamRecvState::StartComplete => {
-                self.0
+                let _ = self
+                    .0
                     .shared
                     .msquic_stream
                     .shutdown(msquic::STREAM_SHUTDOWN_FLAG_ABORT_RECEIVE, error_code);
@@ -767,7 +763,8 @@ impl StreamInstance {
         let mut exclusive = self.0.exclusive.lock().unwrap();
         match exclusive.recv_state {
             StreamRecvState::StartComplete => {
-                self.0
+                let _ = self
+                    .0
                     .shared
                     .msquic_stream
                     .shutdown(msquic::STREAM_SHUTDOWN_FLAG_ABORT_RECEIVE, error_code);
@@ -791,7 +788,7 @@ impl Drop for StreamInstance {
         match exclusive.state {
             StreamState::Start | StreamState::StartComplete => {
                 trace!("StreamInstance({:p}) shutdown while dropping", &*self.0);
-                self.0.shared.msquic_stream.shutdown(
+                let _ = self.0.shared.msquic_stream.shutdown(
                     msquic::STREAM_SHUTDOWN_FLAG_ABORT_SEND
                         | msquic::STREAM_SHUTDOWN_FLAG_ABORT_RECEIVE
                         | msquic::STREAM_SHUTDOWN_FLAG_IMMEDIATE,
@@ -936,7 +933,8 @@ impl StreamInner {
                 self,
                 complete_len
             );
-            self.shared
+            let _ = self
+                .shared
                 .msquic_stream
                 .receive_complete(complete_len as u64);
         }
@@ -1124,8 +1122,8 @@ impl StreamInner {
             exclusive.send_state = StreamSendState::ShutdownComplete;
             if payload.connection_shutdown {
                 match (
-                    payload.flags.conn_shutdown_by_app() == 1,
-                    payload.flags.conn_closed_remotely() == 1,
+                    payload.bit_flags.conn_shutdown_by_app() == 1,
+                    payload.bit_flags.conn_closed_remotely() == 1,
                 ) {
                     (true, true) => {
                         exclusive.conn_error = Some(ConnectionError::ShutdownByPeer(

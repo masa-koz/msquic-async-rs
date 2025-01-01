@@ -32,9 +32,7 @@ async fn main() -> anyhow::Result<()> {
     let cmd_opts: CmdOptions = argh::from_env();
     let root = Arc::new(cmd_opts.root);
 
-    let api =
-        msquic::Api::new().map_err(|status| anyhow::anyhow!("Api::new failed: 0x{:x}", status))?;
-    let registration = msquic::Registration::new(&api, ptr::null())
+    let registration = msquic::Registration::new(ptr::null())
         .map_err(|status| anyhow::anyhow!("Registration::new failed: 0x{:x}", status))?;
     let alpn = [msquic::Buffer::from("h3")];
 
@@ -84,12 +82,8 @@ async fn main() -> anyhow::Result<()> {
     };
 
     configuration.load_credential(&cred_config).unwrap();
-    let listener = msquic_async::Listener::new(
-        msquic::Listener::new(&api),
-        &registration,
-        configuration,
-        &api,
-    );
+    let listener =
+        msquic_async::Listener::new(msquic::Listener::new(), &registration, configuration);
 
     let addr: SocketAddr = "127.0.0.1:8443".parse()?;
     listener.start(&[msquic::Buffer::from("h3")], Some(addr))?;

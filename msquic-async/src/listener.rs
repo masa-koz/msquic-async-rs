@@ -19,13 +19,8 @@ impl Listener {
         msquic_listener: msquic::Listener,
         registration: &msquic::Registration,
         configuration: msquic::Configuration,
-        msquic_api: &msquic::Api,
     ) -> Self {
-        let inner = Box::new(ListenerInner::new(
-            msquic_listener,
-            configuration,
-            msquic_api,
-        ));
+        let inner = Box::new(ListenerInner::new(msquic_listener, configuration));
         {
             inner
                 .shared
@@ -149,7 +144,6 @@ unsafe impl Send for ListenerInnerExclusive {}
 struct ListenerInnerShared {
     msquic_listener: msquic::Listener,
     configuration: msquic::Configuration,
-    msquic_api: msquic::Api,
 }
 unsafe impl Sync for ListenerInnerShared {}
 unsafe impl Send for ListenerInnerShared {}
@@ -163,11 +157,7 @@ enum ListenerState {
 }
 
 impl ListenerInner {
-    fn new(
-        msquic_listener: msquic::Listener,
-        configuration: msquic::Configuration,
-        msquic_api: &msquic::Api,
-    ) -> Self {
+    fn new(msquic_listener: msquic::Listener, configuration: msquic::Configuration) -> Self {
         Self {
             exclusive: Mutex::new(ListenerInnerExclusive {
                 state: ListenerState::Open,
@@ -178,7 +168,6 @@ impl ListenerInner {
             shared: ListenerInnerShared {
                 msquic_listener,
                 configuration,
-                msquic_api: msquic_api.clone(),
             },
         }
     }
@@ -189,7 +178,7 @@ impl ListenerInner {
     ) -> u32 {
         trace!("Listener({:p}) new connection event", inner);
 
-        let new_conn = Connection::from_handle(payload.connection, &inner.shared.msquic_api);
+        let new_conn = Connection::from_handle(payload.connection);
         new_conn.set_configuration(&inner.shared.configuration);
 
         let mut exclusive = inner.exclusive.lock().unwrap();

@@ -12,9 +12,7 @@ async fn main() -> anyhow::Result<()> {
         .with_max_level(tracing::Level::INFO)
         .init();
 
-    let api =
-        msquic::Api::new().map_err(|status| anyhow::anyhow!("Api::new failed: 0x{:x}", status))?;
-    let registration = msquic::Registration::new(&api, ptr::null())
+    let registration = msquic::Registration::new(ptr::null())
         .map_err(|status| anyhow::anyhow!("Registration::new failed: 0x{:x}", status))?;
 
     let alpn = [msquic::Buffer::from("sample")];
@@ -35,8 +33,7 @@ async fn main() -> anyhow::Result<()> {
     cred_config.cred_flags |= msquic::CREDENTIAL_FLAG_NO_CERTIFICATE_VALIDATION;
     configuration.load_credential(&cred_config).unwrap();
 
-    let conn =
-        msquic_async::Connection::new(msquic::Connection::new(&registration), &registration, &api);
+    let conn = msquic_async::Connection::new(msquic::Connection::new(), &registration);
     conn.start(&configuration, "127.0.0.1", 4567).await?;
 
     let mut stream = conn
