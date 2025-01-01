@@ -28,11 +28,9 @@ async fn test_connection_start() {
     let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let api = msquic::Api::new().unwrap();
-    let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
+    let registration = msquic::Registration::new(ptr::null()).unwrap();
     let listener = new_server(
         &registration,
-        &api,
         msquic::Settings::new().set_idle_timeout_ms(10000),
     )
     .unwrap();
@@ -56,8 +54,8 @@ async fn test_connection_start() {
         msquic::Settings::new().set_idle_timeout_ms(10000),
     )
     .unwrap();
-    let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
-    let conn1 = Connection::new(msquic::Connection::new(&registration), &registration, &api);
+    let conn = Connection::new(msquic::Connection::new(), &registration);
+    let conn1 = Connection::new(msquic::Connection::new(), &registration);
     set.spawn(async move {
         let res = conn
             .start(
@@ -106,11 +104,9 @@ async fn test_connection_start() {
 async fn test_connection_poll_shutdown() {
     let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
 
-    let api = msquic::Api::new().unwrap();
-    let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
+    let registration = msquic::Registration::new(ptr::null()).unwrap();
     let listener = new_server(
         &registration,
-        &api,
         msquic::Settings::new().set_idle_timeout_ms(10000),
     )
     .unwrap();
@@ -142,7 +138,7 @@ async fn test_connection_poll_shutdown() {
         msquic::Settings::new().set_idle_timeout_ms(10000),
     )
     .unwrap();
-    let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
+    let conn = Connection::new(msquic::Connection::new(), &registration);
     set.spawn(async move {
         conn.start(
             &client_config,
@@ -173,11 +169,9 @@ async fn test_connection_poll_shutdown() {
 /// Test for ['Listener::accept()']
 #[test(tokio::test)]
 async fn test_listener_accept() {
-    let api = msquic::Api::new().unwrap();
-    let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
+    let registration = msquic::Registration::new(ptr::null()).unwrap();
     let listener = new_server(
         &registration,
-        &api,
         msquic::Settings::new().set_idle_timeout_ms(10000),
     )
     .unwrap();
@@ -207,7 +201,7 @@ async fn test_listener_accept() {
         msquic::Settings::new().set_idle_timeout_ms(10000),
     )
     .unwrap();
-    let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
+    let conn = Connection::new(msquic::Connection::new(), &registration);
     set.spawn(async move {
         let _ = conn
             .start(
@@ -236,12 +230,10 @@ async fn test_listener_accept() {
 async fn test_open_outbound_stream() {
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let api = msquic::Api::new().unwrap();
-    let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
+    let registration = msquic::Registration::new(ptr::null()).unwrap();
 
     let listener = new_server(
         &registration,
-        &api,
         msquic::Settings::new()
             .set_idle_timeout_ms(10000)
             .set_peer_bidi_stream_count(1)
@@ -275,7 +267,7 @@ async fn test_open_outbound_stream() {
         msquic::Settings::new().set_idle_timeout_ms(10000),
     )
     .unwrap();
-    let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
+    let conn = Connection::new(msquic::Connection::new(), &registration);
     set.spawn(async move {
         conn.start(
             &client_config,
@@ -330,12 +322,10 @@ async fn test_open_outbound_stream() {
 async fn test_open_outbound_stream_exceed_limit() -> Result<(), anyhow::Error> {
     let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
 
-    let api = msquic::Api::new().unwrap();
-    let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
+    let registration = msquic::Registration::new(ptr::null()).unwrap();
 
     let listener = new_server(
         &registration,
-        &api,
         msquic::Settings::new()
             .set_idle_timeout_ms(10000)
             .set_peer_bidi_stream_count(1)
@@ -371,7 +361,7 @@ async fn test_open_outbound_stream_exceed_limit() -> Result<(), anyhow::Error> {
         msquic::Settings::new().set_idle_timeout_ms(10000),
     )
     .unwrap();
-    let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
+    let conn = Connection::new(msquic::Connection::new(), &registration);
     set.spawn(async move {
         conn.start(
             &client_config,
@@ -453,12 +443,10 @@ async fn test_open_outbound_stream_exceed_limit_and_accepted() {
     let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let api = msquic::Api::new().unwrap();
-    let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
+    let registration = msquic::Registration::new(ptr::null()).unwrap();
 
     let listener = new_server(
         &registration,
-        &api,
         msquic::Settings::new()
             .set_idle_timeout_ms(10000)
             .set_peer_bidi_stream_count(1)
@@ -493,7 +481,7 @@ async fn test_open_outbound_stream_exceed_limit_and_accepted() {
         msquic::Settings::new().set_idle_timeout_ms(10000),
     )
     .unwrap();
-    let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
+    let conn = Connection::new(msquic::Connection::new(), &registration);
     set.spawn(async move {
         conn.start(
             &client_config,
@@ -595,12 +583,10 @@ async fn test_open_outbound_stream_exceed_limit_and_accepted() {
 async fn test_poll_write() {
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let api = msquic::Api::new().unwrap();
-    let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
+    let registration = msquic::Registration::new(ptr::null()).unwrap();
 
     let listener = new_server(
         &registration,
-        &api,
         msquic::Settings::new()
             .set_idle_timeout_ms(10000)
             .set_peer_unidi_stream_count(1),
@@ -629,7 +615,7 @@ async fn test_poll_write() {
         msquic::Settings::new().set_idle_timeout_ms(10000),
     )
     .unwrap();
-    let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
+    let conn = Connection::new(msquic::Connection::new(), &registration);
     set.spawn(async move {
         conn.start(
             &client_config,
@@ -671,12 +657,10 @@ async fn test_poll_write() {
 async fn test_write_chunk() {
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let api = msquic::Api::new().unwrap();
-    let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
+    let registration = msquic::Registration::new(ptr::null()).unwrap();
 
     let listener = new_server(
         &registration,
-        &api,
         msquic::Settings::new()
             .set_idle_timeout_ms(10000)
             .set_peer_unidi_stream_count(1),
@@ -705,7 +689,7 @@ async fn test_write_chunk() {
         msquic::Settings::new().set_idle_timeout_ms(10000),
     )
     .unwrap();
-    let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
+    let conn = Connection::new(msquic::Connection::new(), &registration);
     set.spawn(async move {
         conn.start(
             &client_config,
@@ -746,12 +730,10 @@ async fn test_write_chunk() {
 async fn test_write_chunks() {
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let api = msquic::Api::new().unwrap();
-    let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
+    let registration = msquic::Registration::new(ptr::null()).unwrap();
 
     let listener = new_server(
         &registration,
-        &api,
         msquic::Settings::new()
             .set_idle_timeout_ms(10000)
             .set_peer_unidi_stream_count(1),
@@ -780,7 +762,7 @@ async fn test_write_chunks() {
         msquic::Settings::new().set_idle_timeout_ms(10000),
     )
     .unwrap();
-    let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
+    let conn = Connection::new(msquic::Connection::new(), &registration);
     set.spawn(async move {
         conn.start(
             &client_config,
@@ -821,12 +803,10 @@ async fn test_write_chunks() {
 async fn test_poll_finish_write() {
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let api = msquic::Api::new().unwrap();
-    let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
+    let registration = msquic::Registration::new(ptr::null()).unwrap();
 
     let listener = new_server(
         &registration,
-        &api,
         msquic::Settings::new()
             .set_idle_timeout_ms(10000)
             .set_peer_unidi_stream_count(1),
@@ -855,7 +835,7 @@ async fn test_poll_finish_write() {
         msquic::Settings::new().set_idle_timeout_ms(10000),
     )
     .unwrap();
-    let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
+    let conn = Connection::new(msquic::Connection::new(), &registration);
     set.spawn(async move {
         conn.start(
             &client_config,
@@ -895,12 +875,10 @@ async fn test_poll_finish_write() {
 async fn test_poll_abort_write() {
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let api = msquic::Api::new().unwrap();
-    let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
+    let registration = msquic::Registration::new(ptr::null()).unwrap();
 
     let listener = new_server(
         &registration,
-        &api,
         msquic::Settings::new()
             .set_idle_timeout_ms(10000)
             .set_peer_unidi_stream_count(1),
@@ -930,7 +908,7 @@ async fn test_poll_abort_write() {
         msquic::Settings::new().set_idle_timeout_ms(10000),
     )
     .unwrap();
-    let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
+    let conn = Connection::new(msquic::Connection::new(), &registration);
     set.spawn(async move {
         conn.start(
             &client_config,
@@ -970,12 +948,10 @@ async fn test_poll_abort_write() {
 async fn test_poll_read() {
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let api = msquic::Api::new().unwrap();
-    let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
+    let registration = msquic::Registration::new(ptr::null()).unwrap();
 
     let listener = new_server(
         &registration,
-        &api,
         msquic::Settings::new()
             .set_idle_timeout_ms(10000)
             .set_peer_unidi_stream_count(1),
@@ -1007,7 +983,7 @@ async fn test_poll_read() {
         msquic::Settings::new().set_idle_timeout_ms(10000),
     )
     .unwrap();
-    let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
+    let conn = Connection::new(msquic::Connection::new(), &registration);
     set.spawn(async move {
         conn.start(
             &client_config,
@@ -1047,12 +1023,10 @@ async fn test_poll_read() {
 async fn test_read_chunk() {
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let api = msquic::Api::new().unwrap();
-    let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
+    let registration = msquic::Registration::new(ptr::null()).unwrap();
 
     let listener = new_server(
         &registration,
-        &api,
         msquic::Settings::new()
             .set_idle_timeout_ms(10000)
             .set_peer_unidi_stream_count(1),
@@ -1107,7 +1081,7 @@ async fn test_read_chunk() {
         msquic::Settings::new().set_idle_timeout_ms(10000),
     )
     .unwrap();
-    let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
+    let conn = Connection::new(msquic::Connection::new(), &registration);
     set.spawn(async move {
         conn.start(
             &client_config,
@@ -1153,12 +1127,10 @@ async fn test_read_chunk() {
 async fn test_read_chunk_multi_recv() {
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let api = msquic::Api::new().unwrap();
-    let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
+    let registration = msquic::Registration::new(ptr::null()).unwrap();
 
     let listener = new_server(
         &registration,
-        &api,
         msquic::Settings::new()
             .set_idle_timeout_ms(10000)
             .set_peer_unidi_stream_count(1)
@@ -1212,7 +1184,7 @@ async fn test_read_chunk_multi_recv() {
         msquic::Settings::new().set_idle_timeout_ms(10000),
     )
     .unwrap();
-    let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
+    let conn = Connection::new(msquic::Connection::new(), &registration);
     set.spawn(async move {
         conn.start(
             &client_config,
@@ -1259,12 +1231,10 @@ async fn test_poll_abort_read() {
     let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let api = msquic::Api::new().unwrap();
-    let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
+    let registration = msquic::Registration::new(ptr::null()).unwrap();
 
     let listener = new_server(
         &registration,
-        &api,
         msquic::Settings::new()
             .set_idle_timeout_ms(10000)
             .set_peer_unidi_stream_count(1),
@@ -1296,7 +1266,7 @@ async fn test_poll_abort_read() {
         msquic::Settings::new().set_idle_timeout_ms(10000),
     )
     .unwrap();
-    let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
+    let conn = Connection::new(msquic::Connection::new(), &registration);
     set.spawn(async move {
         conn.start(
             &client_config,
@@ -1394,12 +1364,10 @@ async fn datagram_validation() {
     //let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let api = msquic::Api::new().unwrap();
-    let registration = msquic::Registration::new(&api, ptr::null()).unwrap();
+    let registration = msquic::Registration::new(ptr::null()).unwrap();
 
     let listener = new_server(
         &registration,
-        &api,
         msquic::Settings::new()
             .set_idle_timeout_ms(10000)
             .set_datagram_receive_enabled(true),
@@ -1430,7 +1398,7 @@ async fn datagram_validation() {
         msquic::Settings::new().set_idle_timeout_ms(10000),
     )
     .unwrap();
-    let conn = Connection::new(msquic::Connection::new(&registration), &registration, &api);
+    let conn = Connection::new(msquic::Connection::new(), &registration);
     set.spawn(async move {
         let res = conn
             .start(
@@ -1463,7 +1431,6 @@ async fn datagram_validation() {
 
 fn new_server(
     registration: &msquic::Registration,
-    api: &msquic::Api,
     settings: &msquic::Settings,
 ) -> Result<Listener> {
     let alpn = [msquic::Buffer::from("test")];
@@ -1502,7 +1469,7 @@ fn new_server(
     };
 
     configuration.load_credential(&cred_config).unwrap();
-    let listener = Listener::new(msquic::Listener::new(api), registration, configuration, api);
+    let listener = Listener::new(msquic::Listener::new(), registration, configuration);
     Ok(listener)
 }
 
