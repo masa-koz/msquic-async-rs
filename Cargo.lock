@@ -492,6 +492,8 @@ dependencies = [
 [[package]]
 name = "msquic"
 version = "2.5.0-beta"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e40ab1054745fa702e72960312816e329cba8ba2b8bfa30bfebdb0bce9fc7e83"
 dependencies = [
  "bitfield",
  "c-types",
