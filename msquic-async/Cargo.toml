@@ -27,10 +27,7 @@ bytes = { workspace = true }
 futures-io = { workspace = true }
 libc = { workspace = true }
 msquic = { workspace = true, features = ["preview-api"] }
-once_cell = { workspace = true }
 rangemap = { workspace = true }
-socket2 = { workspace = true }
-test-log = { workspace = true, features = ["trace"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["io-util"], optional = true }
 tracing = { workspace = true }
