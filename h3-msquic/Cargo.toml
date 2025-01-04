@@ -18,7 +18,7 @@ tracing = { workspace = true, optional = true }
 anyhow = { workspace = true }
 argh = { workspace = true }
 http = { workspace = true }
-rcgen = { workspace = true }
+schannel = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
@@ -26,3 +26,4 @@ tracing-subscriber = { workspace = true, features = ["fmt", "ansi", "env-filter"
 
 [features]
 tracing = ["dep:tracing"]
+tls-schannel = ["msquic-async/tls-schannel"]

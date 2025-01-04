@@ -11,14 +11,16 @@ argh = "0.1.10"
 bytes = "1.5.0"
 futures = "0.3.30"
 futures-io = "0.3.30"
-h3 = { git = "https://github.com/hyperium/h3.git" }
+h3 = "0.0.6"
+#h3 = { git = "https://github.com/hyperium/h3.git" }
 http = "1"
 libc = "0.2.153"
-msquic = { path = "./msquic" }
+msquic = "2.5.0-beta3"
+#msquic = { path = "./msquic" }
 msquic-async = { path = "./msquic-async" }
 once_cell = "1.19.0"
 rangemap = "1.5.1"
-rcgen = "0.12.1"
+schannel = "0.1.27"
 socket2 = "0.5.8"
 tempfile = "3.10.1"
 test-log = "0.2.15"
