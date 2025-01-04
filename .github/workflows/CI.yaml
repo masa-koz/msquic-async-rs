@@ -126,6 +126,14 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
+        features: ["", "--features tls-schannel"]
+        exclude:
+          - os: ubuntu-latest
+            features: "--features tls-schannel"
+          - os: windows-latest
+            features: ""
+          - os: macos-latest
+            features: "--features tls-schannel"
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -150,7 +158,7 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: test
-          args: -p msquic-async
+          args: -p msquic-async ${{ matrix.features }}
 
   doc:
     name: Build docs
