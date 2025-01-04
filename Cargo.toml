@@ -21,6 +21,7 @@ msquic-async = { path = "./msquic-async" }
 rangemap = "1.5.1"
 schannel = "0.1.27"
 tempfile = "3.10.1"
+test-log = "0.2.15"
 thiserror = "1.0.57"
 tokio = "1.42.0"
 tokio-util = "0.7.9"
