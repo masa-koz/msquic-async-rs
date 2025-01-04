@@ -102,7 +102,7 @@ async fn main() -> anyhow::Result<()> {
         let mut store = Memory::new().unwrap().into_store();
 
         let name = String::from("msquic-async-example");
-        
+
         let cert_ctx = CertContext::from_pem(cert).unwrap();
 
         let mut options = AcquireOptions::new();
