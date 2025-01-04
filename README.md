@@ -6,9 +6,16 @@ MsQuic based quic library that supports async operation.
 
 ## Getting Started
 
+### Windows
 Add msquic-async in dependencies of your Cargo.toml.
 ```toml
-msquic-async = { git = "https://github.com/masa-koz/msquic-async-rs.git" }
+msquic-async = { version = "0.1.0", features = ["tls-schannel"] }
+```
+
+### Linux, MacOS
+Add msquic-async in dependencies of your Cargo.toml.
+```toml
+msquic-async = { version = "0.1.0" }
 ```
 
 The [examples](./msquic-async/examples) directory can help get started.
