@@ -487,9 +487,7 @@ dependencies = [
 
 [[package]]
 name = "msquic"
-version = "2.5.0-beta3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e21a921f4df52c868a4c2c4f5e1101bddece623470251b6e27ee0e8e26308a5"
+version = "2.5.0-beta"
 dependencies = [
  "bitfield",
  "c-types",
@@ -511,10 +509,8 @@ dependencies = [
  "futures-io",
  "libc",
  "msquic",
- "once_cell",
  "rangemap",
  "schannel",
- "socket2",
  "tempfile",
  "test-log",
  "thiserror",
