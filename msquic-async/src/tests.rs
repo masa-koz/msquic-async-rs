@@ -3,9 +3,7 @@ use super::{
     StreamRecvBuffer, StreamStartError, WriteError,
 };
 
-use std::ffi::CString;
 use std::future::poll_fn;
-use std::io::Write;
 use std::mem;
 use std::net::SocketAddr;
 use std::ptr;
@@ -14,8 +12,6 @@ use std::time::Duration;
 use anyhow::Result;
 
 use bytes::{Buf, Bytes};
-
-use tempfile::NamedTempFile;
 
 use test_log::test;
 use tokio::sync::mpsc;
@@ -1431,25 +1427,28 @@ async fn datagram_validation() {
     });
 }
 
+#[cfg(not(feature = "tls-schannel"))]
 fn new_server(
     registration: &msquic::Registration,
     settings: &msquic::Settings,
 ) -> Result<Listener> {
+    use std::ffi::CString;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
     let alpn = [msquic::Buffer::from("test")];
     let configuration = msquic::Configuration::new(registration, &alpn, settings).unwrap();
 
-    let cert = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()]).unwrap();
+    let cert = include_bytes!("../examples/cert.pem");
+    let key = include_bytes!("../examples/key.pem");
+
     let mut cert_file = NamedTempFile::new().unwrap();
-    cert_file
-        .write_all(cert.serialize_pem().unwrap().as_bytes())
-        .unwrap();
+    cert_file.write_all(cert).unwrap();
     let cert_path = cert_file.into_temp_path();
     let cert_path = CString::new(cert_path.to_str().unwrap().as_bytes()).unwrap();
 
     let mut key_file = NamedTempFile::new().unwrap();
-    key_file
-        .write_all(cert.serialize_private_key_pem().as_bytes())
-        .unwrap();
+    key_file.write_all(key).unwrap();
     let key_path = key_file.into_temp_path();
     let key_path = CString::new(key_path.to_str().unwrap().as_bytes()).unwrap();
 
@@ -1463,6 +1462,72 @@ fn new_server(
         cred_flags: msquic::CREDENTIAL_FLAG_NONE,
         certificate: msquic::CertificateUnion {
             file: &certificate_file,
+        },
+        principle: ptr::null(),
+        reserved: ptr::null(),
+        async_handler: None,
+        allowed_cipher_suites: 0,
+    };
+
+    configuration.load_credential(&cred_config).unwrap();
+    let listener = Listener::new(msquic::Listener::new(), registration, configuration);
+    Ok(listener)
+}
+
+#[cfg(feature = "tls-schannel")]
+fn new_server(
+    registration: &msquic::Registration,
+    settings: &msquic::Settings,
+) -> Result<Listener> {
+    use schannel::cert_context::{CertContext, KeySpec};
+    use schannel::cert_store::{CertAdd, Memory};
+    use schannel::crypt_prov::{AcquireOptions, ProviderType};
+    use schannel::RawPointer;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let alpn = [msquic::Buffer::from("test")];
+    let configuration = msquic::Configuration::new(registration, &alpn, settings).unwrap();
+
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+    let name = format!(
+        "msquic-async-test-{}",
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
+
+    let cert = include_str!("../examples/cert.pem");
+    let key = include_bytes!("../examples/key.pem");
+
+    let mut store = Memory::new().unwrap().into_store();
+
+    let cert_ctx = CertContext::from_pem(cert).unwrap();
+
+    let mut options = AcquireOptions::new();
+    options.container(&name);
+
+    let type_ = ProviderType::rsa_full();
+
+    let mut container = match options.acquire(type_) {
+        Ok(container) => container,
+        Err(_) => options.new_keyset(true).acquire(type_).unwrap(),
+    };
+    container.import().import_pkcs8_pem(key).unwrap();
+
+    cert_ctx
+        .set_key_prov_info()
+        .container(&name)
+        .type_(type_)
+        .keep_open(true)
+        .key_spec(KeySpec::key_exchange())
+        .set()
+        .unwrap();
+
+    let context = store.add_cert(&cert_ctx, CertAdd::Always).unwrap();
+
+    let cred_config = msquic::CredentialConfig {
+        cred_type: msquic::CREDENTIAL_TYPE_CERTIFICATE_CONTEXT,
+        cred_flags: msquic::CREDENTIAL_FLAG_NONE,
+        certificate: msquic::CertificateUnion {
+            context: unsafe { context.as_ptr() },
         },
         principle: ptr::null(),
         reserved: ptr::null(),
