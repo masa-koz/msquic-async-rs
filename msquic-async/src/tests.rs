@@ -50,8 +50,8 @@ async fn test_connection_start() {
         msquic::Settings::new().set_idle_timeout_ms(10000),
     )
     .unwrap();
-    let conn = Connection::new(msquic::Connection::new(), &registration);
-    let conn1 = Connection::new(msquic::Connection::new(), &registration);
+    let conn = Connection::new(msquic::Connection::new(), &registration).unwrap();
+    let conn1 = Connection::new(msquic::Connection::new(), &registration).unwrap();
     set.spawn(async move {
         let res = conn
             .start(
@@ -135,7 +135,7 @@ async fn test_connection_poll_shutdown() {
         msquic::Settings::new().set_idle_timeout_ms(10000),
     )
     .unwrap();
-    let conn = Connection::new(msquic::Connection::new(), &registration);
+    let conn = Connection::new(msquic::Connection::new(), &registration).unwrap();
     set.spawn(async move {
         conn.start(
             &client_config,
@@ -199,7 +199,7 @@ async fn test_listener_accept() {
         msquic::Settings::new().set_idle_timeout_ms(10000),
     )
     .unwrap();
-    let conn = Connection::new(msquic::Connection::new(), &registration);
+    let conn = Connection::new(msquic::Connection::new(), &registration).unwrap();
     set.spawn(async move {
         let _ = conn
             .start(
@@ -265,7 +265,7 @@ async fn test_open_outbound_stream() {
         msquic::Settings::new().set_idle_timeout_ms(10000),
     )
     .unwrap();
-    let conn = Connection::new(msquic::Connection::new(), &registration);
+    let conn = Connection::new(msquic::Connection::new(), &registration).unwrap();
     set.spawn(async move {
         conn.start(
             &client_config,
@@ -359,7 +359,7 @@ async fn test_open_outbound_stream_exceed_limit() -> Result<(), anyhow::Error> {
         msquic::Settings::new().set_idle_timeout_ms(10000),
     )
     .unwrap();
-    let conn = Connection::new(msquic::Connection::new(), &registration);
+    let conn = Connection::new(msquic::Connection::new(), &registration).unwrap();
     set.spawn(async move {
         conn.start(
             &client_config,
@@ -479,7 +479,7 @@ async fn test_open_outbound_stream_exceed_limit_and_accepted() {
         msquic::Settings::new().set_idle_timeout_ms(10000),
     )
     .unwrap();
-    let conn = Connection::new(msquic::Connection::new(), &registration);
+    let conn = Connection::new(msquic::Connection::new(), &registration).unwrap();
     set.spawn(async move {
         conn.start(
             &client_config,
@@ -613,7 +613,7 @@ async fn test_poll_write() {
         msquic::Settings::new().set_idle_timeout_ms(10000),
     )
     .unwrap();
-    let conn = Connection::new(msquic::Connection::new(), &registration);
+    let conn = Connection::new(msquic::Connection::new(), &registration).unwrap();
     set.spawn(async move {
         conn.start(
             &client_config,
@@ -687,7 +687,7 @@ async fn test_write_chunk() {
         msquic::Settings::new().set_idle_timeout_ms(10000),
     )
     .unwrap();
-    let conn = Connection::new(msquic::Connection::new(), &registration);
+    let conn = Connection::new(msquic::Connection::new(), &registration).unwrap();
     set.spawn(async move {
         conn.start(
             &client_config,
@@ -760,7 +760,7 @@ async fn test_write_chunks() {
         msquic::Settings::new().set_idle_timeout_ms(10000),
     )
     .unwrap();
-    let conn = Connection::new(msquic::Connection::new(), &registration);
+    let conn = Connection::new(msquic::Connection::new(), &registration).unwrap();
     set.spawn(async move {
         conn.start(
             &client_config,
@@ -833,7 +833,7 @@ async fn test_poll_finish_write() {
         msquic::Settings::new().set_idle_timeout_ms(10000),
     )
     .unwrap();
-    let conn = Connection::new(msquic::Connection::new(), &registration);
+    let conn = Connection::new(msquic::Connection::new(), &registration).unwrap();
     set.spawn(async move {
         conn.start(
             &client_config,
@@ -906,7 +906,7 @@ async fn test_poll_abort_write() {
         msquic::Settings::new().set_idle_timeout_ms(10000),
     )
     .unwrap();
-    let conn = Connection::new(msquic::Connection::new(), &registration);
+    let conn = Connection::new(msquic::Connection::new(), &registration).unwrap();
     set.spawn(async move {
         conn.start(
             &client_config,
@@ -981,7 +981,7 @@ async fn test_poll_read() {
         msquic::Settings::new().set_idle_timeout_ms(10000),
     )
     .unwrap();
-    let conn = Connection::new(msquic::Connection::new(), &registration);
+    let conn = Connection::new(msquic::Connection::new(), &registration).unwrap();
     set.spawn(async move {
         conn.start(
             &client_config,
@@ -1079,7 +1079,7 @@ async fn test_read_chunk() {
         msquic::Settings::new().set_idle_timeout_ms(10000),
     )
     .unwrap();
-    let conn = Connection::new(msquic::Connection::new(), &registration);
+    let conn = Connection::new(msquic::Connection::new(), &registration).unwrap();
     set.spawn(async move {
         conn.start(
             &client_config,
@@ -1182,7 +1182,7 @@ async fn test_read_chunk_multi_recv() {
         msquic::Settings::new().set_idle_timeout_ms(10000),
     )
     .unwrap();
-    let conn = Connection::new(msquic::Connection::new(), &registration);
+    let conn = Connection::new(msquic::Connection::new(), &registration).unwrap();
     set.spawn(async move {
         conn.start(
             &client_config,
@@ -1264,7 +1264,7 @@ async fn test_poll_abort_read() {
         msquic::Settings::new().set_idle_timeout_ms(10000),
     )
     .unwrap();
-    let conn = Connection::new(msquic::Connection::new(), &registration);
+    let conn = Connection::new(msquic::Connection::new(), &registration).unwrap();
     set.spawn(async move {
         conn.start(
             &client_config,
@@ -1396,7 +1396,7 @@ async fn datagram_validation() {
         msquic::Settings::new().set_idle_timeout_ms(10000),
     )
     .unwrap();
-    let conn = Connection::new(msquic::Connection::new(), &registration);
+    let conn = Connection::new(msquic::Connection::new(), &registration).unwrap();
     set.spawn(async move {
         let res = conn
             .start(
@@ -1470,7 +1470,7 @@ fn new_server(
     };
 
     configuration.load_credential(&cred_config).unwrap();
-    let listener = Listener::new(msquic::Listener::new(), registration, configuration);
+    let listener = Listener::new(msquic::Listener::new(), registration, configuration)?;
     Ok(listener)
 }
 
@@ -1536,7 +1536,7 @@ fn new_server(
     };
 
     configuration.load_credential(&cred_config).unwrap();
-    let listener = Listener::new(msquic::Listener::new(), registration, configuration);
+    let listener = Listener::new(msquic::Listener::new(), registration, configuration)?;
     Ok(listener)
 }
 

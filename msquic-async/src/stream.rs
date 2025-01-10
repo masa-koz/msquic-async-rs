@@ -26,7 +26,10 @@ pub enum StreamType {
 pub struct Stream(Arc<StreamInstance>);
 
 impl Stream {
-    pub(crate) fn open(msquic_conn: &msquic::Connection, stream_type: StreamType) -> Self {
+    pub(crate) fn open(
+        msquic_conn: &msquic::Connection,
+        stream_type: StreamType,
+    ) -> Result<Self, StartError> {
         let msquic_stream = msquic::Stream::new();
         let flags = if stream_type == StreamType::Unidirectional {
             msquic::STREAM_OPEN_FLAG_UNIDIRECTIONAL
@@ -49,10 +52,10 @@ impl Stream {
                 StreamInner::native_callback,
                 Arc::into_raw(inner.clone()) as *const c_void,
             )
-            .unwrap();
+            .map_err(|status| StartError::OtherError(status))?;
         trace!("Stream({:p}) Open by local", &*inner);
 
-        Self(Arc::new(StreamInstance(inner)))
+        Ok(Self(Arc::new(StreamInstance(inner))))
     }
 
     pub(crate) fn from_handle(handle: msquic::Handle, stream_type: StreamType) -> Self {
@@ -102,7 +105,7 @@ impl Stream {
                                 msquic::STREAM_START_FLAG_NONE
                             },
                     )
-                    .unwrap();
+                    .map_err(|status| StartError::OtherError(status))?;
                 exclusive.state = StreamState::Start;
                 if self.0.shared.stream_type == StreamType::Bidirectional {
                     exclusive.recv_state = StreamRecvState::Start;
@@ -122,7 +125,7 @@ impl Stream {
                                 exclusive.conn_error.as_ref().expect("conn_error").clone(),
                             )
                         }
-                        _ => StartError::Unknown(start_status),
+                        _ => StartError::OtherError(start_status),
                     }));
                 } else {
                     return Poll::Ready(Ok(()));
@@ -604,7 +607,8 @@ impl StreamInstance {
         let (buffer, buffer_count) = write_buf.get_buffer();
         match status {
             WriteStatus::Writable(val) | WriteStatus::Blocked(Some(val)) => {
-                self.0
+                match self
+                    .0
                     .shared
                     .msquic_stream
                     .send(
@@ -613,12 +617,16 @@ impl StreamInstance {
                         msquic::SEND_FLAG_NONE,
                         write_buf.into_raw() as *const _,
                     )
-                    .unwrap();
-                Poll::Ready(Ok(Some(val)))
+                    .map_err(|status| WriteError::OtherError(status))
+                {
+                    Ok(()) => Poll::Ready(Ok(Some(val))),
+                    Err(e) => Poll::Ready(Err(e)),
+                }
             }
             WriteStatus::Blocked(None) => unreachable!(),
             WriteStatus::Finished(val) => {
-                self.0
+                match self
+                    .0
                     .shared
                     .msquic_stream
                     .send(
@@ -627,9 +635,14 @@ impl StreamInstance {
                         msquic::SEND_FLAG_FIN,
                         write_buf.into_raw() as *const _,
                     )
-                    .unwrap();
-                exclusive.send_state = StreamSendState::Shutdown;
-                Poll::Ready(Ok(val))
+                    .map_err(|status| WriteError::OtherError(status))
+                {
+                    Ok(()) => {
+                        exclusive.send_state = StreamSendState::Shutdown;
+                        Poll::Ready(Ok(val))
+                    }
+                    Err(e) => Poll::Ready(Err(e)),
+                }
             }
         }
     }
@@ -642,12 +655,18 @@ impl StreamInstance {
                 return Poll::Pending;
             }
             StreamSendState::StartComplete => {
-                let _ = self
+                match self
                     .0
                     .shared
                     .msquic_stream
-                    .shutdown(msquic::STREAM_SHUTDOWN_FLAG_GRACEFUL, 0);
-                exclusive.send_state = StreamSendState::Shutdown;
+                    .shutdown(msquic::STREAM_SHUTDOWN_FLAG_GRACEFUL, 0)
+                    .map_err(|status| WriteError::OtherError(status))
+                {
+                    Ok(()) => {
+                        exclusive.send_state = StreamSendState::Shutdown;
+                    }
+                    Err(e) => return Poll::Ready(Err(e)),
+                }
             }
             StreamSendState::Shutdown => {}
             StreamSendState::ShutdownComplete => {
@@ -679,12 +698,18 @@ impl StreamInstance {
                 return Poll::Pending;
             }
             StreamSendState::StartComplete => {
-                let _ = self
+                match self
                     .0
                     .shared
                     .msquic_stream
-                    .shutdown(msquic::STREAM_SHUTDOWN_FLAG_ABORT_SEND, error_code);
-                exclusive.send_state = StreamSendState::Shutdown;
+                    .shutdown(msquic::STREAM_SHUTDOWN_FLAG_ABORT_SEND, error_code)
+                    .map_err(|status| WriteError::OtherError(status))
+                {
+                    Ok(()) => {
+                        exclusive.send_state = StreamSendState::Shutdown;
+                    }
+                    Err(e) => return Poll::Ready(Err(e)),
+                }
             }
             StreamSendState::Shutdown => {}
             StreamSendState::ShutdownComplete => {
@@ -708,11 +733,11 @@ impl StreamInstance {
         let mut exclusive = self.0.exclusive.lock().unwrap();
         match exclusive.send_state {
             StreamSendState::StartComplete => {
-                let _ = self
-                    .0
+                self.0
                     .shared
                     .msquic_stream
-                    .shutdown(msquic::STREAM_SHUTDOWN_FLAG_ABORT_SEND, error_code);
+                    .shutdown(msquic::STREAM_SHUTDOWN_FLAG_ABORT_SEND, error_code)
+                    .map_err(|status| WriteError::OtherError(status))?;
                 exclusive.send_state = StreamSendState::Shutdown;
                 Ok(())
             }
@@ -729,45 +754,49 @@ impl StreamInstance {
         match exclusive.recv_state {
             StreamRecvState::Start => {
                 exclusive.start_waiters.push(cx.waker().clone());
-                return Poll::Pending;
+                Poll::Pending
             }
             StreamRecvState::StartComplete => {
-                let _ = self
+                match self
                     .0
                     .shared
                     .msquic_stream
-                    .shutdown(msquic::STREAM_SHUTDOWN_FLAG_ABORT_RECEIVE, error_code);
-                exclusive.recv_state = StreamRecvState::ShutdownComplete;
-                exclusive
-                    .read_waiters
-                    .drain(..)
-                    .for_each(|waker| waker.wake());
+                    .shutdown(msquic::STREAM_SHUTDOWN_FLAG_ABORT_RECEIVE, error_code)
+                    .map_err(|status| ReadError::OtherError(status))
+                {
+                    Ok(()) => {
+                        exclusive.recv_state = StreamRecvState::ShutdownComplete;
+                        exclusive
+                            .read_waiters
+                            .drain(..)
+                            .for_each(|waker| waker.wake());
+                        Poll::Ready(Ok(()))
+                    }
+                    Err(e) => Poll::Ready(Err(e)),
+                }
             }
             StreamRecvState::ShutdownComplete => {
                 if let Some(conn_error) = &exclusive.conn_error {
-                    return Poll::Ready(Err(ReadError::ConnectionLost(conn_error.clone())));
+                    Poll::Ready(Err(ReadError::ConnectionLost(conn_error.clone())))
                 } else if let Some(error_code) = &exclusive.recv_error_code {
-                    return Poll::Ready(Err(ReadError::Reset(*error_code)));
+                    Poll::Ready(Err(ReadError::Reset(*error_code)))
                 } else {
-                    return Poll::Ready(Ok(()));
+                    Poll::Ready(Ok(()))
                 }
             }
-            _ => {
-                return Poll::Ready(Err(ReadError::Closed));
-            }
+            _ => Poll::Ready(Err(ReadError::Closed)),
         }
-        Poll::Ready(Ok(()))
     }
 
     pub(crate) fn abort_read(&self, error_code: u64) -> Result<(), ReadError> {
         let mut exclusive = self.0.exclusive.lock().unwrap();
         match exclusive.recv_state {
             StreamRecvState::StartComplete => {
-                let _ = self
-                    .0
+                self.0
                     .shared
                     .msquic_stream
-                    .shutdown(msquic::STREAM_SHUTDOWN_FLAG_ABORT_RECEIVE, error_code);
+                    .shutdown(msquic::STREAM_SHUTDOWN_FLAG_ABORT_RECEIVE, error_code)
+                    .map_err(|status| ReadError::OtherError(status))?;
                 exclusive.recv_state = StreamRecvState::ShutdownComplete;
             }
             _ => {
@@ -1478,8 +1507,8 @@ pub enum StartError {
     LimitReached,
     #[error("connection lost")]
     ConnectionLost(#[from] ConnectionError),
-    #[error("unknown error {0}")]
-    Unknown(u32),
+    #[error("other error: status 0x{0:x}")]
+    OtherError(u32),
 }
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -1490,6 +1519,8 @@ pub enum ReadError {
     Reset(u64),
     #[error("connection lost")]
     ConnectionLost(#[from] ConnectionError),
+    #[error("other error: status 0x{0:x}")]
+    OtherError(u32),
 }
 
 impl From<ReadError> for std::io::Error {
@@ -1501,6 +1532,7 @@ impl From<ReadError> for std::io::Error {
                 std::io::ErrorKind::NotConnected
             }
             ReadError::ConnectionLost(_) => std::io::ErrorKind::ConnectionAborted,
+            ReadError::OtherError(_) => std::io::ErrorKind::Other,
         };
         Self::new(kind, e)
     }
@@ -1516,6 +1548,8 @@ pub enum WriteError {
     Stopped(u64),
     #[error("connection lost")]
     ConnectionLost(#[from] ConnectionError),
+    #[error("other error: status 0x{0:x}")]
+    OtherError(u32),
 }
 
 impl From<WriteError> for std::io::Error {
@@ -1528,6 +1562,7 @@ impl From<WriteError> for std::io::Error {
             }
             WriteError::Stopped(_) => std::io::ErrorKind::ConnectionReset,
             WriteError::ConnectionLost(_) => std::io::ErrorKind::ConnectionAborted,
+            WriteError::OtherError(_) => std::io::ErrorKind::Other,
         };
         Self::new(kind, e)
     }
