@@ -20,7 +20,10 @@ impl Connection {
     /// Create a new connection.
     ///
     /// The connection is not started until `start` is called.
-    pub fn new(msquic_conn: msquic::Connection, registration: &msquic::Registration) -> Self {
+    pub fn new(
+        msquic_conn: msquic::Connection,
+        registration: &msquic::Registration,
+    ) -> Result<Self, ConnectionError> {
         let inner = Arc::new(ConnectionInner::new(msquic_conn, ConnectionState::Open));
         inner
             .shared
@@ -30,9 +33,9 @@ impl Connection {
                 ConnectionInner::native_callback,
                 Arc::into_raw(inner.clone()) as *const c_void,
             )
-            .unwrap();
+            .map_err(ConnectionError::OtherError)?;
         trace!("Connection({:p}) Open by local", &*inner);
-        Self(Arc::new(ConnectionInstance(inner)))
+        Ok(Self(Arc::new(ConnectionInstance(inner))))
     }
 
     pub(crate) fn from_handle(conn: msquic::Handle) -> Self {
@@ -79,7 +82,7 @@ impl Connection {
                     .shared
                     .msquic_conn
                     .start(configuration, host, port)
-                    .unwrap();
+                    .map_err(StartError::OtherError)?;
                 exclusive.state = ConnectionState::Connecting;
             }
             ConnectionState::Connecting => {}
@@ -94,12 +97,11 @@ impl Connection {
         Poll::Pending
     }
 
-    pub(crate) fn set_configuration(&self, configuration: &msquic::Configuration) {
-        self.0
-            .shared
-            .msquic_conn
-            .set_configuration(configuration)
-            .unwrap();
+    pub(crate) fn set_configuration(
+        &self,
+        configuration: &msquic::Configuration,
+    ) -> Result<(), u32> {
+        self.0.shared.msquic_conn.set_configuration(configuration)
     }
 
     /// Open a new outbound stream.
@@ -242,7 +244,8 @@ impl Connection {
         let mut write_buf = exclusive.write_pool.pop().unwrap_or(WriteBuffer::new());
         let _ = write_buf.put_zerocopy(buf);
         let (buffer, buffer_count) = write_buf.get_buffer();
-        self.0
+        let res = self
+            .0
             .shared
             .msquic_conn
             .datagram_send(
@@ -251,8 +254,8 @@ impl Connection {
                 msquic::SEND_FLAG_NONE,
                 write_buf.into_raw() as *const _,
             )
-            .unwrap();
-        Poll::Ready(Ok(()))
+            .map_err(DgramSendError::OtherError);
+        Poll::Ready(res)
     }
 
     /// Send a datagram.
@@ -285,7 +288,7 @@ impl Connection {
                 msquic::SEND_FLAG_NONE,
                 write_buf.into_raw() as *const _,
             )
-            .unwrap();
+            .map_err(DgramSendError::OtherError)?;
         Ok(())
     }
 
@@ -710,6 +713,8 @@ pub enum ConnectionError {
     ShutdownByLocal,
     #[error("connection closed")]
     ConnectionClosed,
+    #[error("other error: status 0x{0:x}")]
+    OtherError(u32),
 }
 
 /// Errors that can occur when receiving a datagram.
@@ -719,6 +724,8 @@ pub enum DgramReceiveError {
     ConnectionNotStarted,
     #[error("connection lost")]
     ConnectionLost(#[from] ConnectionError),
+    #[error("other error: status 0x{0:x}")]
+    OtherError(u32),
 }
 
 /// Errors that can occur when sending a datagram.
@@ -732,6 +739,8 @@ pub enum DgramSendError {
     TooBig,
     #[error("connection lost")]
     ConnectionLost(#[from] ConnectionError),
+    #[error("other error: status 0x{0:x}")]
+    OtherError(u32),
 }
 
 /// Errors that can occur when starting a connection.
@@ -739,6 +748,8 @@ pub enum DgramSendError {
 pub enum StartError {
     #[error("connection lost")]
     ConnectionLost(#[from] ConnectionError),
+    #[error("other error: status 0x{0:x}")]
+    OtherError(u32),
 }
 
 /// Errors that can occur when shutdowning a connection.
@@ -748,6 +759,8 @@ pub enum ShutdownError {
     ConnectionNotStarted,
     #[error("connection lost")]
     ConnectionLost(#[from] ConnectionError),
+    #[error("other error: status 0x{0:x}")]
+    OtherError(u32),
 }
 
 /// Future produced by [`Connection::start()`].
@@ -805,10 +818,12 @@ impl Future for OpenOutboundStream<'_> {
             }
         }
         if stream.is_none() {
-            *stream = Some(Stream::open(
-                &conn.shared.msquic_conn,
-                stream_type.take().unwrap(),
-            ));
+            match Stream::open(&conn.shared.msquic_conn, stream_type.take().unwrap()) {
+                Ok(new_stream) => {
+                    *stream = Some(new_stream);
+                }
+                Err(e) => return Poll::Ready(Err(e)),
+            }
         }
         stream
             .as_mut()

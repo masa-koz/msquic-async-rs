@@ -205,6 +205,8 @@ pub enum SendDatagramError {
     TooLarge,
     /// Network error
     ConnectionLost(Box<dyn Error>),
+    /// Other error
+    OtherError(u32),
 }
 
 impl fmt::Display for SendDatagramError {
@@ -215,6 +217,7 @@ impl fmt::Display for SendDatagramError {
             SendDatagramError::Disabled => write!(f, "datagram support disabled"),
             SendDatagramError::TooLarge => write!(f, "datagram too large"),
             SendDatagramError::ConnectionLost(_) => write!(f, "connection lost"),
+            SendDatagramError::OtherError(code) => write!(f, "other error: Status 0x{:x}", code),
         }
     }
 }
@@ -243,6 +246,7 @@ impl From<msquic_async::DgramSendError> for SendDatagramError {
             msquic_async::DgramSendError::ConnectionLost(err) => {
                 Self::ConnectionLost(ConnectionError::from(err).into())
             }
+            msquic_async::DgramSendError::OtherError(status) => Self::OtherError(status),
         }
     }
 }

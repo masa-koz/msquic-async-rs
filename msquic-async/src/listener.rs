@@ -19,7 +19,7 @@ impl Listener {
         msquic_listener: msquic::Listener,
         registration: &msquic::Registration,
         configuration: msquic::Configuration,
-    ) -> Self {
+    ) -> Result<Self, ListenError> {
         let inner = Box::new(ListenerInner::new(msquic_listener, configuration));
         {
             inner
@@ -30,9 +30,9 @@ impl Listener {
                     ListenerInner::native_callback,
                     &*inner as *const _ as *const c_void,
                 )
-                .unwrap();
+                .map_err(ListenError::OtherError)?;
         }
-        Self(inner)
+        Ok(Self(inner))
     }
 
     /// Start the listener.
@@ -53,7 +53,7 @@ impl Listener {
             .shared
             .msquic_listener
             .start(alpn.as_ref(), local_address.as_ref())
-            .unwrap();
+            .map_err(ListenError::OtherError)?;
         exclusive.state = ListenerState::StartComplete;
         Ok(())
     }
@@ -179,7 +179,9 @@ impl ListenerInner {
         trace!("Listener({:p}) new connection event", inner);
 
         let new_conn = Connection::from_handle(payload.connection);
-        new_conn.set_configuration(&inner.shared.configuration);
+        if let Err(status) = new_conn.set_configuration(&inner.shared.configuration) {
+            return status;
+        }
 
         let mut exclusive = inner.exclusive.lock().unwrap();
         exclusive.new_connections.push_back(new_conn);
@@ -264,4 +266,6 @@ pub enum ListenError {
     Finished,
     #[error("failed")]
     Failed,
+    #[error("other error: status 0x{0:x}")]
+    OtherError(u32),
 }
