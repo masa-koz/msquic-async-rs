@@ -52,7 +52,7 @@ impl Stream {
                 StreamInner::native_callback,
                 Arc::into_raw(inner.clone()) as *const c_void,
             )
-            .map_err(|status| StartError::OtherError(status))?;
+            .map_err(StartError::OtherError)?;
         trace!("Stream({:p}) Open by local", &*inner);
 
         Ok(Self(Arc::new(StreamInstance(inner))))
@@ -105,7 +105,7 @@ impl Stream {
                                 msquic::STREAM_START_FLAG_NONE
                             },
                     )
-                    .map_err(|status| StartError::OtherError(status))?;
+                    .map_err(StartError::OtherError)?;
                 exclusive.state = StreamState::Start;
                 if self.0.shared.stream_type == StreamType::Bidirectional {
                     exclusive.recv_state = StreamRecvState::Start;
@@ -617,7 +617,7 @@ impl StreamInstance {
                         msquic::SEND_FLAG_NONE,
                         write_buf.into_raw() as *const _,
                     )
-                    .map_err(|status| WriteError::OtherError(status))
+                    .map_err(WriteError::OtherError)
                 {
                     Ok(()) => Poll::Ready(Ok(Some(val))),
                     Err(e) => Poll::Ready(Err(e)),
@@ -635,7 +635,7 @@ impl StreamInstance {
                         msquic::SEND_FLAG_FIN,
                         write_buf.into_raw() as *const _,
                     )
-                    .map_err(|status| WriteError::OtherError(status))
+                    .map_err(WriteError::OtherError)
                 {
                     Ok(()) => {
                         exclusive.send_state = StreamSendState::Shutdown;
@@ -660,7 +660,7 @@ impl StreamInstance {
                     .shared
                     .msquic_stream
                     .shutdown(msquic::STREAM_SHUTDOWN_FLAG_GRACEFUL, 0)
-                    .map_err(|status| WriteError::OtherError(status))
+                    .map_err(WriteError::OtherError)
                 {
                     Ok(()) => {
                         exclusive.send_state = StreamSendState::Shutdown;
@@ -703,7 +703,7 @@ impl StreamInstance {
                     .shared
                     .msquic_stream
                     .shutdown(msquic::STREAM_SHUTDOWN_FLAG_ABORT_SEND, error_code)
-                    .map_err(|status| WriteError::OtherError(status))
+                    .map_err(WriteError::OtherError)
                 {
                     Ok(()) => {
                         exclusive.send_state = StreamSendState::Shutdown;
@@ -737,7 +737,7 @@ impl StreamInstance {
                     .shared
                     .msquic_stream
                     .shutdown(msquic::STREAM_SHUTDOWN_FLAG_ABORT_SEND, error_code)
-                    .map_err(|status| WriteError::OtherError(status))?;
+                    .map_err(WriteError::OtherError)?;
                 exclusive.send_state = StreamSendState::Shutdown;
                 Ok(())
             }
@@ -762,7 +762,7 @@ impl StreamInstance {
                     .shared
                     .msquic_stream
                     .shutdown(msquic::STREAM_SHUTDOWN_FLAG_ABORT_RECEIVE, error_code)
-                    .map_err(|status| ReadError::OtherError(status))
+                    .map_err(ReadError::OtherError)
                 {
                     Ok(()) => {
                         exclusive.recv_state = StreamRecvState::ShutdownComplete;
@@ -796,7 +796,7 @@ impl StreamInstance {
                     .shared
                     .msquic_stream
                     .shutdown(msquic::STREAM_SHUTDOWN_FLAG_ABORT_RECEIVE, error_code)
-                    .map_err(|status| ReadError::OtherError(status))?;
+                    .map_err(ReadError::OtherError)?;
                 exclusive.recv_state = StreamRecvState::ShutdownComplete;
             }
             _ => {

@@ -33,7 +33,7 @@ impl Connection {
                 ConnectionInner::native_callback,
                 Arc::into_raw(inner.clone()) as *const c_void,
             )
-            .map_err(|status| ConnectionError::OtherError(status))?;
+            .map_err(ConnectionError::OtherError)?;
         trace!("Connection({:p}) Open by local", &*inner);
         Ok(Self(Arc::new(ConnectionInstance(inner))))
     }
@@ -82,7 +82,7 @@ impl Connection {
                     .shared
                     .msquic_conn
                     .start(configuration, host, port)
-                    .map_err(|status| StartError::OtherError(status))?;
+                    .map_err(StartError::OtherError)?;
                 exclusive.state = ConnectionState::Connecting;
             }
             ConnectionState::Connecting => {}
@@ -101,10 +101,7 @@ impl Connection {
         &self,
         configuration: &msquic::Configuration,
     ) -> Result<(), u32> {
-        self.0
-            .shared
-            .msquic_conn
-            .set_configuration(configuration)
+        self.0.shared.msquic_conn.set_configuration(configuration)
     }
 
     /// Open a new outbound stream.
@@ -257,7 +254,7 @@ impl Connection {
                 msquic::SEND_FLAG_NONE,
                 write_buf.into_raw() as *const _,
             )
-            .map_err(|status| DgramSendError::OtherError(status));
+            .map_err(DgramSendError::OtherError);
         Poll::Ready(res)
     }
 
@@ -291,7 +288,7 @@ impl Connection {
                 msquic::SEND_FLAG_NONE,
                 write_buf.into_raw() as *const _,
             )
-            .map_err(|status| DgramSendError::OtherError(status))?;
+            .map_err(DgramSendError::OtherError)?;
         Ok(())
     }
 

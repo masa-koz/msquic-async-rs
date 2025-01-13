@@ -30,7 +30,7 @@ impl Listener {
                     ListenerInner::native_callback,
                     &*inner as *const _ as *const c_void,
                 )
-                .map_err(|status| ListenError::OtherError(status))?;
+                .map_err(ListenError::OtherError)?;
         }
         Ok(Self(inner))
     }
@@ -53,7 +53,7 @@ impl Listener {
             .shared
             .msquic_listener
             .start(alpn.as_ref(), local_address.as_ref())
-            .map_err(|status| ListenError::OtherError(status))?;
+            .map_err(ListenError::OtherError)?;
         exclusive.state = ListenerState::StartComplete;
         Ok(())
     }
