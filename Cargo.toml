@@ -1,7 +1,7 @@
 [workspace]
 members = [
     "msquic-async",
-    "h3-msquic",
+    "h3-msquic-async",
 ]
 resolver = "2"
 

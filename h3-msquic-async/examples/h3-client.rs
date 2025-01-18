@@ -1,7 +1,7 @@
 /// This file is based on the `client.rs` example from the `h3` crate.
 use futures::future;
-use h3_msquic::msquic;
-use h3_msquic::msquic_async;
+use h3_msquic_async::msquic;
+use h3_msquic_async::msquic_async;
 use std::ptr;
 use tokio::io::AsyncWriteExt;
 use tracing::info;
@@ -40,7 +40,7 @@ async fn main() -> anyhow::Result<()> {
 
     let conn = msquic_async::Connection::new(msquic::Connection::new(), &registration)?;
     conn.start(&configuration, "127.0.0.1", 8443).await?;
-    let h3_conn = h3_msquic::Connection::new(conn);
+    let h3_conn = h3_msquic_async::Connection::new(conn);
     let (mut driver, mut send_request) = h3::client::new(h3_conn).await?;
 
     let drive = async move {
