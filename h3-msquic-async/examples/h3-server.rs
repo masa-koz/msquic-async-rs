@@ -161,7 +161,8 @@ async fn main() -> anyhow::Result<()> {
         info!("new connection established");
         let root = root.clone();
         tokio::spawn(async move {
-            let mut h3_conn = h3::server::Connection::new(h3_msquic_async::Connection::new(conn)).await?;
+            let mut h3_conn =
+                h3::server::Connection::new(h3_msquic_async::Connection::new(conn)).await?;
             loop {
                 match h3_conn.accept().await {
                     Ok(Some((req, stream))) => {
