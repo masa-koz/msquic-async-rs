@@ -6,8 +6,7 @@
 
 ## Getting Started
 
-Note that MsQuic, which is used to implement QUIC, needs to be built and linked. This is done automatically when building h3-msquic-async, but requires the cmake command to be available
-during the build process.
+Note that MsQuic, which is used to implement QUIC, needs to be built and linked. This is done automatically when building h3-msquic-async, but requires the cmake command to be available during the build process.
 
 ### Windows
 Add msquic-async in dependencies of your Cargo.toml.
