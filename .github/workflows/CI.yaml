@@ -51,11 +51,11 @@ jobs:
           override: true
           components: rustfmt
       - uses: Swatinem/rust-cache@v2
-      - name: cargo fmt -p msquic-async -p h3-msquic -- --check
+      - name: cargo fmt -p msquic-async -p h3-msquic-async -- --check
         uses: actions-rs/cargo@v1
         with:
           command: fmt
-          args: -p msquic-async -p h3-msquic -- --check
+          args: -p msquic-async -p h3-msquic-async -- --check
 
   lint:
     name: Lint
@@ -100,7 +100,7 @@ jobs:
           args: -p msquic-async
 
   msrv_h3_msquic:
-    name: Check MSRV of `h3-msquic`
+    name: Check MSRV of `h3-msquic-async`
     needs: [style]
     runs-on: ubuntu-latest
     steps:
@@ -114,11 +114,11 @@ jobs:
           toolchain: ${{ env.toolchain_h3_msquic_msrv }}
           override: true
       - uses: Swatinem/rust-cache@v2
-      - name: cargo check -p h3-msquic
+      - name: cargo check -p h3-msquic-async
         uses: actions-rs/cargo@v1
         with:
           command: check
-          args: -p h3-msquic
+          args: -p h3-msquic-async
 
   test:
     name: Test ${{ matrix.os }}
