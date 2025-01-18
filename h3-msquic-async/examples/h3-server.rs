@@ -3,8 +3,8 @@ use std::{net::SocketAddr, path::PathBuf, ptr, sync::Arc};
 
 use argh::FromArgs;
 use bytes::{Bytes, BytesMut};
-use h3_msquic::msquic;
-use h3_msquic::msquic_async;
+use h3_msquic_async::msquic;
+use h3_msquic_async::msquic_async;
 use http::{Request, StatusCode};
 use tokio::{fs::File, io::AsyncReadExt};
 use tracing::{error, info};
@@ -161,7 +161,8 @@ async fn main() -> anyhow::Result<()> {
         info!("new connection established");
         let root = root.clone();
         tokio::spawn(async move {
-            let mut h3_conn = h3::server::Connection::new(h3_msquic::Connection::new(conn)).await?;
+            let mut h3_conn =
+                h3::server::Connection::new(h3_msquic_async::Connection::new(conn)).await?;
             loop {
                 match h3_conn.accept().await {
                     Ok(Some((req, stream))) => {
