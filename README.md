@@ -1,24 +1,27 @@
 # msquic-async
-MsQuic based quic library that supports async operation.
+[MsQuic](https://github.com/microsoft/msquic) based quic library that supports async operation.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/masa-koz/msquic-async-rs/actions/workflows/CI.yaml/badge.svg?branch=main)](https://github.com/masa-koz/msquic-async-rs/actions/workflows/CI.yaml)
 
 ## Getting Started
 
+Note that MsQuic, which is used to implement QUIC, needs to be built and linked. This is done automatically when building h3-msquic-async, but requires the cmake command to be available
+during the build process.
+
 ### Windows
 Add msquic-async in dependencies of your Cargo.toml.
 ```toml
-msquic-async = { version = "0.1.0", features = ["tls-schannel"] }
+msquic-async = { version = "0.2.0", features = ["tls-schannel"] }
 ```
 
 ### Linux, MacOS
 Add msquic-async in dependencies of your Cargo.toml.
 ```toml
-msquic-async = { version = "0.1.0" }
+msquic-async = { version = "0.2.0" }
 ```
 
-The [examples](./msquic-async/examples) directory can help get started.
+The [examples](https://github.com/masa-koz/msquic-async-rs/tree/main/msquic-async/examples) directory can help get started.
 
 ### Server
 
@@ -100,7 +103,7 @@ The [examples](./msquic-async/examples) directory can help get started.
     }
 ```
 
-You can find a full server example in [`msquic-async/examples/server.rs`](./msquic-async/examples/server.rs)
+You can find a full server example in [`msquic-async/examples/server.rs`](https://github.com/masa-koz/msquic-async-rs/tree/main/msquic-async/examples/server.rs)
 
 ### Client
 
@@ -130,7 +133,7 @@ You can find a full server example in [`msquic-async/examples/server.rs`](./msqu
             anyhow::anyhow!("Configuration::load_credential failed: 0x{:x}", status)
         })?;
 
-    let conn = msquic_async::Connection::new(msquic::Connection::new(), &registration);
+    let conn = msquic_async::Connection::new(msquic::Connection::new(), &registration)?;
     conn.start(&configuration, "127.0.0.1", 4567).await?;
 
     let mut stream = conn
@@ -142,8 +145,8 @@ You can find a full server example in [`msquic-async/examples/server.rs`](./msqu
     info!("received: {}", String::from_utf8_lossy(&buf[0..len]));
 ```
 
-You can find a full client example in [`msquic-async/examples/client.rs`](./msquic-async/examples/client.rs)
+You can find a full client example in [`msquic-async/examples/client.rs`](https://github.com/masa-koz/msquic-async-rs/tree/main/msquic-async/examples/client.rs)
 
 ## License
 
-msquic-async is provided under the MIT license. See [LICENSE](LICENSE).
+msquic-async is provided under the MIT license. See [LICENSE](https://github.com/masa-koz/msquic-async-rs/blob/main/LICENSE).
