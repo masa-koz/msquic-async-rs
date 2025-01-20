@@ -1,17 +1,23 @@
 use crate::buffer::{StreamRecvBuffer, WriteBuffer};
 use crate::connection::ConnectionError;
 
-use std::collections::VecDeque;
-use std::fmt;
-use std::future::Future;
-use std::ops::Deref;
-use std::pin::Pin;
-use std::sync::{Arc, Mutex, RwLock};
-use std::task::{ready, Context, Poll, Waker};
+use alloc::collections::VecDeque;
+use alloc::fmt;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+use core::future::Future;
+use core::mem;
+use core::ops::Deref;
+use core::pin::Pin;
+use core::slice;
+#[cfg(feature = "std")]
+use core::task::ready;
+use core::task::{Context, Poll, Waker};
 
 use bytes::Bytes;
 use libc::c_void;
 use rangemap::RangeSet;
+use spin::{Mutex, RwLock};
 use thiserror::Error;
 use tracing::trace;
 
@@ -90,7 +96,7 @@ impl Stream {
         cx: &mut Context,
         failed_on_block: bool,
     ) -> Poll<Result<(), StartError>> {
-        let mut exclusive = self.0.exclusive.lock().unwrap();
+        let mut exclusive = self.0.exclusive.lock();
         match exclusive.state {
             StreamState::Open => {
                 self.0
@@ -367,19 +373,19 @@ impl WriteStream {
 
 impl StreamInstance {
     pub(crate) fn id(&self) -> Option<u64> {
-        let id = { *self.0.shared.id.read().unwrap() };
+        let id = { *self.0.shared.id.read() };
         if id.is_some() {
             id
         } else {
             let id = 0u64;
-            let mut buffer_length = std::mem::size_of_val(&id) as u32;
+            let mut buffer_length = mem::size_of_val(&id) as u32;
             let res = self.0.shared.msquic_stream.get_param(
                 msquic::PARAM_STREAM_ID,
                 &mut buffer_length as *mut _,
                 &id as *const _ as *const c_void,
             );
             if res.is_ok() {
-                self.0.shared.id.write().unwrap().replace(id);
+                self.0.shared.id.write().replace(id);
                 Some(id)
             } else {
                 None
@@ -457,7 +463,7 @@ impl StreamInstance {
         let res;
         let mut read_complete_buffers = Vec::new();
         {
-            let mut exclusive = self.0.exclusive.lock().unwrap();
+            let mut exclusive = self.0.exclusive.lock();
             match exclusive.recv_state {
                 StreamRecvState::Closed => {
                     return Poll::Ready(Err(ReadError::Closed));
@@ -579,7 +585,7 @@ impl StreamInstance {
     where
         T: FnMut(&mut WriteBuffer) -> WriteStatus<U>,
     {
-        let mut exclusive = self.0.exclusive.lock().unwrap();
+        let mut exclusive = self.0.exclusive.lock();
         match exclusive.send_state {
             StreamSendState::Closed => {
                 return Poll::Ready(Err(WriteError::Closed));
@@ -648,7 +654,7 @@ impl StreamInstance {
     }
 
     pub(crate) fn poll_finish_write(&self, cx: &mut Context<'_>) -> Poll<Result<(), WriteError>> {
-        let mut exclusive = self.0.exclusive.lock().unwrap();
+        let mut exclusive = self.0.exclusive.lock();
         match exclusive.send_state {
             StreamSendState::Start => {
                 exclusive.start_waiters.push(cx.waker().clone());
@@ -691,7 +697,7 @@ impl StreamInstance {
         cx: &mut Context<'_>,
         error_code: u64,
     ) -> Poll<Result<(), WriteError>> {
-        let mut exclusive = self.0.exclusive.lock().unwrap();
+        let mut exclusive = self.0.exclusive.lock();
         match exclusive.send_state {
             StreamSendState::Start => {
                 exclusive.start_waiters.push(cx.waker().clone());
@@ -730,7 +736,7 @@ impl StreamInstance {
     }
 
     pub(crate) fn abort_write(&self, error_code: u64) -> Result<(), WriteError> {
-        let mut exclusive = self.0.exclusive.lock().unwrap();
+        let mut exclusive = self.0.exclusive.lock();
         match exclusive.send_state {
             StreamSendState::StartComplete => {
                 self.0
@@ -750,7 +756,7 @@ impl StreamInstance {
         cx: &mut Context<'_>,
         error_code: u64,
     ) -> Poll<Result<(), ReadError>> {
-        let mut exclusive = self.0.exclusive.lock().unwrap();
+        let mut exclusive = self.0.exclusive.lock();
         match exclusive.recv_state {
             StreamRecvState::Start => {
                 exclusive.start_waiters.push(cx.waker().clone());
@@ -789,7 +795,7 @@ impl StreamInstance {
     }
 
     pub(crate) fn abort_read(&self, error_code: u64) -> Result<(), ReadError> {
-        let mut exclusive = self.0.exclusive.lock().unwrap();
+        let mut exclusive = self.0.exclusive.lock();
         match exclusive.recv_state {
             StreamRecvState::StartComplete => {
                 self.0
@@ -812,7 +818,7 @@ struct StreamInstance(Arc<StreamInner>);
 impl Drop for StreamInstance {
     fn drop(&mut self) {
         trace!("StreamInstance({:p}) dropping", &*self.0);
-        let mut exclusive = self.0.exclusive.lock().unwrap();
+        let mut exclusive = self.0.exclusive.lock();
         exclusive.recv_buffers.clear();
         match exclusive.state {
             StreamState::Start | StreamState::StartComplete => {
@@ -937,7 +943,7 @@ impl StreamInner {
         );
 
         let complete_len = if !buffer_range.is_empty() {
-            let mut exclusive = self.exclusive.lock().unwrap();
+            let mut exclusive = self.exclusive.lock();
             exclusive.read_complete_map.insert(buffer_range);
             let complete_range = exclusive.read_complete_map.first().unwrap();
             trace!(
@@ -975,7 +981,7 @@ impl StreamInner {
         payload: &msquic::StreamEventStartComplete,
     ) -> u32 {
         if msquic::Status::succeeded(payload.status) {
-            inner.shared.id.write().unwrap().replace(payload.id);
+            inner.shared.id.write().replace(payload.id);
         }
         trace!(
             "Stream({:p}, id={:?}) start complete status=0x{:x}, peer_accepted={}, id={}",
@@ -985,7 +991,7 @@ impl StreamInner {
             payload.bit_flags.peer_accepted(),
             payload.id,
         );
-        let mut exclusive = inner.exclusive.lock().unwrap();
+        let mut exclusive = inner.exclusive.lock();
         exclusive.start_status = Some(payload.status);
         if msquic::Status::succeeded(payload.status) && payload.bit_flags.peer_accepted() == 1 {
             exclusive.state = StreamState::StartComplete;
@@ -1021,7 +1027,7 @@ impl StreamInner {
         );
 
         let buffers =
-            unsafe { std::slice::from_raw_parts(payload.buffer, payload.buffer_count as usize) };
+            unsafe { slice::from_raw_parts(payload.buffer, payload.buffer_count as usize) };
 
         let arc_inner: Arc<Self> = unsafe { Arc::from_raw(inner as *const _) };
 
@@ -1033,7 +1039,7 @@ impl StreamInner {
 
         let _ = Arc::into_raw(arc_inner);
 
-        let mut exclusive = inner.exclusive.lock().unwrap();
+        let mut exclusive = inner.exclusive.lock();
         exclusive.recv_buffers.push_back(recv_buffer);
         exclusive
             .read_waiters
@@ -1054,7 +1060,7 @@ impl StreamInner {
         );
 
         let mut write_buf = unsafe { WriteBuffer::from_raw(payload.client_context) };
-        let mut exclusive = inner.exclusive.lock().unwrap();
+        let mut exclusive = inner.exclusive.lock();
         write_buf.reset();
         exclusive.write_pool.push(write_buf);
         msquic::QUIC_STATUS_SUCCESS
@@ -1066,7 +1072,7 @@ impl StreamInner {
             inner,
             inner.shared.id.read()
         );
-        let mut exclusive = inner.exclusive.lock().unwrap();
+        let mut exclusive = inner.exclusive.lock();
         exclusive.recv_state = StreamRecvState::ShutdownComplete;
         exclusive
             .read_waiters
@@ -1085,7 +1091,7 @@ impl StreamInner {
             inner,
             inner.shared.id.read()
         );
-        let mut exclusive = inner.exclusive.lock().unwrap();
+        let mut exclusive = inner.exclusive.lock();
         exclusive.recv_state = StreamRecvState::ShutdownComplete;
         exclusive.recv_error_code = Some(payload.error_code);
         exclusive
@@ -1105,7 +1111,7 @@ impl StreamInner {
             inner,
             inner.shared.id.read()
         );
-        let mut exclusive = inner.exclusive.lock().unwrap();
+        let mut exclusive = inner.exclusive.lock();
         exclusive.send_state = StreamSendState::ShutdownComplete;
         exclusive.send_error_code = Some(payload.error_code);
         exclusive
@@ -1125,7 +1131,7 @@ impl StreamInner {
             inner,
             inner.shared.id.read()
         );
-        let mut exclusive = inner.exclusive.lock().unwrap();
+        let mut exclusive = inner.exclusive.lock();
         exclusive.send_state = StreamSendState::ShutdownComplete;
         exclusive
             .write_shutdown_waiters
@@ -1145,7 +1151,7 @@ impl StreamInner {
             inner.shared.id.read()
         );
         {
-            let mut exclusive = inner.exclusive.lock().unwrap();
+            let mut exclusive = inner.exclusive.lock();
             exclusive.state = StreamState::ShutdownComplete;
             exclusive.recv_state = StreamRecvState::ShutdownComplete;
             exclusive.send_state = StreamSendState::ShutdownComplete;
@@ -1204,7 +1210,7 @@ impl StreamInner {
             inner,
             inner.shared.id.read()
         );
-        let mut exclusive = inner.exclusive.lock().unwrap();
+        let mut exclusive = inner.exclusive.lock();
         exclusive.state = StreamState::StartComplete;
         if inner.shared.stream_type == StreamType::Bidirectional {
             exclusive.recv_state = StreamRecvState::StartComplete;
@@ -1407,6 +1413,7 @@ impl tokio::io::AsyncWrite for WriteStream {
     }
 }
 
+#[cfg(feature = "std")]
 impl futures_io::AsyncRead for Stream {
     fn poll_read(
         self: Pin<&mut Self>,
@@ -1418,6 +1425,7 @@ impl futures_io::AsyncRead for Stream {
     }
 }
 
+#[cfg(feature = "std")]
 impl futures_io::AsyncWrite for Stream {
     fn poll_write(
         self: Pin<&mut Self>,
@@ -1438,6 +1446,7 @@ impl futures_io::AsyncWrite for Stream {
     }
 }
 
+#[cfg(feature = "std")]
 impl futures_io::AsyncRead for ReadStream {
     fn poll_read(
         self: Pin<&mut Self>,
@@ -1449,6 +1458,7 @@ impl futures_io::AsyncRead for ReadStream {
     }
 }
 
+#[cfg(feature = "std")]
 impl futures_io::AsyncWrite for WriteStream {
     fn poll_write(
         self: Pin<&mut Self>,
@@ -1523,6 +1533,7 @@ pub enum ReadError {
     OtherError(u32),
 }
 
+#[cfg(feature = "std")]
 impl From<ReadError> for std::io::Error {
     fn from(e: ReadError) -> Self {
         let kind = match e {
@@ -1552,6 +1563,7 @@ pub enum WriteError {
     OtherError(u32),
 }
 
+#[cfg(feature = "std")]
 impl From<WriteError> for std::io::Error {
     fn from(e: WriteError) -> Self {
         let kind = match e {

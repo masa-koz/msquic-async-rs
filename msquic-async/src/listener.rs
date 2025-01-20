@@ -1,12 +1,16 @@
 use crate::connection::Connection;
 
-use std::collections::VecDeque;
-use std::future::Future;
+use alloc::boxed::Box;
+use alloc::collections::VecDeque;
+use alloc::vec::Vec;
+use core::future::Future;
+use core::pin::Pin;
+use core::task::{Context, Poll, Waker};
+#[cfg(feature = "std")]
 use std::net::SocketAddr;
-use std::sync::Mutex;
-use std::task::{Context, Poll, Waker};
 
 use libc::c_void;
+use spin::Mutex;
 use thiserror::Error;
 use tracing::trace;
 
@@ -35,13 +39,14 @@ impl Listener {
         Ok(Self(inner))
     }
 
+    #[cfg(feature = "std")]
     /// Start the listener.
     pub fn start<T: AsRef<[msquic::Buffer]>>(
         &self,
         alpn: &T,
         local_address: Option<SocketAddr>,
     ) -> Result<(), ListenError> {
-        let mut exclusive = self.0.exclusive.lock().unwrap();
+        let mut exclusive = self.0.exclusive.lock();
         match exclusive.state {
             ListenerState::Open | ListenerState::ShutdownComplete => {}
             ListenerState::StartComplete | ListenerState::Shutdown => {
@@ -58,6 +63,29 @@ impl Listener {
         Ok(())
     }
 
+    #[cfg(not(feature = "std"))]
+    /// Start the listener.
+    pub fn start<T: AsRef<[msquic::Buffer]>>(
+        &self,
+        alpn: &T,
+        local_address: Option<msquic::Addr>,
+    ) -> Result<(), ListenError> {
+        let mut exclusive = self.0.exclusive.lock();
+        match exclusive.state {
+            ListenerState::Open | ListenerState::ShutdownComplete => {}
+            ListenerState::StartComplete | ListenerState::Shutdown => {
+                return Err(ListenError::AlreadyStarted);
+            }
+        }
+        self.0
+            .shared
+            .msquic_listener
+            .start(alpn.as_ref(), local_address.as_ref())
+            .map_err(ListenError::OtherError)?;
+        exclusive.state = ListenerState::StartComplete;
+        Ok(())
+    }
+
     /// Accept a new connection.
     pub fn accept(&self) -> Accept {
         Accept(self)
@@ -65,7 +93,7 @@ impl Listener {
 
     /// Poll to accept a new connection.
     pub fn poll_accept(&self, cx: &mut Context<'_>) -> Poll<Result<Connection, ListenError>> {
-        let mut exclusive = self.0.exclusive.lock().unwrap();
+        let mut exclusive = self.0.exclusive.lock();
 
         if !exclusive.new_connections.is_empty() {
             return Poll::Ready(Ok(exclusive.new_connections.pop_front().unwrap()));
@@ -93,7 +121,7 @@ impl Listener {
     pub fn poll_stop(&self, cx: &mut Context<'_>) -> Poll<Result<(), ListenError>> {
         let mut call_stop = false;
         {
-            let mut exclusive = self.0.exclusive.lock().unwrap();
+            let mut exclusive = self.0.exclusive.lock();
 
             match exclusive.state {
                 ListenerState::Open => {
@@ -116,6 +144,7 @@ impl Listener {
         Poll::Pending
     }
 
+    #[cfg(feature = "std")]
     /// Get the local address the listener is bound to.
     pub fn local_addr(&self) -> Result<SocketAddr, ListenError> {
         self.0
@@ -123,6 +152,16 @@ impl Listener {
             .msquic_listener
             .get_local_addr()
             .map(|addr| addr.as_socket().expect("not a socket address"))
+            .map_err(|_| ListenError::Failed)
+    }
+
+    #[cfg(not(feature = "std"))]
+    /// Get the local address the listener is bound to.
+    pub fn local_addr(&self) -> Result<msquic::Addr, ListenError> {
+        self.0
+            .shared
+            .msquic_listener
+            .get_local_addr()
             .map_err(|_| ListenError::Failed)
     }
 }
@@ -183,7 +222,7 @@ impl ListenerInner {
             return status;
         }
 
-        let mut exclusive = inner.exclusive.lock().unwrap();
+        let mut exclusive = inner.exclusive.lock();
         exclusive.new_connections.push_back(new_conn);
         exclusive
             .new_connection_waiters
@@ -197,7 +236,7 @@ impl ListenerInner {
         _payload: &msquic::ListenerEventStopComplete,
     ) -> u32 {
         trace!("Listener({:p}) stop complete", inner);
-        let mut exclusive = inner.exclusive.lock().unwrap();
+        let mut exclusive = inner.exclusive.lock();
         exclusive.state = ListenerState::ShutdownComplete;
 
         exclusive
@@ -227,7 +266,7 @@ impl ListenerInner {
             }
 
             _ => {
-                println!("Other callback {}", event.event_type);
+                trace!("Other callback {}", event.event_type);
                 0
             }
         }
@@ -240,7 +279,7 @@ pub struct Accept<'a>(&'a Listener);
 impl Future for Accept<'_> {
     type Output = Result<Connection, ListenError>;
 
-    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.0.poll_accept(cx)
     }
 }
@@ -251,7 +290,7 @@ pub struct Stop<'a>(&'a Listener);
 impl Future for Stop<'_> {
     type Output = Result<(), ListenError>;
 
-    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.0.poll_stop(cx)
     }
 }

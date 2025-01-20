@@ -19,15 +19,18 @@ include = [
 ]
 
 [features]
-default = ["tokio"]
-tls-schannel = ["msquic/schannel"]
+default = [ "std", "tokio" ]
+std = [ "msquic/std", "futures-io/std" ]
+tls-schannel = [ "msquic/schannel" ]
+winkernel = [ "tls-schannel", "msquic/winkernel" ]
 
 [dependencies]
 bytes = { workspace = true }
-futures-io = { workspace = true }
+futures-io = { workspace = true, optional = true }
 libc = { workspace = true }
 msquic = { workspace = true, features = ["preview-api"] }
 rangemap = { workspace = true }
+spin = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["io-util"], optional = true }
 tracing = { workspace = true }

@@ -8,22 +8,23 @@ resolver = "2"
 [workspace.dependencies]
 anyhow = "1.0.80"
 argh = "0.1.10"
-bytes = "1.5.0"
+bytes = { version = "1.5.0", default-features = false }
 futures = "0.3.30"
-futures-io = "0.3.30"
+futures-io = { version = "0.3.30", default-features = false }
 h3 = "0.0.6"
 #h3 = { git = "https://github.com/hyperium/h3.git" }
 http = "1"
-libc = "0.2.153"
+libc = { version = "0.2.153", default-features = false }
 #msquic = "2.5.0-beta3"
-msquic = { path = "./msquic" }
-msquic-async = { path = "./msquic-async" }
+msquic = { path = "./msquic", default-features = false } 
+msquic-async = { path = "./msquic-async", version = "0.2.0" }
 rangemap = "1.5.1"
 schannel = "0.1.27"
+spin = "0.9.8"
 tempfile = "3.10.1"
 test-log = "0.2.15"
-thiserror = "1.0.57"
+thiserror = { version = "2.0.11", default-features = false }
 tokio = "1.42.0"
 tokio-util = "0.7.9"
-tracing = "0.1.40"
+tracing = { version = "0.1.40", default-features = false }
 tracing-subscriber = { version = "0.3", default-features = false }

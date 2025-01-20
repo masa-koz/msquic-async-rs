@@ -1,15 +1,18 @@
 use crate::buffer::WriteBuffer;
 use crate::stream::{ReadStream, StartError as StreamStartError, Stream, StreamType};
 
-use std::collections::VecDeque;
-use std::future::Future;
-use std::ops::Deref;
-use std::pin::Pin;
-use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll, Waker};
+use alloc::collections::VecDeque;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+use core::future::Future;
+use core::ops::Deref;
+use core::pin::Pin;
+use core::slice;
+use core::task::{Context, Poll, Waker};
 
 use bytes::Bytes;
 use libc::c_void;
+use spin::Mutex;
 use thiserror::Error;
 use tracing::trace;
 
@@ -75,7 +78,7 @@ impl Connection {
         host: &str,
         port: u16,
     ) -> Poll<Result<(), StartError>> {
-        let mut exclusive = self.0.exclusive.lock().unwrap();
+        let mut exclusive = self.0.exclusive.lock();
         match exclusive.state {
             ConnectionState::Open => {
                 self.0
@@ -128,7 +131,7 @@ impl Connection {
         &self,
         cx: &mut Context<'_>,
     ) -> Poll<Result<Stream, StreamStartError>> {
-        let mut exclusive = self.0.exclusive.lock().unwrap();
+        let mut exclusive = self.0.exclusive.lock();
         match exclusive.state {
             ConnectionState::Open => {
                 return Poll::Ready(Err(StreamStartError::ConnectionNotStarted));
@@ -162,7 +165,7 @@ impl Connection {
         &self,
         cx: &mut Context<'_>,
     ) -> Poll<Result<ReadStream, StreamStartError>> {
-        let mut exclusive = self.0.exclusive.lock().unwrap();
+        let mut exclusive = self.0.exclusive.lock();
         match exclusive.state {
             ConnectionState::Open => {
                 return Poll::Ready(Err(StreamStartError::ConnectionNotStarted));
@@ -193,7 +196,7 @@ impl Connection {
         &self,
         cx: &mut Context<'_>,
     ) -> Poll<Result<Bytes, DgramReceiveError>> {
-        let mut exclusive = self.0.exclusive.lock().unwrap();
+        let mut exclusive = self.0.exclusive.lock();
         match exclusive.state {
             ConnectionState::Open => {
                 return Poll::Ready(Err(DgramReceiveError::ConnectionNotStarted));
@@ -224,7 +227,7 @@ impl Connection {
         cx: &mut Context<'_>,
         buf: &Bytes,
     ) -> Poll<Result<(), DgramSendError>> {
-        let mut exclusive = self.0.exclusive.lock().unwrap();
+        let mut exclusive = self.0.exclusive.lock();
         match exclusive.state {
             ConnectionState::Open => {
                 return Poll::Ready(Err(DgramSendError::ConnectionNotStarted));
@@ -260,7 +263,7 @@ impl Connection {
 
     /// Send a datagram.
     pub fn send_datagram(&self, buf: &Bytes) -> Result<(), DgramSendError> {
-        let mut exclusive = self.0.exclusive.lock().unwrap();
+        let mut exclusive = self.0.exclusive.lock();
         match exclusive.state {
             ConnectionState::Open => {
                 return Err(DgramSendError::ConnectionNotStarted);
@@ -298,7 +301,7 @@ impl Connection {
         cx: &mut Context<'_>,
         error_code: u64,
     ) -> Poll<Result<(), ShutdownError>> {
-        let mut exclusive = self.0.exclusive.lock().unwrap();
+        let mut exclusive = self.0.exclusive.lock();
         match exclusive.state {
             ConnectionState::Open => {
                 return Poll::Ready(Err(ShutdownError::ConnectionNotStarted));
@@ -332,7 +335,7 @@ impl Connection {
 
     /// Shutdown the connection.
     pub fn shutdown(&self, error_code: u64) -> Result<(), ShutdownError> {
-        let mut exclusive = self.0.exclusive.lock().unwrap();
+        let mut exclusive = self.0.exclusive.lock();
         match exclusive.state {
             ConnectionState::Open | ConnectionState::Connecting => {
                 return Err(ShutdownError::ConnectionNotStarted);
@@ -364,7 +367,7 @@ impl Drop for ConnectionInstance {
     fn drop(&mut self) {
         trace!("Connection({:p}) dropping", &*self.0);
         {
-            let exclusive = self.0.exclusive.lock().unwrap();
+            let exclusive = self.0.exclusive.lock();
             match exclusive.state {
                 ConnectionState::Open
                 | ConnectionState::Connecting
@@ -427,7 +430,7 @@ impl ConnectionInner {
     fn handle_event_connected(inner: &Self, _payload: &msquic::ConnectionEventConnected) -> u32 {
         trace!("Connection({:p}) Connected", inner);
 
-        let mut exclusive = inner.exclusive.lock().unwrap();
+        let mut exclusive = inner.exclusive.lock();
         exclusive.state = ConnectionState::Connected;
         exclusive
             .start_waiters
@@ -446,7 +449,7 @@ impl ConnectionInner {
             payload.status
         );
 
-        let mut exclusive = inner.exclusive.lock().unwrap();
+        let mut exclusive = inner.exclusive.lock();
         exclusive.state = ConnectionState::Shutdown;
         exclusive.error = Some(ConnectionError::ShutdownByTransport(
             payload.status,
@@ -473,7 +476,7 @@ impl ConnectionInner {
             payload.error_code
         );
 
-        let mut exclusive = inner.exclusive.lock().unwrap();
+        let mut exclusive = inner.exclusive.lock();
         exclusive.state = ConnectionState::Shutdown;
         exclusive.error = Some(ConnectionError::ShutdownByPeer(payload.error_code));
         exclusive
@@ -494,7 +497,7 @@ impl ConnectionInner {
         trace!("Connection({:p}) Connection Shutdown complete", inner);
 
         {
-            let mut exclusive = inner.exclusive.lock().unwrap();
+            let mut exclusive = inner.exclusive.lock();
             exclusive.state = ConnectionState::ShutdownComplete;
             if exclusive.error.is_none() {
                 exclusive.error = Some(ConnectionError::ShutdownByLocal);
@@ -536,7 +539,7 @@ impl ConnectionInner {
         let stream = Stream::from_handle(payload.stream, stream_type);
         if (payload.flags & msquic::STREAM_OPEN_FLAG_UNIDIRECTIONAL) != 0 {
             if let (Some(read_stream), None) = stream.split() {
-                let mut exclusive = inner.exclusive.lock().unwrap();
+                let mut exclusive = inner.exclusive.lock();
                 exclusive.inbound_uni_streams.push_back(read_stream);
                 exclusive
                     .inbound_uni_stream_waiters
@@ -547,7 +550,7 @@ impl ConnectionInner {
             }
         } else {
             {
-                let mut exclusive = inner.exclusive.lock().unwrap();
+                let mut exclusive = inner.exclusive.lock();
                 exclusive.inbound_streams.push_back(stream);
                 exclusive
                     .inbound_stream_waiters
@@ -591,11 +594,11 @@ impl ConnectionInner {
     ) -> u32 {
         trace!("Connection({:p}) Datagram received", inner);
         let buffer = unsafe {
-            std::slice::from_raw_parts((*payload.buffer).buffer, (*payload.buffer).length as usize)
+            slice::from_raw_parts((*payload.buffer).buffer, (*payload.buffer).length as usize)
         };
         let buf = Bytes::copy_from_slice(buffer);
         {
-            let mut exclusive = inner.exclusive.lock().unwrap();
+            let mut exclusive = inner.exclusive.lock();
             exclusive.recv_buffers.push_back(buf);
             exclusive
                 .recv_waiters
@@ -617,7 +620,7 @@ impl ConnectionInner {
         match payload.state {
             msquic::DATAGRAM_SEND_SENT | msquic::DATAGRAM_SEND_CANCELED => {
                 let mut write_buf = unsafe { WriteBuffer::from_raw(payload.client_context) };
-                let mut exclusive = inner.exclusive.lock().unwrap();
+                let mut exclusive = inner.exclusive.lock();
                 write_buf.reset();
                 exclusive.write_pool.push(write_buf);
             }
@@ -801,7 +804,7 @@ impl Future for OpenOutboundStream<'_> {
             ..
         } = *this;
 
-        let mut exclusive = conn.exclusive.lock().unwrap();
+        let mut exclusive = conn.exclusive.lock();
         match exclusive.state {
             ConnectionState::Open => {
                 return Poll::Ready(Err(StreamStartError::ConnectionNotStarted));

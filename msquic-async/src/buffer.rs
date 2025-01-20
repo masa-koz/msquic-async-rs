@@ -1,9 +1,14 @@
 use crate::stream::StreamInner;
 
+use alloc::boxed::Box;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+use core::cmp;
+use core::ops::Range;
+use core::ptr;
+use core::slice;
+#[cfg(feature = "std")]
 use std::io::IoSlice;
-use std::ops::Range;
-use std::slice;
-use std::sync::Arc;
 
 use bytes::{Buf, Bytes};
 use libc::c_void;
@@ -38,7 +43,7 @@ impl StreamRecvBuffer {
             buf.buffers
                 .first()
                 .map(|x| x.buffer)
-                .unwrap_or(std::ptr::null_mut()),
+                .unwrap_or(ptr::null_mut()),
             buf.offset,
             buf.len(),
             buf.fin,
@@ -76,7 +81,7 @@ impl StreamRecvBuffer {
         assert!(self.buffers.len() >= self.read_cursor);
         let buffer = &self.buffers[self.read_cursor];
         assert!(buffer.length as usize >= self.read_cursor_in_buffer);
-        let len = std::cmp::min(buffer.length as usize - self.read_cursor_in_buffer, size);
+        let len = cmp::min(buffer.length as usize - self.read_cursor_in_buffer, size);
         unsafe { slice::from_raw_parts(buffer.buffer.add(self.read_cursor_in_buffer), len) }
     }
 
@@ -89,7 +94,7 @@ impl StreamRecvBuffer {
         let buffer = &self.buffers[self.read_cursor];
 
         assert!(buffer.length as usize >= self.read_cursor_in_buffer);
-        let len = std::cmp::min(buffer.length as usize - self.read_cursor_in_buffer, size);
+        let len = cmp::min(buffer.length as usize - self.read_cursor_in_buffer, size);
 
         let slice =
             unsafe { slice::from_raw_parts(buffer.buffer.add(self.read_cursor_in_buffer), len) };
@@ -147,6 +152,7 @@ impl Buf for StreamRecvBuffer {
         self.len()
     }
 
+    #[cfg(feature = "std")]
     fn chunks_vectored<'a>(&'a self, dst: &mut [IoSlice<'a>]) -> usize {
         let mut count = 0;
         let mut read_cursor_in_buffer = Some(self.read_cursor_in_buffer);
@@ -172,7 +178,7 @@ impl Drop for StreamRecvBuffer {
             self.buffers
                 .first()
                 .map(|x| x.buffer)
-                .unwrap_or(std::ptr::null_mut())
+                .unwrap_or(ptr::null_mut())
         );
         if let Some(stream) = self.stream.take() {
             stream.read_complete(self);

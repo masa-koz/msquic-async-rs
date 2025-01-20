@@ -1,6 +1,12 @@
 #![warn(unreachable_pub)]
 #![warn(clippy::use_self)]
 
+#![no_std]
+
+extern crate alloc;
+#[cfg(feature = "std")]
+extern crate std;
+
 mod buffer;
 mod connection;
 mod listener;
