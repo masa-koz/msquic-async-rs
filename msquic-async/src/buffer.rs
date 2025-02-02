@@ -53,7 +53,8 @@ impl StreamRecvBuffer {
                 .first()
                 .map(|x| x.buffer)
                 .unwrap_or(std::ptr::null_mut()),
-            stream);
+            stream
+        );
 
         self.stream = Some(stream);
     }
