@@ -813,7 +813,19 @@ impl Drop for StreamInstance {
     fn drop(&mut self) {
         trace!("StreamInstance({:p}) dropping", &*self.0);
         let mut exclusive = self.0.exclusive.lock().unwrap();
-        exclusive.recv_buffers.clear();
+        if !exclusive.recv_buffers.is_empty() {
+            trace!(
+                "StreamInstance({:p}) read complete {}",
+                &*self.0,
+                exclusive.recv_len - exclusive.read_complete_cursor
+            );
+            exclusive.recv_buffers.clear();
+            let _ = self
+                .0
+                .shared
+                .msquic_stream
+                .receive_complete((exclusive.recv_len - exclusive.read_complete_cursor) as u64);
+        }
         match exclusive.state {
             StreamState::Start | StreamState::StartComplete => {
                 trace!("StreamInstance({:p}) shutdown while dropping", &*self.0);
@@ -848,6 +860,7 @@ struct StreamInnerExclusive {
     start_status: Option<u32>,
     recv_state: StreamRecvState,
     recv_buffers: VecDeque<StreamRecvBuffer>,
+    recv_len: usize,
     read_complete_map: RangeSet<usize>,
     read_complete_cursor: usize,
     send_state: StreamSendState,
@@ -907,6 +920,7 @@ impl StreamInner {
                 start_status: None,
                 recv_state,
                 recv_buffers: VecDeque::new(),
+                recv_len: 0,
                 read_complete_map: RangeSet::new(),
                 read_complete_cursor: 0,
                 send_state,
@@ -1034,6 +1048,7 @@ impl StreamInner {
         let _ = Arc::into_raw(arc_inner);
 
         let mut exclusive = inner.exclusive.lock().unwrap();
+        exclusive.recv_len += payload.total_buffer_length as usize;
         exclusive.recv_buffers.push_back(recv_buffer);
         exclusive
             .read_waiters

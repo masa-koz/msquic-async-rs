@@ -47,6 +47,14 @@ impl StreamRecvBuffer {
     }
 
     pub(crate) fn set_stream(&mut self, stream: Arc<StreamInner>) {
+        trace!(
+            "StreamRecvBuffer({:p}) set StreamInner({:p})",
+            self.buffers
+                .first()
+                .map(|x| x.buffer)
+                .unwrap_or(std::ptr::null_mut()),
+            stream);
+
         self.stream = Some(stream);
     }
 
