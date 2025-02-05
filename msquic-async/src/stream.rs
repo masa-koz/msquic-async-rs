@@ -950,27 +950,38 @@ impl StreamInner {
             buffer_range.end - buffer_range.start
         );
 
-        let complete_len = if !buffer_range.is_empty() {
-            let mut exclusive = self.exclusive.lock().unwrap();
+        let mut exclusive = self.exclusive.lock().unwrap();
+        if !buffer_range.is_empty() {
             exclusive.read_complete_map.insert(buffer_range);
-            let complete_range = exclusive.read_complete_map.first().unwrap();
+        }
+        let complete_len = if let Some(complete_range) = exclusive.read_complete_map.first() {
             trace!(
                 "StreamInner({:p}) complete read offset={} len={}",
                 self,
                 complete_range.start,
                 complete_range.end - complete_range.start
             );
+        
             if complete_range.start == 0 && exclusive.read_complete_cursor < complete_range.end {
                 let complete_len = complete_range.end - exclusive.read_complete_cursor;
                 exclusive.read_complete_cursor = complete_range.end;
-                complete_len
+                Some(complete_len)
+            } else if complete_range.start == 0
+                && exclusive.read_complete_cursor == complete_range.end
+                && buffer.offset() == complete_range.end
+                && buffer.is_empty()
+                && buffer.fin()
+            {
+                Some(0)
             } else {
-                0
+                None
             }
+        } else if buffer.is_empty() && buffer.fin() {
+            Some(0)
         } else {
-            0
+            None
         };
-        if complete_len > 0 {
+        if let Some(complete_len) = complete_len {
             trace!(
                 "StreamInner({:p}) call receive_complete len={}",
                 self,

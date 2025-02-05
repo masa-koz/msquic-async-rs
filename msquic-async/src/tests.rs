@@ -1122,6 +1122,102 @@ async fn test_read_chunk() {
 
 /// Test for [`Stream::read_chunk()`]
 #[test(tokio::test)]
+async fn test_read_chunk_empty_fin() {
+    let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
+
+    let registration = msquic::Registration::new(ptr::null()).unwrap();
+
+    let listener = new_server(
+        &registration,
+        msquic::Settings::new()
+            .set_idle_timeout_ms(10000)
+            .set_peer_unidi_stream_count(1),
+    )
+    .unwrap();
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    listener
+        .start(&[msquic::Buffer::from("test")], Some(addr))
+        .expect("listener start");
+    let server_addr = listener.local_addr().expect("listener local_addr");
+
+    let mut set = JoinSet::new();
+
+    set.spawn(async move {
+        let conn = listener.accept().await.unwrap();
+        let read_stream = conn.accept_inbound_uni_stream().await.unwrap();
+
+        let res = read_stream.read_chunk().await;
+        assert!(res.is_ok());
+        let chunk = res.unwrap();
+        assert!(chunk.is_some());
+        let mut chunk = chunk.unwrap();
+        assert_eq!(chunk.remaining(), 11);
+        let mut dst = [0; 11];
+        chunk.copy_to_slice(&mut dst);
+        assert_eq!(&dst, b"hello world");
+
+        mem::drop(chunk);
+
+        server_tx.send(()).await.unwrap();
+
+        let res = read_stream.read_chunk().await;
+        assert!(res.is_ok());
+        let chunk = res.unwrap();
+        assert!(chunk.is_some());
+        let chunk = chunk.unwrap();
+        assert!(chunk.is_empty() && chunk.fin());
+
+        server_tx.send(()).await.unwrap();
+    });
+
+    let client_config = new_client_config(
+        &registration,
+        msquic::Settings::new().set_idle_timeout_ms(10000),
+    )
+    .unwrap();
+    let conn = Connection::new(msquic::Connection::new(), &registration).unwrap();
+    set.spawn(async move {
+        conn.start(
+            &client_config,
+            &format!("{}", server_addr.ip()),
+            server_addr.port(),
+        )
+        .await
+        .unwrap();
+
+        let mut stream = conn
+            .open_outbound_stream(crate::StreamType::Unidirectional, false)
+            .await
+            .unwrap();
+
+        let _ = poll_fn(|cx| stream.poll_write(cx, b"hello world", false))
+            .await
+            .unwrap();
+
+        client_rx.recv().await.expect("recv");
+
+        let _ = poll_fn(|cx| stream.poll_finish_write(cx))
+            .await
+            .unwrap();
+
+        client_rx.recv().await.expect("recv");
+    });
+
+    let mut results = Vec::new();
+    while let Some(res) = set.join_next().await {
+        results.push(res);
+    }
+    results.into_iter().for_each(|res| {
+        if let Err(err) = res {
+            if err.is_panic() {
+                std::panic::resume_unwind(err.into_panic());
+            }
+        }
+    });
+}
+
+/// Test for [`Stream::read_chunk()`]
+#[test(tokio::test)]
 async fn test_read_chunk_multi_recv() {
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
