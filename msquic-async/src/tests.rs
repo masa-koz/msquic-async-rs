@@ -1196,9 +1196,7 @@ async fn test_read_chunk_empty_fin() {
 
         client_rx.recv().await.expect("recv");
 
-        let _ = poll_fn(|cx| stream.poll_finish_write(cx))
-            .await
-            .unwrap();
+        poll_fn(|cx| stream.poll_finish_write(cx)).await.unwrap();
 
         client_rx.recv().await.expect("recv");
     });

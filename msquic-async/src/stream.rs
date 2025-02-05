@@ -961,7 +961,7 @@ impl StreamInner {
                 complete_range.start,
                 complete_range.end - complete_range.start
             );
-        
+
             if complete_range.start == 0 && exclusive.read_complete_cursor < complete_range.end {
                 let complete_len = complete_range.end - exclusive.read_complete_cursor;
                 exclusive.read_complete_cursor = complete_range.end;
