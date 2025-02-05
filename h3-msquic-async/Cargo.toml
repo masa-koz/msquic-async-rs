@@ -21,6 +21,7 @@ include = [
 [features]
 tracing = ["dep:tracing"]
 tls-schannel = ["msquic-async/tls-schannel"]
+static = ["msquic-async/static"]
 
 [dependencies]
 bytes = { workspace = true }

@@ -21,6 +21,7 @@ include = [
 [features]
 default = ["tokio"]
 tls-schannel = ["msquic/schannel"]
+static = ["msquic/static"]
 
 [dependencies]
 bytes = { workspace = true }
