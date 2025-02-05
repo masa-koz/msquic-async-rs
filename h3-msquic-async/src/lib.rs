@@ -613,7 +613,8 @@ impl quic::RecvStream for RecvStream {
 
         let (stream, chunk) = ready!(self.read_chunk_fut.poll(cx));
         self.stream = Some(stream);
-        Poll::Ready(Ok(chunk?))
+        let chunk = chunk?.filter(|x| !x.is_empty() || !x.fin());
+        Poll::Ready(Ok(chunk))
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all, level = "trace"))]
