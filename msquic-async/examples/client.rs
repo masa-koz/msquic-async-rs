@@ -13,28 +13,28 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let registration = msquic::Registration::new(ptr::null())
-        .map_err(|status| anyhow::anyhow!("Registration::new failed: 0x{:x}", status))?;
+        .map_err(|status| anyhow::anyhow!("Registration::new failed: {}", status))?;
 
-    let alpn = [msquic::Buffer::from("sample")];
+    let alpn = [msquic::BufferRef::from("sample")];
 
     let configuration = msquic::Configuration::new(
         &registration,
         &alpn,
-        msquic::Settings::new()
-            .set_idle_timeout_ms(10000)
-            .set_peer_bidi_stream_count(100)
-            .set_peer_unidi_stream_count(100)
-            .set_datagram_receive_enabled(true)
-            .set_stream_multi_receive_enabled(true),
+        Some(&msquic::Settings::new()
+            .set_IdleTimeoutMs(10000)
+            .set_PeerBidiStreamCount(100)
+            .set_PeerUnidiStreamCount(100)
+            .set_DatagramReceiveEnabled()
+            .set_StreamMultiReceiveEnabled()),
     )
-    .map_err(|status| anyhow::anyhow!("Configuration::new failed: 0x{:x}", status))?;
+    .map_err(|status| anyhow::anyhow!("Configuration::new failed: {}", status))?;
 
     let mut cred_config = msquic::CredentialConfig::new_client();
     cred_config.cred_flags |= msquic::CREDENTIAL_FLAG_NO_CERTIFICATE_VALIDATION;
     configuration
         .load_credential(&cred_config)
         .map_err(|status| {
-            anyhow::anyhow!("Configuration::load_credential failed: 0x{:x}", status)
+            anyhow::anyhow!("Configuration::load_credential failed: {}", status)
         })?;
 
     let conn = msquic_async::Connection::new(msquic::Connection::new(), &registration)?;

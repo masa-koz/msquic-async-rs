@@ -30,36 +30,36 @@ impl Stream {
         msquic_conn: &msquic::Connection,
         stream_type: StreamType,
     ) -> Result<Self, StartError> {
-        let msquic_stream = msquic::Stream::new();
+        let dummy_msquic_stream = msquic::Stream::new();
+        let mut msquic_stream = msquic::Stream::new();
         let flags = if stream_type == StreamType::Unidirectional {
             msquic::STREAM_OPEN_FLAG_UNIDIRECTIONAL
         } else {
             msquic::STREAM_OPEN_FLAG_NONE
         };
-        let inner = Arc::new(StreamInner::new(
-            msquic_stream,
+        let mut inner = Arc::new(StreamInner::new(
+            dummy_msquic_stream,
             stream_type,
             StreamSendState::Closed,
             StreamRecvState::Closed,
             true,
         ));
-        inner
-            .shared
-            .msquic_stream
+        msquic_stream
             .open(
                 msquic_conn,
                 flags,
-                StreamInner::native_callback,
+                Some(StreamInner::native_callback),
                 Arc::into_raw(inner.clone()) as *const c_void,
             )
             .map_err(StartError::OtherError)?;
+        Arc::get_mut(&mut inner).unwrap().shared.msquic_stream = msquic_stream;
         trace!("Stream({:p}) Open by local", &*inner);
 
         Ok(Self(Arc::new(StreamInstance(inner))))
     }
 
-    pub(crate) fn from_handle(handle: msquic::Handle, stream_type: StreamType) -> Self {
-        let msquic_stream = msquic::Stream::from_parts(handle);
+    pub(crate) fn from_raw(handle: msquic::ffi::HQUIC, stream_type: StreamType) -> Self {
+        let msquic_stream = unsafe { msquic::Stream::from_raw(handle) };
         let send_state = if stream_type == StreamType::Bidirectional {
             StreamSendState::StartComplete
         } else {
@@ -72,10 +72,12 @@ impl Stream {
             StreamRecvState::StartComplete,
             false,
         ));
-        inner.shared.msquic_stream.set_callback_handler(
-            StreamInner::native_callback,
-            Arc::into_raw(inner.clone()) as *const c_void,
-        );
+        unsafe {
+            inner.shared.msquic_stream.set_callback_handler(
+                Some(StreamInner::native_callback),
+                Arc::into_raw(inner.clone()) as *const c_void,
+            )
+        };
         let stream = Self(Arc::new(StreamInstance(inner)));
         trace!(
             "Stream({:p}, id={:?}) Start by peer",
@@ -114,18 +116,21 @@ impl Stream {
             }
             StreamState::Start => {}
             _ => {
-                if let Some(start_status) = exclusive.start_status {
-                    if msquic::Status::succeeded(start_status) {
+                if let Some(start_status) = &exclusive.start_status {
+                    if start_status.is_ok() {
                         return Poll::Ready(Ok(()));
                     }
-                    return Poll::Ready(Err(match start_status {
-                        msquic::QUIC_STATUS_STREAM_LIMIT_REACHED => StartError::LimitReached,
-                        msquic::QUIC_STATUS_ABORTED | msquic::QUIC_STATUS_INVALID_STATE => {
+                    return Poll::Ready(Err(match start_status.try_as_status_code().unwrap() {
+                        msquic::StatusCode::QUIC_STATUS_STREAM_LIMIT_REACHED => {
+                            StartError::LimitReached
+                        }
+                        msquic::StatusCode::QUIC_STATUS_ABORTED
+                        | msquic::StatusCode::QUIC_STATUS_INVALID_STATE => {
                             StartError::ConnectionLost(
                                 exclusive.conn_error.as_ref().expect("conn_error").clone(),
                             )
                         }
-                        _ => StartError::OtherError(start_status),
+                        _ => StartError::OtherError(start_status.clone()),
                     }));
                 } else {
                     return Poll::Ready(Ok(()));
@@ -372,13 +377,13 @@ impl StreamInstance {
             id
         } else {
             let id = 0u64;
-            let mut buffer_length = std::mem::size_of_val(&id) as u32;
-            let res = self.0.shared.msquic_stream.get_param(
-                msquic::PARAM_STREAM_ID,
-                &mut buffer_length as *mut _,
-                &id as *const _ as *const c_void,
-            );
-            if res.is_ok() {
+            let res = unsafe {
+                msquic::Api::get_param_auto::<u64>(
+                    self.0.shared.msquic_stream.as_raw(),
+                    msquic::PARAM_STREAM_ID,
+                )
+            };
+            if let Ok(id) = res {
                 self.0.shared.id.write().unwrap().replace(id);
                 Some(id)
             } else {
@@ -604,20 +609,16 @@ impl StreamInstance {
         }
         let mut write_buf = exclusive.write_pool.pop().unwrap_or(WriteBuffer::new());
         let status = write_fn(&mut write_buf);
-        let (buffer, buffer_count) = write_buf.get_buffer();
         match status {
             WriteStatus::Writable(val) | WriteStatus::Blocked(Some(val)) => {
-                match self
-                    .0
-                    .shared
-                    .msquic_stream
-                    .send(
-                        unsafe { &*buffer },
-                        buffer_count,
+                match unsafe {
+                    self.0.shared.msquic_stream.send(
+                        &write_buf.get_buffer(),
                         msquic::SEND_FLAG_NONE,
                         write_buf.into_raw() as *const _,
                     )
-                    .map_err(WriteError::OtherError)
+                }
+                .map_err(WriteError::OtherError)
                 {
                     Ok(()) => Poll::Ready(Ok(Some(val))),
                     Err(e) => Poll::Ready(Err(e)),
@@ -625,17 +626,14 @@ impl StreamInstance {
             }
             WriteStatus::Blocked(None) => unreachable!(),
             WriteStatus::Finished(val) => {
-                match self
-                    .0
-                    .shared
-                    .msquic_stream
-                    .send(
-                        unsafe { &*buffer },
-                        buffer_count,
+                match unsafe {
+                    self.0.shared.msquic_stream.send(
+                        &write_buf.get_buffer(),
                         msquic::SEND_FLAG_FIN,
                         write_buf.into_raw() as *const _,
                     )
-                    .map_err(WriteError::OtherError)
+                }
+                .map_err(WriteError::OtherError)
                 {
                     Ok(()) => {
                         exclusive.send_state = StreamSendState::Shutdown;
@@ -857,7 +855,7 @@ pub(crate) struct StreamInner {
 
 struct StreamInnerExclusive {
     state: StreamState,
-    start_status: Option<u32>,
+    start_status: Option<msquic::Status>,
     recv_state: StreamRecvState,
     recv_buffers: VecDeque<StreamRecvBuffer>,
     recv_len: usize,
@@ -995,203 +993,190 @@ impl StreamInner {
     }
 
     fn handle_event_start_complete(
-        _stream: msquic::Handle,
-        inner: &Self,
-        payload: &msquic::StreamEventStartComplete,
-    ) -> u32 {
-        if msquic::Status::succeeded(payload.status) {
-            inner.shared.id.write().unwrap().replace(payload.id);
+        &self,
+        status: msquic::Status,
+        id: u64,
+        peer_accepted: bool,
+    ) -> msquic::StatusCode {
+        if status.is_ok() {
+            self.shared.id.write().unwrap().replace(id);
         }
         trace!(
-            "Stream({:p}, id={:?}) start complete status=0x{:x}, peer_accepted={}, id={}",
-            inner,
-            inner.shared.id.read(),
-            payload.status,
-            payload.bit_flags.peer_accepted(),
-            payload.id,
+            "Stream({:p}, id={:?}) start complete status={:?}, peer_accepted={}, id={}",
+            self,
+            self.shared.id.read(),
+            status,
+            peer_accepted,
+            id,
         );
-        let mut exclusive = inner.exclusive.lock().unwrap();
-        exclusive.start_status = Some(payload.status);
-        if msquic::Status::succeeded(payload.status) && payload.bit_flags.peer_accepted() == 1 {
+        let mut exclusive = self.exclusive.lock().unwrap();
+        exclusive.start_status = Some(status.clone());
+        if status.is_ok() && peer_accepted {
             exclusive.state = StreamState::StartComplete;
-            if inner.shared.stream_type == StreamType::Bidirectional {
+            if self.shared.stream_type == StreamType::Bidirectional {
                 exclusive.recv_state = StreamRecvState::StartComplete;
             }
             exclusive.send_state = StreamSendState::StartComplete;
         }
 
-        if payload.status == msquic::QUIC_STATUS_STREAM_LIMIT_REACHED
-            || payload.bit_flags.peer_accepted() == 1
+        if status.0 == msquic::StatusCode::QUIC_STATUS_STREAM_LIMIT_REACHED.into() || peer_accepted
         {
             exclusive
                 .start_waiters
                 .drain(..)
                 .for_each(|waker| waker.wake());
         }
-        msquic::QUIC_STATUS_SUCCESS
+        msquic::StatusCode::QUIC_STATUS_SUCCESS
     }
 
     fn handle_event_receive(
-        _stream: msquic::Handle,
-        inner: &Self,
-        payload: &msquic::StreamEventReceive,
-    ) -> u32 {
+        &self,
+        absolute_offset: u64,
+        total_buffer_length: &mut u64,
+        buffers: &[msquic::BufferRef],
+        flags: u32,
+    ) -> msquic::StatusCode {
         trace!(
             "Stream({:p}, id={:?}) Receive {} offsets {} bytes, fin {}",
-            inner,
-            inner.shared.id.read(),
-            payload.absolute_offset,
-            payload.total_buffer_length,
-            (payload.flags & msquic::RECEIVE_FLAG_FIN) == msquic::RECEIVE_FLAG_FIN
+            self,
+            self.shared.id.read(),
+            absolute_offset,
+            total_buffer_length,
+            (flags & msquic::RECEIVE_FLAG_FIN) == msquic::RECEIVE_FLAG_FIN
         );
 
-        let buffers =
-            unsafe { std::slice::from_raw_parts(payload.buffer, payload.buffer_count as usize) };
-
-        let arc_inner: Arc<Self> = unsafe { Arc::from_raw(inner as *const _) };
+        let arc_inner: Arc<Self> = unsafe { Arc::from_raw(self as *const _) };
 
         let recv_buffer = StreamRecvBuffer::new(
-            payload.absolute_offset as usize,
-            &buffers,
-            (payload.flags & msquic::RECEIVE_FLAG_FIN) == msquic::RECEIVE_FLAG_FIN,
+            absolute_offset as usize,
+            buffers,
+            (flags & msquic::RECEIVE_FLAG_FIN) == msquic::RECEIVE_FLAG_FIN,
         );
 
         let _ = Arc::into_raw(arc_inner);
 
-        let mut exclusive = inner.exclusive.lock().unwrap();
-        exclusive.recv_len += payload.total_buffer_length as usize;
+        let mut exclusive = self.exclusive.lock().unwrap();
+        exclusive.recv_len += *total_buffer_length as usize;
         exclusive.recv_buffers.push_back(recv_buffer);
         exclusive
             .read_waiters
             .drain(..)
             .for_each(|waker| waker.wake());
-        msquic::QUIC_STATUS_PENDING
+        msquic::StatusCode::QUIC_STATUS_PENDING
     }
 
     fn handle_event_send_complete(
-        _stream: msquic::Handle,
-        inner: &Self,
-        payload: &msquic::StreamEventSendComplete,
-    ) -> u32 {
+        &self,
+        _canceled: bool,
+        client_context: *const c_void,
+    ) -> msquic::StatusCode {
         trace!(
             "Stream({:p}, id={:?}) Send complete",
-            inner,
-            inner.shared.id.read()
+            self,
+            self.shared.id.read()
         );
 
-        let mut write_buf = unsafe { WriteBuffer::from_raw(payload.client_context) };
-        let mut exclusive = inner.exclusive.lock().unwrap();
+        let mut write_buf = unsafe { WriteBuffer::from_raw(client_context) };
+        let mut exclusive = self.exclusive.lock().unwrap();
         write_buf.reset();
         exclusive.write_pool.push(write_buf);
-        msquic::QUIC_STATUS_SUCCESS
+        msquic::StatusCode::QUIC_STATUS_SUCCESS
     }
 
-    fn handle_event_peer_send_shutdown(_stream: msquic::Handle, inner: &Self) -> u32 {
+    fn handle_event_peer_send_shutdown(&self) -> msquic::StatusCode {
         trace!(
             "Stream({:p}, id={:?}) Peer send shutdown",
-            inner,
-            inner.shared.id.read()
+            self,
+            self.shared.id.read()
         );
-        let mut exclusive = inner.exclusive.lock().unwrap();
+        let mut exclusive = self.exclusive.lock().unwrap();
         exclusive.recv_state = StreamRecvState::ShutdownComplete;
         exclusive
             .read_waiters
             .drain(..)
             .for_each(|waker| waker.wake());
-        msquic::QUIC_STATUS_SUCCESS
+        msquic::StatusCode::QUIC_STATUS_SUCCESS
     }
 
-    fn handle_event_peer_send_aborted(
-        _stream: msquic::Handle,
-        inner: &Self,
-        payload: &msquic::StreamEventPeerSendAborted,
-    ) -> u32 {
+    fn handle_event_peer_send_aborted(&self, error_code: u64) -> msquic::StatusCode {
         trace!(
             "Stream({:p}, id={:?}) Peer send aborted",
-            inner,
-            inner.shared.id.read()
+            self,
+            self.shared.id.read()
         );
-        let mut exclusive = inner.exclusive.lock().unwrap();
+        let mut exclusive = self.exclusive.lock().unwrap();
         exclusive.recv_state = StreamRecvState::ShutdownComplete;
-        exclusive.recv_error_code = Some(payload.error_code);
+        exclusive.recv_error_code = Some(error_code);
         exclusive
             .read_waiters
             .drain(..)
             .for_each(|waker| waker.wake());
-        msquic::QUIC_STATUS_SUCCESS
+        msquic::StatusCode::QUIC_STATUS_SUCCESS
     }
 
-    fn handle_event_peer_receive_aborted(
-        _stream: msquic::Handle,
-        inner: &Self,
-        payload: &msquic::StreamEventPeerReceiveAborted,
-    ) -> u32 {
+    fn handle_event_peer_receive_aborted(&self, error_code: u64) -> msquic::StatusCode {
         trace!(
             "Stream({:p}, id={:?}) Peer receive aborted",
-            inner,
-            inner.shared.id.read()
+            self,
+            self.shared.id.read()
         );
-        let mut exclusive = inner.exclusive.lock().unwrap();
+        let mut exclusive = self.exclusive.lock().unwrap();
         exclusive.send_state = StreamSendState::ShutdownComplete;
-        exclusive.send_error_code = Some(payload.error_code);
+        exclusive.send_error_code = Some(error_code);
         exclusive
             .write_shutdown_waiters
             .drain(..)
             .for_each(|waker| waker.wake());
-        msquic::QUIC_STATUS_SUCCESS
+        msquic::StatusCode::QUIC_STATUS_SUCCESS
     }
 
-    fn handle_event_send_shutdown_complete(
-        _stream: msquic::Handle,
-        inner: &Self,
-        _payload: &msquic::StreamEventSendShutdownComplete,
-    ) -> u32 {
+    fn handle_event_send_shutdown_complete(&self, _graceful: bool) -> msquic::StatusCode {
         trace!(
             "Stream({:p}, id={:?}) Send shutdown complete",
-            inner,
-            inner.shared.id.read()
+            self,
+            self.shared.id.read()
         );
-        let mut exclusive = inner.exclusive.lock().unwrap();
+        let mut exclusive = self.exclusive.lock().unwrap();
         exclusive.send_state = StreamSendState::ShutdownComplete;
         exclusive
             .write_shutdown_waiters
             .drain(..)
             .for_each(|waker| waker.wake());
-        msquic::QUIC_STATUS_SUCCESS
+        msquic::StatusCode::QUIC_STATUS_SUCCESS
     }
 
     fn handle_event_shutdown_complete(
-        _stream: msquic::Handle,
-        inner: &Self,
-        payload: &msquic::StreamEventShutdownComplete,
-    ) -> u32 {
+        &self,
+        connection_shutdown: bool,
+        app_close_in_progress: bool,
+        connection_shutdown_by_app: bool,
+        connection_closed_remotely: bool,
+        connection_error_code: u64,
+        connection_close_status: msquic::Status,
+    ) -> msquic::StatusCode {
         trace!(
             "Stream({:p}, id={:?}) Shutdown complete",
-            inner,
-            inner.shared.id.read()
+            self,
+            self.shared.id.read()
         );
         {
-            let mut exclusive = inner.exclusive.lock().unwrap();
+            let mut exclusive = self.exclusive.lock().unwrap();
             exclusive.state = StreamState::ShutdownComplete;
             exclusive.recv_state = StreamRecvState::ShutdownComplete;
             exclusive.send_state = StreamSendState::ShutdownComplete;
-            if payload.connection_shutdown {
-                match (
-                    payload.bit_flags.conn_shutdown_by_app() == 1,
-                    payload.bit_flags.conn_closed_remotely() == 1,
-                ) {
+            if connection_shutdown {
+                match (connection_shutdown_by_app, connection_closed_remotely) {
                     (true, true) => {
-                        exclusive.conn_error = Some(ConnectionError::ShutdownByPeer(
-                            payload.connection_error_code,
-                        ));
+                        exclusive.conn_error =
+                            Some(ConnectionError::ShutdownByPeer(connection_error_code));
                     }
                     (true, false) => {
                         exclusive.conn_error = Some(ConnectionError::ShutdownByLocal);
                     }
                     (false, true) | (false, false) => {
                         exclusive.conn_error = Some(ConnectionError::ShutdownByTransport(
-                            payload.connection_close_status,
-                            payload.connection_error_code,
+                            connection_close_status,
+                            connection_error_code,
                         ));
                     }
                 }
@@ -1206,33 +1191,29 @@ impl StreamInner {
                 .for_each(|waker| waker.wake());
         }
         unsafe {
-            Arc::from_raw(inner as *const _);
+            Arc::from_raw(self as *const _);
         }
-        msquic::QUIC_STATUS_SUCCESS
+        msquic::StatusCode::QUIC_STATUS_SUCCESS
     }
 
-    fn handle_event_ideal_send_buffer_size(
-        _stream: msquic::Handle,
-        inner: &Self,
-        _payload: &msquic::StreamEventIdealSendBufferSize,
-    ) -> u32 {
+    fn handle_event_ideal_send_buffer_size(&self, _byte_count: u64) -> msquic::StatusCode {
         trace!(
             "Stream({:p}, id={:?}) Ideal send buffer size",
-            inner,
-            inner.shared.id.read()
+            self,
+            self.shared.id.read()
         );
-        msquic::QUIC_STATUS_SUCCESS
+        msquic::StatusCode::QUIC_STATUS_SUCCESS
     }
 
-    fn handle_event_peer_accepted(_stream: msquic::Handle, inner: &Self) -> u32 {
+    fn handle_event_peer_accepted(&self) -> msquic::StatusCode {
         trace!(
             "Stream({:p}, id={:?}) Peer accepted",
-            inner,
-            inner.shared.id.read()
+            self,
+            self.shared.id.read()
         );
-        let mut exclusive = inner.exclusive.lock().unwrap();
+        let mut exclusive = self.exclusive.lock().unwrap();
         exclusive.state = StreamState::StartComplete;
-        if inner.shared.stream_type == StreamType::Bidirectional {
+        if self.shared.stream_type == StreamType::Bidirectional {
             exclusive.recv_state = StreamRecvState::StartComplete;
         }
         exclusive.send_state = StreamSendState::StartComplete;
@@ -1240,64 +1221,69 @@ impl StreamInner {
             .start_waiters
             .drain(..)
             .for_each(|waker| waker.wake());
-        msquic::QUIC_STATUS_SUCCESS
+        msquic::StatusCode::QUIC_STATUS_SUCCESS
     }
 
     extern "C" fn native_callback(
-        stream: msquic::Handle,
+        stream: msquic::ffi::HQUIC,
         context: *mut c_void,
-        event: &msquic::StreamEvent,
-    ) -> u32 {
+        event: *mut msquic::ffi::QUIC_STREAM_EVENT,
+    ) -> msquic::ffi::QUIC_STATUS {
         let inner = unsafe { &*(context as *const Self) };
+        let ev_ref = unsafe { event.as_ref().unwrap() };
+        let event = msquic::StreamEvent::from(unsafe { event.as_mut().unwrap() });
 
-        match event.event_type {
-            msquic::STREAM_EVENT_START_COMPLETE => {
-                Self::handle_event_start_complete(stream, inner, unsafe {
-                    &event.payload.start_complete
-                })
+        let res = match event {
+            msquic::StreamEvent::StartComplete {
+                status,
+                id,
+                peer_accepted,
+            } => inner.handle_event_start_complete(status, id, peer_accepted),
+            msquic::StreamEvent::Receive {
+                absolute_offset,
+                total_buffer_length,
+                buffers,
+                flags,
+            } => inner.handle_event_receive(absolute_offset, total_buffer_length, buffers, flags),
+            msquic::StreamEvent::SendComplete {
+                cancelled,
+                client_context,
+            } => inner.handle_event_send_complete(cancelled, client_context),
+            msquic::StreamEvent::PeerSendShutdown => inner.handle_event_peer_send_shutdown(),
+            msquic::StreamEvent::PeerSendAborted { error_code } => {
+                inner.handle_event_peer_send_aborted(error_code)
             }
-            msquic::STREAM_EVENT_RECEIVE => {
-                Self::handle_event_receive(stream, inner, unsafe { &event.payload.receive })
+            msquic::StreamEvent::PeerReceiveAborted { error_code } => {
+                inner.handle_event_peer_receive_aborted(error_code)
             }
-            msquic::STREAM_EVENT_SEND_COMPLETE => {
-                Self::handle_event_send_complete(stream, inner, unsafe {
-                    &event.payload.send_complete
-                })
+            msquic::StreamEvent::SendShutdownComplete { graceful } => {
+                inner.handle_event_send_shutdown_complete(graceful)
             }
-            msquic::STREAM_EVENT_PEER_SEND_SHUTDOWN => {
-                Self::handle_event_peer_send_shutdown(stream, inner)
+            msquic::StreamEvent::ShutdownComplete {
+                connection_shutdown,
+                app_close_in_progress,
+                connection_shutdown_by_app,
+                connection_closed_remotely,
+                connection_error_code,
+                connection_close_status,
+            } => inner.handle_event_shutdown_complete(
+                connection_shutdown,
+                app_close_in_progress,
+                connection_shutdown_by_app,
+                connection_closed_remotely,
+                connection_error_code,
+                connection_close_status,
+            ),
+            msquic::StreamEvent::IdealSendBufferSize { byte_count } => {
+                inner.handle_event_ideal_send_buffer_size(byte_count)
             }
-            msquic::STREAM_EVENT_PEER_SEND_ABORTED => {
-                Self::handle_event_peer_send_aborted(stream, inner, unsafe {
-                    &event.payload.peer_send_aborted
-                })
-            }
-            msquic::STREAM_EVENT_PEER_RECEIVE_ABORTED => {
-                Self::handle_event_peer_receive_aborted(stream, inner, unsafe {
-                    &event.payload.peer_receive_aborted
-                })
-            }
-            msquic::STREAM_EVENT_SEND_SHUTDOWN_COMPLETE => {
-                Self::handle_event_send_shutdown_complete(stream, inner, unsafe {
-                    &event.payload.send_shutdown_complete
-                })
-            }
-            msquic::STREAM_EVENT_SHUTDOWN_COMPLETE => {
-                Self::handle_event_shutdown_complete(stream, inner, unsafe {
-                    &event.payload.shutdown_complete
-                })
-            }
-            msquic::STREAM_EVENT_IDEAL_SEND_BUFFER_SIZE => {
-                Self::handle_event_ideal_send_buffer_size(stream, inner, unsafe {
-                    &event.payload.ideal_send_buffer_size
-                })
-            }
-            msquic::STREAM_EVENT_PEER_ACCEPTED => Self::handle_event_peer_accepted(stream, inner),
+            msquic::StreamEvent::PeerAccepted => inner.handle_event_peer_accepted(),
             _ => {
-                trace!("Stream({:p}) Other callback {}", inner, event.event_type);
-                msquic::QUIC_STATUS_SUCCESS
+                trace!("Stream({:p}) Other callback {}", inner, ev_ref.Type);
+                msquic::StatusCode::QUIC_STATUS_SUCCESS
             }
-        }
+        };
+        res.into()
     }
 }
 
@@ -1525,7 +1511,7 @@ impl<T> From<(Option<T>, bool)> for WriteStatus<T> {
     }
 }
 
-#[derive(Debug, Error, Clone, PartialEq, Eq)]
+#[derive(Debug, Error, Clone)]
 pub enum StartError {
     #[error("connection not started yet")]
     ConnectionNotStarted,
@@ -1533,11 +1519,11 @@ pub enum StartError {
     LimitReached,
     #[error("connection lost")]
     ConnectionLost(#[from] ConnectionError),
-    #[error("other error: status 0x{0:x}")]
-    OtherError(u32),
+    #[error("other error: status {0:?}")]
+    OtherError(msquic::Status),
 }
 
-#[derive(Debug, Error, Clone, PartialEq, Eq)]
+#[derive(Debug, Error, Clone)]
 pub enum ReadError {
     #[error("stream not opened for reading")]
     Closed,
@@ -1545,8 +1531,8 @@ pub enum ReadError {
     Reset(u64),
     #[error("connection lost")]
     ConnectionLost(#[from] ConnectionError),
-    #[error("other error: status 0x{0:x}")]
-    OtherError(u32),
+    #[error("other error: status {0:?}")]
+    OtherError(msquic::Status),
 }
 
 impl From<ReadError> for std::io::Error {
@@ -1564,7 +1550,7 @@ impl From<ReadError> for std::io::Error {
     }
 }
 
-#[derive(Debug, Error, Clone, PartialEq, Eq)]
+#[derive(Debug, Error, Clone)]
 pub enum WriteError {
     #[error("stream not opened for writing")]
     Closed,
@@ -1574,8 +1560,8 @@ pub enum WriteError {
     Stopped(u64),
     #[error("connection lost")]
     ConnectionLost(#[from] ConnectionError),
-    #[error("other error: status 0x{0:x}")]
-    OtherError(u32),
+    #[error("other error: status {0:?}")]
+    OtherError(msquic::Status),
 }
 
 impl From<WriteError> for std::io::Error {

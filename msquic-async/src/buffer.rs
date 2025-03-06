@@ -14,7 +14,7 @@ use tracing::trace;
 /// It implements [`bytes::Buf`] and is backed by a list of [`msquic::Buffer`].
 pub struct StreamRecvBuffer {
     stream: Option<Arc<StreamInner>>,
-    buffers: Vec<msquic::Buffer>,
+    buffers: Vec<msquic::ffi::QUIC_BUFFER>,
     offset: usize,
     len: usize,
     read_cursor: usize,
@@ -23,12 +23,12 @@ pub struct StreamRecvBuffer {
 }
 
 impl StreamRecvBuffer {
-    pub(crate) fn new<T: AsRef<[msquic::Buffer]>>(offset: usize, buffers: &T, fin: bool) -> Self {
+    pub(crate) fn new<T: AsRef<[msquic::BufferRef]>+ ?Sized>(offset: usize, buffers: &T, fin: bool) -> Self {
         let buf = Self {
             stream: None,
-            buffers: buffers.as_ref().to_vec(),
+            buffers: buffers.as_ref().iter().map(|v| v.0).collect(),
             offset,
-            len: buffers.as_ref().iter().map(|x| x.length).sum::<u32>() as usize,
+            len: buffers.as_ref().iter().map(|x| x.0.Length).sum::<u32>() as usize,
             read_cursor: 0,
             read_cursor_in_buffer: 0,
             fin,
@@ -37,7 +37,7 @@ impl StreamRecvBuffer {
             "StreamRecvBuffer({:p}) created offset={} len={} fin={}",
             buf.buffers
                 .first()
-                .map(|x| x.buffer)
+                .map(|x| x.Buffer)
                 .unwrap_or(std::ptr::null_mut()),
             buf.offset,
             buf.len(),
@@ -51,7 +51,7 @@ impl StreamRecvBuffer {
             "StreamRecvBuffer({:p}) set StreamInner({:p})",
             self.buffers
                 .first()
-                .map(|x| x.buffer)
+                .map(|x| x.Buffer)
                 .unwrap_or(std::ptr::null_mut()),
             stream
         );
@@ -67,7 +67,7 @@ impl StreamRecvBuffer {
         self.len
             - self.buffers[..self.read_cursor]
                 .iter()
-                .map(|x| x.length)
+                .map(|x| x.Length)
                 .sum::<u32>() as usize
             - self.read_cursor_in_buffer
     }
@@ -84,9 +84,9 @@ impl StreamRecvBuffer {
         }
         assert!(self.buffers.len() >= self.read_cursor);
         let buffer = &self.buffers[self.read_cursor];
-        assert!(buffer.length as usize >= self.read_cursor_in_buffer);
-        let len = std::cmp::min(buffer.length as usize - self.read_cursor_in_buffer, size);
-        unsafe { slice::from_raw_parts(buffer.buffer.add(self.read_cursor_in_buffer), len) }
+        assert!(buffer.Length as usize >= self.read_cursor_in_buffer);
+        let len = std::cmp::min(buffer.Length as usize - self.read_cursor_in_buffer, size);
+        unsafe { slice::from_raw_parts(buffer.Buffer.add(self.read_cursor_in_buffer), len) }
     }
 
     /// Consumes and returns the buffer as a slice.
@@ -97,13 +97,13 @@ impl StreamRecvBuffer {
         assert!(self.buffers.len() >= self.read_cursor);
         let buffer = &self.buffers[self.read_cursor];
 
-        assert!(buffer.length as usize >= self.read_cursor_in_buffer);
-        let len = std::cmp::min(buffer.length as usize - self.read_cursor_in_buffer, size);
+        assert!(buffer.Length as usize >= self.read_cursor_in_buffer);
+        let len = std::cmp::min(buffer.Length as usize - self.read_cursor_in_buffer, size);
 
         let slice =
-            unsafe { slice::from_raw_parts(buffer.buffer.add(self.read_cursor_in_buffer), len) };
+            unsafe { slice::from_raw_parts(buffer.Buffer.add(self.read_cursor_in_buffer), len) };
         self.read_cursor_in_buffer += len;
-        if self.read_cursor_in_buffer >= buffer.length as usize {
+        if self.read_cursor_in_buffer >= buffer.Length as usize {
             self.read_cursor += 1;
             self.read_cursor_in_buffer = 0;
         }
@@ -136,7 +136,7 @@ impl Buf for StreamRecvBuffer {
             if count == 0 {
                 break;
             }
-            let remaining = buffer.length as usize - self.read_cursor_in_buffer;
+            let remaining = buffer.Length as usize - self.read_cursor_in_buffer;
             if count < remaining {
                 self.read_cursor_in_buffer += count;
                 break;
@@ -164,7 +164,7 @@ impl Buf for StreamRecvBuffer {
                 count += 1;
                 let skip = read_cursor_in_buffer.take().unwrap_or(0);
                 *slice = IoSlice::new(unsafe {
-                    slice::from_raw_parts(buffer.buffer.add(skip), buffer.length as usize - skip)
+                    slice::from_raw_parts(buffer.Buffer.add(skip), buffer.Length as usize - skip)
                 });
             } else {
                 break;
@@ -180,7 +180,7 @@ impl Drop for StreamRecvBuffer {
             "StreamRecvBuffer({:p}) dropping",
             self.buffers
                 .first()
-                .map(|x| x.buffer)
+                .map(|x| x.Buffer)
                 .unwrap_or(std::ptr::null_mut())
         );
         if let Some(stream) = self.stream.take() {
@@ -194,7 +194,6 @@ pub(crate) struct WriteBuffer(Box<WriteBufferInner>);
 struct WriteBufferInner {
     internal: Vec<u8>,
     zerocopy: Vec<Bytes>,
-    msquic_buffer: Vec<msquic::Buffer>,
 }
 unsafe impl Sync for WriteBufferInner {}
 unsafe impl Send for WriteBufferInner {}
@@ -204,7 +203,6 @@ impl WriteBuffer {
         Self(Box::new(WriteBufferInner {
             internal: Vec::new(),
             zerocopy: Vec::new(),
-            msquic_buffer: Vec::new(),
         }))
     }
 
@@ -222,17 +220,16 @@ impl WriteBuffer {
         slice.len()
     }
 
-    pub(crate) fn get_buffer(&mut self) -> (*const msquic::Buffer, u32) {
+    pub(crate) fn get_buffer(&mut self) -> Vec<msquic::BufferRef> {
         if !self.0.zerocopy.is_empty() {
+            let mut buffers = Vec::with_capacity(self.0.zerocopy.len());
             for buf in &self.0.zerocopy {
-                self.0.msquic_buffer.push(buf[..].into());
+                buffers.push(buf[..].into());
             }
+            buffers
         } else {
-            self.0.msquic_buffer.push((&self.0.internal).into());
+            vec![(&self.0.internal[..]).into()]
         }
-        let ptr = self.0.msquic_buffer.as_ptr();
-        let len = self.0.msquic_buffer.len() as u32;
-        (ptr, len)
     }
 
     pub(crate) fn into_raw(self) -> *mut c_void {
@@ -242,6 +239,5 @@ impl WriteBuffer {
     pub(crate) fn reset(&mut self) {
         self.0.internal.clear();
         self.0.zerocopy.clear();
-        self.0.msquic_buffer.clear();
     }
 }
