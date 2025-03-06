@@ -1,3 +1,5 @@
 {
-    "image":  "ghcr.io/microsoft/msquic/linux-build-xcomp"
+    "image":  "ghcr.io/microsoft/msquic/linux-build-xcomp",
+    "onCreateCommand": "sh ./.devcontainer/prepare.sh",
+    "runArgs": ["--privileged"]
 }
