@@ -144,7 +144,7 @@ async fn main() -> anyhow::Result<()> {
         configuration
             .load_credential(&cred_config)
             .map_err(|status| {
-                anyhow::anyhow!("Configuration::load_credential failed: 0x{:x}", status)
+                anyhow::anyhow!("Configuration::load_credential failed: {}", status)
             })?;
     };
 
