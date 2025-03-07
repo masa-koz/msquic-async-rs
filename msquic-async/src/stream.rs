@@ -616,11 +616,15 @@ impl StreamInstance {
         }
         let mut write_buf = exclusive.write_pool.pop().unwrap_or(WriteBuffer::new());
         let status = write_fn(&mut write_buf);
+        let buffers = unsafe {
+            let (data, len) = write_buf.get_buffers();
+            std::slice::from_raw_parts(data, len)
+        };
         match status {
             WriteStatus::Writable(val) | WriteStatus::Blocked(Some(val)) => {
                 match unsafe {
                     self.0.shared.msquic_stream.send(
-                        &write_buf.get_buffer(),
+                        buffers,
                         msquic::SEND_FLAG_NONE,
                         write_buf.into_raw() as *const _,
                     )
@@ -635,7 +639,7 @@ impl StreamInstance {
             WriteStatus::Finished(val) => {
                 match unsafe {
                     self.0.shared.msquic_stream.send(
-                        &write_buf.get_buffer(),
+                        buffers,
                         msquic::SEND_FLAG_FIN,
                         write_buf.into_raw() as *const _,
                     )
@@ -1236,7 +1240,6 @@ impl StreamInner {
         context: *mut c_void,
         event: *mut msquic::ffi::QUIC_STREAM_EVENT,
     ) -> msquic::ffi::QUIC_STATUS {
-        println!("context {:p}", context);
         let inner = unsafe { &*(context as *const Self) };
         let ev_ref = unsafe { event.as_ref().unwrap() };
         let event = msquic::StreamEvent::from(unsafe { event.as_mut().unwrap() });

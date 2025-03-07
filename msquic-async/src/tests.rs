@@ -225,7 +225,7 @@ async fn test_listener_accept() {
 
 /// Test for ['Connection::open_outbound_stream()']
 #[test(tokio::test)]
-async fn test_open_outbound_stream1() {
+async fn test_open_outbound_stream() {
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
     let registration = msquic::Registration::new(ptr::null()).unwrap();

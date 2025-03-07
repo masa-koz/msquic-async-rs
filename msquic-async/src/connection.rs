@@ -245,9 +245,13 @@ impl Connection {
 
         let mut write_buf = exclusive.write_pool.pop().unwrap_or(WriteBuffer::new());
         let _ = write_buf.put_zerocopy(buf);
+        let buffers = unsafe {
+            let (data, len) = write_buf.get_buffers();
+            std::slice::from_raw_parts(data, len)
+        };
         let res = unsafe {
             self.0.shared.msquic_conn.datagram_send(
-                &write_buf.get_buffer(),
+                buffers,
                 msquic::SEND_FLAG_NONE,
                 write_buf.into_raw() as *const _,
             )
@@ -276,9 +280,13 @@ impl Connection {
 
         let mut write_buf = exclusive.write_pool.pop().unwrap_or(WriteBuffer::new());
         let _ = write_buf.put_zerocopy(buf);
+        let buffers = unsafe {
+            let (data, len) = write_buf.get_buffers();
+            std::slice::from_raw_parts(data, len)
+        };
         unsafe {
             self.0.shared.msquic_conn.datagram_send(
-                &write_buf.get_buffer(),
+                &buffers,
                 msquic::SEND_FLAG_NONE,
                 write_buf.into_raw() as *const _,
             )

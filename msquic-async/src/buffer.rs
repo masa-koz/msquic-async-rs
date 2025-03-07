@@ -194,6 +194,7 @@ pub(crate) struct WriteBuffer(Box<WriteBufferInner>);
 struct WriteBufferInner {
     internal: Vec<u8>,
     zerocopy: Vec<Bytes>,
+    buffers: Vec<msquic::BufferRef>,
 }
 unsafe impl Sync for WriteBufferInner {}
 unsafe impl Send for WriteBufferInner {}
@@ -203,6 +204,7 @@ impl WriteBuffer {
         Self(Box::new(WriteBufferInner {
             internal: Vec::new(),
             zerocopy: Vec::new(),
+            buffers: Vec::new(),
         }))
     }
 
@@ -220,16 +222,17 @@ impl WriteBuffer {
         slice.len()
     }
 
-    pub(crate) fn get_buffer(&mut self) -> Vec<msquic::BufferRef> {
+    pub(crate) fn get_buffers(&mut self) -> (*const msquic::BufferRef, usize) {
         if !self.0.zerocopy.is_empty() {
-            let mut buffers = Vec::with_capacity(self.0.zerocopy.len());
             for buf in &self.0.zerocopy {
-                buffers.push(buf[..].into());
+                self.0.buffers.push(buf[..].into());
             }
-            buffers
         } else {
-            vec![(&self.0.internal[..]).into()]
+            self.0.buffers.push((&self.0.internal[..]).into());
         }
+        let ptr = self.0.buffers.as_ptr();
+        let len = self.0.buffers.len();
+        (ptr, len)
     }
 
     pub(crate) fn into_raw(self) -> *mut c_void {
@@ -239,5 +242,6 @@ impl WriteBuffer {
     pub(crate) fn reset(&mut self) {
         self.0.internal.clear();
         self.0.zerocopy.clear();
+        self.0.buffers.clear();
     }
 }
