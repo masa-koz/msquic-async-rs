@@ -1,6 +1,5 @@
 use super::{
-    Connection, ConnectionError, ConnectionStartError, ListenError, Listener, ReadError,
-    StreamRecvBuffer, StreamStartError, WriteError,
+    Connection, ConnectionError, ConnectionStartError, ListenError, Listener, StreamRecvBuffer,
 };
 
 use std::future::poll_fn;

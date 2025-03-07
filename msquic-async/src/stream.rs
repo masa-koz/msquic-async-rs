@@ -51,7 +51,7 @@ impl Stream {
                 msquic_conn,
                 flags,
                 Some(StreamInner::native_callback),
-                std::ptr::null() as *const c_void,
+                std::ptr::null(),
             )
             .map_err(StartError::OtherError)?;
         unsafe {
@@ -383,7 +383,6 @@ impl StreamInstance {
         if id.is_some() {
             id
         } else {
-            let id = 0u64;
             let res = unsafe {
                 msquic::Api::get_param_auto::<u64>(
                     self.0.shared.msquic_stream.as_raw(),
@@ -829,7 +828,7 @@ impl Drop for StreamInstance {
                 exclusive.recv_len - exclusive.read_complete_cursor
             );
             exclusive.recv_buffers.clear();
-            let _ = self
+            self
                 .0
                 .shared
                 .msquic_stream
@@ -996,7 +995,7 @@ impl StreamInner {
                 self,
                 complete_len
             );
-            let _ = self
+            self
                 .shared
                 .msquic_stream
                 .receive_complete(complete_len as u64);
@@ -1159,7 +1158,7 @@ impl StreamInner {
     fn handle_event_shutdown_complete(
         &self,
         connection_shutdown: bool,
-        app_close_in_progress: bool,
+        _app_close_in_progress: bool,
         connection_shutdown_by_app: bool,
         connection_closed_remotely: bool,
         connection_error_code: u64,

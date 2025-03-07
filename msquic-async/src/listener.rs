@@ -28,7 +28,7 @@ impl Listener {
             .open(
                 registration,
                 Some(ListenerInner::native_callback),
-                std::ptr::null() as *const c_void,
+                std::ptr::null(),
             )
             .map_err(ListenError::OtherError)?;
         unsafe {

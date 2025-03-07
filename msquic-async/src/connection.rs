@@ -32,7 +32,7 @@ impl Connection {
             .open(
                 registration,
                 Some(ConnectionInner::native_callback),
-                std::ptr::null() as *const c_void,
+                std::ptr::null(),
             )
             .map_err(ConnectionError::OtherError)?;
         unsafe {
@@ -286,7 +286,7 @@ impl Connection {
         };
         unsafe {
             self.0.shared.msquic_conn.datagram_send(
-                &buffers,
+                buffers,
                 msquic::SEND_FLAG_NONE,
                 write_buf.into_raw() as *const _,
             )
@@ -587,7 +587,7 @@ impl ConnectionInner {
     fn handle_event_datagram_received(
         &self,
         buffer: &msquic::BufferRef,
-        flags: u32,
+        _flags: u32,
     ) -> msquic::StatusCode {
         trace!("Connection({:p}) Datagram received", self);
         let buf = Bytes::copy_from_slice(buffer.as_bytes());
