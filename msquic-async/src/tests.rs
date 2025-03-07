@@ -118,7 +118,6 @@ async fn test_connection_poll_shutdown() {
     set.spawn(async move {
         let conn = listener.accept().await.unwrap();
         server_rx.recv().await.unwrap();
-
         let res = conn
             .open_outbound_stream(crate::StreamType::Bidirectional, false)
             .await;
@@ -226,7 +225,7 @@ async fn test_listener_accept() {
 
 /// Test for ['Connection::open_outbound_stream()']
 #[test(tokio::test)]
-async fn test_open_outbound_stream() {
+async fn test_open_outbound_stream1() {
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
     let registration = msquic::Registration::new(ptr::null()).unwrap();

@@ -16,20 +16,28 @@ pub struct Listener(Arc<ListenerInner>);
 impl Listener {
     /// Create a new listener.
     pub fn new(
-        mut msquic_listener: msquic::Listener,
+        msquic_listener: msquic::Listener,
         registration: &msquic::Registration,
         configuration: msquic::Configuration,
     ) -> Result<Self, ListenError> {
-        let dummy_msquic_listener = msquic::Listener::new();
-        let mut inner = Arc::new(ListenerInner::new(dummy_msquic_listener, configuration));
-        msquic_listener
+        let mut inner = Arc::new(ListenerInner::new(msquic_listener, configuration));
+        Arc::get_mut(&mut inner)
+            .unwrap()
+            .shared
+            .msquic_listener
             .open(
                 registration,
                 Some(ListenerInner::native_callback),
-                Arc::into_raw(inner.clone()) as *const c_void,
+                std::ptr::null() as *const c_void,
             )
             .map_err(ListenError::OtherError)?;
-        Arc::get_mut(&mut inner).unwrap().shared.msquic_listener = msquic_listener;
+        unsafe {
+            msquic::Api::set_callback_handler(
+                inner.shared.msquic_listener.as_raw(),
+                ListenerInner::native_callback as *const c_void,
+                Arc::into_raw(inner.clone()) as *const c_void,
+            );
+        }
         Ok(Self(inner))
     }
 
@@ -125,6 +133,12 @@ impl Listener {
     }
 }
 
+impl Drop for Listener {
+    fn drop(&mut self) {
+        self.0.shared.msquic_listener.stop();
+    }
+}
+
 struct ListenerInner {
     exclusive: Mutex<ListenerInnerExclusive>,
     shared: ListenerInnerShared,
@@ -191,7 +205,7 @@ impl ListenerInner {
         msquic::StatusCode::QUIC_STATUS_SUCCESS
     }
 
-    fn handle_event_stop_complete(&self, app_close_in_progress: bool) -> msquic::StatusCode {
+    fn handle_event_stop_complete(&self, _app_close_in_progress: bool) -> msquic::StatusCode {
         trace!("Listener({:p}) stop complete", self);
         {
             let mut exclusive = self.exclusive.lock().unwrap();

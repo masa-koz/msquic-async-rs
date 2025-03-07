@@ -21,19 +21,26 @@ impl Connection {
     ///
     /// The connection is not started until `start` is called.
     pub fn new(
-        mut msquic_conn: msquic::Connection,
+        msquic_conn: msquic::Connection,
         registration: &msquic::Registration,
     ) -> Result<Self, ConnectionError> {
-        let dummy_msquic_conn = msquic::Connection::new();
-        let mut inner = Arc::new(ConnectionInner::new(dummy_msquic_conn, ConnectionState::Open));
-        msquic_conn
+        let mut inner = Arc::new(ConnectionInner::new(msquic_conn, ConnectionState::Open));
+        Arc::get_mut(&mut inner)
+            .unwrap()
+            .shared
+            .msquic_conn
             .open(
                 registration,
                 Some(ConnectionInner::native_callback),
-                Arc::into_raw(inner.clone()) as *const c_void,
+                std::ptr::null() as *const c_void,
             )
             .map_err(ConnectionError::OtherError)?;
-        Arc::get_mut(&mut inner).unwrap().shared.msquic_conn = msquic_conn;
+        unsafe {
+            inner.shared.msquic_conn.set_callback_handler(
+                Some(ConnectionInner::native_callback),
+                Arc::into_raw(inner.clone()) as *const c_void,
+            );
+        }
         trace!("Connection({:p}) Open by local", &*inner);
         Ok(Self(Arc::new(ConnectionInstance(inner))))
     }
@@ -97,13 +104,6 @@ impl Connection {
         }
         exclusive.start_waiters.push(cx.waker().clone());
         Poll::Pending
-    }
-
-    pub(crate) fn set_configuration(
-        &self,
-        configuration: &msquic::Configuration,
-    ) -> Result<(), msquic::Status> {
-        self.0.shared.msquic_conn.set_configuration(configuration)
     }
 
     /// Open a new outbound stream.

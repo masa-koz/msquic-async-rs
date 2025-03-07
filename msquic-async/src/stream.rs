@@ -30,29 +30,36 @@ impl Stream {
         msquic_conn: &msquic::Connection,
         stream_type: StreamType,
     ) -> Result<Self, StartError> {
-        let dummy_msquic_stream = msquic::Stream::new();
-        let mut msquic_stream = msquic::Stream::new();
+        let msquic_stream = msquic::Stream::new();
         let flags = if stream_type == StreamType::Unidirectional {
             msquic::STREAM_OPEN_FLAG_UNIDIRECTIONAL
         } else {
             msquic::STREAM_OPEN_FLAG_NONE
         };
         let mut inner = Arc::new(StreamInner::new(
-            dummy_msquic_stream,
+            msquic_stream,
             stream_type,
             StreamSendState::Closed,
             StreamRecvState::Closed,
             true,
         ));
-        msquic_stream
+        Arc::get_mut(&mut inner)
+            .unwrap()
+            .shared
+            .msquic_stream
             .open(
                 msquic_conn,
                 flags,
                 Some(StreamInner::native_callback),
-                Arc::into_raw(inner.clone()) as *const c_void,
+                std::ptr::null() as *const c_void,
             )
             .map_err(StartError::OtherError)?;
-        Arc::get_mut(&mut inner).unwrap().shared.msquic_stream = msquic_stream;
+        unsafe {
+            inner.shared.msquic_stream.set_callback_handler(
+                Some(StreamInner::native_callback),
+                Arc::into_raw(inner.clone()) as *const c_void,
+            );
+        }
         trace!("Stream({:p}) Open by local", &*inner);
 
         Ok(Self(Arc::new(StreamInstance(inner))))
@@ -1225,10 +1232,11 @@ impl StreamInner {
     }
 
     extern "C" fn native_callback(
-        stream: msquic::ffi::HQUIC,
+        _stream: msquic::ffi::HQUIC,
         context: *mut c_void,
         event: *mut msquic::ffi::QUIC_STREAM_EVENT,
     ) -> msquic::ffi::QUIC_STATUS {
+        println!("context {:p}", context);
         let inner = unsafe { &*(context as *const Self) };
         let ev_ref = unsafe { event.as_ref().unwrap() };
         let event = msquic::StreamEvent::from(unsafe { event.as_mut().unwrap() });
