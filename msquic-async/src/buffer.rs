@@ -11,7 +11,7 @@ use tracing::trace;
 
 /// A buffer for receiving data from a stream.
 ///
-/// It implements [`bytes::Buf`] and is backed by a list of [`msquic::Buffer`].
+/// It implements [`bytes::Buf`] and is backed by a list of [`msquic::ffi::QUIC_BUFFER`].
 pub struct StreamRecvBuffer {
     stream: Option<Arc<StreamInner>>,
     buffers: Vec<msquic::ffi::QUIC_BUFFER>,
