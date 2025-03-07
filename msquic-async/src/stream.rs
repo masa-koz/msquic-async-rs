@@ -1042,7 +1042,7 @@ impl StreamInner {
         absolute_offset: u64,
         total_buffer_length: &mut u64,
         buffers: &[msquic::BufferRef],
-        flags: u32,
+        flags: msquic::ffi::QUIC_RECEIVE_FLAGS,
     ) -> msquic::StatusCode {
         trace!(
             "Stream({:p}, id={:?}) Receive {} offsets {} bytes, fin {}",
@@ -1050,7 +1050,8 @@ impl StreamInner {
             self.shared.id.read(),
             absolute_offset,
             total_buffer_length,
-            (flags & msquic::RECEIVE_FLAG_FIN) == msquic::RECEIVE_FLAG_FIN
+            (flags & msquic::ffi::QUIC_RECEIVE_FLAGS_QUIC_RECEIVE_FLAG_FIN)
+                == msquic::ffi::QUIC_RECEIVE_FLAGS_QUIC_RECEIVE_FLAG_FIN
         );
 
         let arc_inner: Arc<Self> = unsafe { Arc::from_raw(self as *const _) };
@@ -1058,7 +1059,8 @@ impl StreamInner {
         let recv_buffer = StreamRecvBuffer::new(
             absolute_offset as usize,
             buffers,
-            (flags & msquic::RECEIVE_FLAG_FIN) == msquic::RECEIVE_FLAG_FIN,
+            (flags & msquic::ffi::QUIC_RECEIVE_FLAGS_QUIC_RECEIVE_FLAG_FIN)
+                == msquic::ffi::QUIC_RECEIVE_FLAGS_QUIC_RECEIVE_FLAG_FIN,
         );
 
         let _ = Arc::into_raw(arc_inner);

@@ -517,9 +517,12 @@ impl ConnectionInner {
     fn handle_event_peer_stream_started(
         &self,
         stream: msquic::StreamRef,
-        flags: u32,
+        flags: msquic::ffi::QUIC_STREAM_OPEN_FLAGS,
     ) -> msquic::StatusCode {
-        let stream_type = if (flags & msquic::STREAM_OPEN_FLAG_UNIDIRECTIONAL) != 0 {
+        let stream_type = if (flags
+            & msquic::ffi::QUIC_STREAM_OPEN_FLAGS_QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL)
+            != 0
+        {
             StreamType::Unidirectional
         } else {
             StreamType::Bidirectional
@@ -531,7 +534,7 @@ impl ConnectionInner {
         );
 
         let stream = Stream::from_raw(unsafe { stream.as_raw() }, stream_type);
-        if (flags & msquic::STREAM_OPEN_FLAG_UNIDIRECTIONAL) != 0 {
+        if (flags & msquic::ffi::QUIC_STREAM_OPEN_FLAGS_QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL) != 0 {
             if let (Some(read_stream), None) = stream.split() {
                 let mut exclusive = self.exclusive.lock().unwrap();
                 exclusive.inbound_uni_streams.push_back(read_stream);
@@ -587,7 +590,7 @@ impl ConnectionInner {
     fn handle_event_datagram_received(
         &self,
         buffer: &msquic::BufferRef,
-        _flags: u32,
+        _flags: msquic::ffi::QUIC_RECEIVE_FLAGS,
     ) -> msquic::StatusCode {
         trace!("Connection({:p}) Datagram received", self);
         let buf = Bytes::copy_from_slice(buffer.as_bytes());
@@ -605,7 +608,7 @@ impl ConnectionInner {
     fn handle_event_datagram_send_state_changed(
         &self,
         client_context: *const c_void,
-        state: u32,
+        state: msquic::ffi::QUIC_DATAGRAM_SEND_STATE,
     ) -> msquic::StatusCode {
         trace!(
             "Connection({:p}) Datagram send state changed state:{}",
@@ -613,7 +616,8 @@ impl ConnectionInner {
             state
         );
         match state {
-            msquic::DATAGRAM_SEND_SENT | msquic::DATAGRAM_SEND_CANCELED => {
+            msquic::ffi::QUIC_DATAGRAM_SEND_STATE_QUIC_DATAGRAM_SEND_SENT
+            | msquic::ffi::QUIC_DATAGRAM_SEND_STATE_QUIC_DATAGRAM_SEND_CANCELED => {
                 let mut write_buf = unsafe { WriteBuffer::from_raw(client_context) };
                 let mut exclusive = self.exclusive.lock().unwrap();
                 write_buf.reset();
