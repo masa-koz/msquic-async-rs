@@ -828,8 +828,7 @@ impl Drop for StreamInstance {
                 exclusive.recv_len - exclusive.read_complete_cursor
             );
             exclusive.recv_buffers.clear();
-            self
-                .0
+            self.0
                 .shared
                 .msquic_stream
                 .receive_complete((exclusive.recv_len - exclusive.read_complete_cursor) as u64);
@@ -995,8 +994,7 @@ impl StreamInner {
                 self,
                 complete_len
             );
-            self
-                .shared
+            self.shared
                 .msquic_stream
                 .receive_complete(complete_len as u64);
         }

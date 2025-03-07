@@ -29,12 +29,14 @@ async fn main() -> anyhow::Result<()> {
     let configuration = msquic::Configuration::new(
         &registration,
         &alpn,
-        Some(&msquic::Settings::new()
-            .set_IdleTimeoutMs(10000)
-            .set_PeerBidiStreamCount(100)
-            .set_PeerUnidiStreamCount(100)
-            .set_DatagramReceiveEnabled()
-            .set_StreamMultiReceiveEnabled()),
+        Some(
+            &msquic::Settings::new()
+                .set_IdleTimeoutMs(10000)
+                .set_PeerBidiStreamCount(100)
+                .set_PeerUnidiStreamCount(100)
+                .set_DatagramReceiveEnabled()
+                .set_StreamMultiReceiveEnabled(),
+        ),
     )
     .map_err(|status| anyhow::anyhow!("Configuration::new failed: {}", status))?;
 

@@ -23,7 +23,11 @@ pub struct StreamRecvBuffer {
 }
 
 impl StreamRecvBuffer {
-    pub(crate) fn new<T: AsRef<[msquic::BufferRef]>+ ?Sized>(offset: usize, buffers: &T, fin: bool) -> Self {
+    pub(crate) fn new<T: AsRef<[msquic::BufferRef]> + ?Sized>(
+        offset: usize,
+        buffers: &T,
+        fin: bool,
+    ) -> Self {
         let buf = Self {
             stream: None,
             buffers: buffers.as_ref().iter().map(|v| v.0).collect(),

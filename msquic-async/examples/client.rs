@@ -20,12 +20,14 @@ async fn main() -> anyhow::Result<()> {
     let configuration = msquic::Configuration::new(
         &registration,
         &alpn,
-        Some(&msquic::Settings::new()
-            .set_IdleTimeoutMs(10000)
-            .set_PeerBidiStreamCount(100)
-            .set_PeerUnidiStreamCount(100)
-            .set_DatagramReceiveEnabled()
-            .set_StreamMultiReceiveEnabled()),
+        Some(
+            &msquic::Settings::new()
+                .set_IdleTimeoutMs(10000)
+                .set_PeerBidiStreamCount(100)
+                .set_PeerUnidiStreamCount(100)
+                .set_DatagramReceiveEnabled()
+                .set_StreamMultiReceiveEnabled(),
+        ),
     )
     .map_err(|status| anyhow::anyhow!("Configuration::new failed: {}", status))?;
 
@@ -33,9 +35,7 @@ async fn main() -> anyhow::Result<()> {
     cred_config.cred_flags |= msquic::CREDENTIAL_FLAG_NO_CERTIFICATE_VALIDATION;
     configuration
         .load_credential(&cred_config)
-        .map_err(|status| {
-            anyhow::anyhow!("Configuration::load_credential failed: {}", status)
-        })?;
+        .map_err(|status| anyhow::anyhow!("Configuration::load_credential failed: {}", status))?;
 
     let conn = msquic_async::Connection::new(msquic::Connection::new(), &registration)?;
     conn.start(&configuration, "127.0.0.1", 4567).await?;
