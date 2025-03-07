@@ -76,16 +76,15 @@ impl fmt::Display for ConnectionError {
 
 impl Error for ConnectionError {
     fn is_timeout(&self) -> bool {
-        matches!(
-            self.0,
-            msquic_async::ConnectionError::ShutdownByTransport(
-                msquic::QUIC_STATUS_CONNECTION_TIMEOUT,
-                _
-            ) | msquic_async::ConnectionError::ShutdownByTransport(
-                msquic::QUIC_STATUS_CONNECTION_IDLE,
-                _
+        if let msquic_async::ConnectionError::ShutdownByTransport(status, _) = &self.0 {
+            matches!(
+                status.try_as_status_code().unwrap(),
+                msquic::StatusCode::QUIC_STATUS_CONNECTION_TIMEOUT
+                    | msquic::StatusCode::QUIC_STATUS_CONNECTION_IDLE
             )
-        )
+        } else {
+            false
+        }
     }
 
     fn err_code(&self) -> Option<u64> {
@@ -115,20 +114,19 @@ impl fmt::Display for StreamStartError {
 
 impl Error for StreamStartError {
     fn is_timeout(&self) -> bool {
-        matches!(
-            self.0,
-            msquic_async::StreamStartError::ConnectionLost(
-                msquic_async::ConnectionError::ShutdownByTransport(
-                    msquic::QUIC_STATUS_CONNECTION_TIMEOUT,
-                    _
+        if let msquic_async::StreamStartError::ConnectionLost(error) = &self.0 {
+            if let msquic_async::ConnectionError::ShutdownByTransport(status, _) = error {
+                matches!(
+                    status.try_as_status_code().unwrap(),
+                    msquic::StatusCode::QUIC_STATUS_CONNECTION_TIMEOUT
+                        | msquic::StatusCode::QUIC_STATUS_CONNECTION_IDLE
                 )
-            ) | msquic_async::StreamStartError::ConnectionLost(
-                msquic_async::ConnectionError::ShutdownByTransport(
-                    msquic::QUIC_STATUS_CONNECTION_IDLE,
-                    _
-                )
-            )
-        )
+            } else {
+                false
+            }
+        } else {
+            false
+        }
     }
 
     fn err_code(&self) -> Option<u64> {
@@ -160,20 +158,19 @@ impl fmt::Display for RecvDatagramError {
 
 impl Error for RecvDatagramError {
     fn is_timeout(&self) -> bool {
-        matches!(
-            self.0,
-            msquic_async::DgramReceiveError::ConnectionLost(
-                msquic_async::ConnectionError::ShutdownByTransport(
-                    msquic::QUIC_STATUS_CONNECTION_TIMEOUT,
-                    _
+        if let msquic_async::DgramReceiveError::ConnectionLost(error) = &self.0 {
+            if let msquic_async::ConnectionError::ShutdownByTransport(status, _) = error {
+                matches!(
+                    status.try_as_status_code().unwrap(),
+                    msquic::StatusCode::QUIC_STATUS_CONNECTION_TIMEOUT
+                        | msquic::StatusCode::QUIC_STATUS_CONNECTION_IDLE
                 )
-            ) | msquic_async::DgramReceiveError::ConnectionLost(
-                msquic_async::ConnectionError::ShutdownByTransport(
-                    msquic::QUIC_STATUS_CONNECTION_IDLE,
-                    _
-                )
-            )
-        )
+            } else {
+                false
+            }
+        } else {
+            false
+        }
     }
 
     fn err_code(&self) -> Option<u64> {
@@ -206,7 +203,7 @@ pub enum SendDatagramError {
     /// Network error
     ConnectionLost(Box<dyn Error>),
     /// Other error
-    OtherError(u32),
+    OtherError(msquic::Status),
 }
 
 impl fmt::Display for SendDatagramError {
@@ -217,7 +214,7 @@ impl fmt::Display for SendDatagramError {
             SendDatagramError::Disabled => write!(f, "datagram support disabled"),
             SendDatagramError::TooLarge => write!(f, "datagram too large"),
             SendDatagramError::ConnectionLost(_) => write!(f, "connection lost"),
-            SendDatagramError::OtherError(code) => write!(f, "other error: Status 0x{:x}", code),
+            SendDatagramError::OtherError(status) => write!(f, "other error: {}", status),
         }
     }
 }
@@ -672,20 +669,19 @@ impl From<msquic_async::ReadError> for ReadError {
 
 impl Error for ReadError {
     fn is_timeout(&self) -> bool {
-        matches!(
-            self.0,
-            msquic_async::ReadError::ConnectionLost(
-                msquic_async::ConnectionError::ShutdownByTransport(
-                    msquic::QUIC_STATUS_CONNECTION_TIMEOUT,
-                    _
+        if let msquic_async::ReadError::ConnectionLost(error) = &self.0 {
+            if let msquic_async::ConnectionError::ShutdownByTransport(status, _) = error {
+                matches!(
+                    status.try_as_status_code().unwrap(),
+                    msquic::StatusCode::QUIC_STATUS_CONNECTION_TIMEOUT
+                        | msquic::StatusCode::QUIC_STATUS_CONNECTION_IDLE
                 )
-            ) | msquic_async::ReadError::ConnectionLost(
-                msquic_async::ConnectionError::ShutdownByTransport(
-                    msquic::QUIC_STATUS_CONNECTION_IDLE,
-                    _
-                )
-            )
-        )
+            } else {
+                false
+            }
+        } else {
+            false
+        }
     }
 
     fn err_code(&self) -> Option<u64> {
@@ -867,20 +863,23 @@ impl From<msquic_async::WriteError> for SendStreamError {
 
 impl Error for SendStreamError {
     fn is_timeout(&self) -> bool {
-        matches!(
-            self,
-            Self::Write(msquic_async::WriteError::ConnectionLost(
-                msquic_async::ConnectionError::ShutdownByTransport(
-                    msquic::QUIC_STATUS_CONNECTION_TIMEOUT,
-                    _
-                )
-            )) | Self::Write(msquic_async::WriteError::ConnectionLost(
-                msquic_async::ConnectionError::ShutdownByTransport(
-                    msquic::QUIC_STATUS_CONNECTION_IDLE,
-                    _
-                )
-            ))
-        )
+        if let Self::Write(write_error) = &self {
+            if let msquic_async::WriteError::ConnectionLost(error) = write_error {
+                if let msquic_async::ConnectionError::ShutdownByTransport(status, _) = error {
+                    matches!(
+                        status.try_as_status_code().unwrap(),
+                        msquic::StatusCode::QUIC_STATUS_CONNECTION_TIMEOUT
+                            | msquic::StatusCode::QUIC_STATUS_CONNECTION_IDLE
+                    )
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        }
     }
 
     fn err_code(&self) -> Option<u64> {
