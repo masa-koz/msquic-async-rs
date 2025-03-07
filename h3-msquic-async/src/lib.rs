@@ -114,16 +114,15 @@ impl fmt::Display for StreamStartError {
 
 impl Error for StreamStartError {
     fn is_timeout(&self) -> bool {
-        if let msquic_async::StreamStartError::ConnectionLost(error) = &self.0 {
-            if let msquic_async::ConnectionError::ShutdownByTransport(status, _) = error {
-                matches!(
-                    status.try_as_status_code().unwrap(),
-                    msquic::StatusCode::QUIC_STATUS_CONNECTION_TIMEOUT
-                        | msquic::StatusCode::QUIC_STATUS_CONNECTION_IDLE
-                )
-            } else {
-                false
-            }
+        if let msquic_async::StreamStartError::ConnectionLost(
+            msquic_async::ConnectionError::ShutdownByTransport(status, _),
+        ) = &self.0
+        {
+            matches!(
+                status.try_as_status_code().unwrap(),
+                msquic::StatusCode::QUIC_STATUS_CONNECTION_TIMEOUT
+                    | msquic::StatusCode::QUIC_STATUS_CONNECTION_IDLE
+            )
         } else {
             false
         }
@@ -158,16 +157,15 @@ impl fmt::Display for RecvDatagramError {
 
 impl Error for RecvDatagramError {
     fn is_timeout(&self) -> bool {
-        if let msquic_async::DgramReceiveError::ConnectionLost(error) = &self.0 {
-            if let msquic_async::ConnectionError::ShutdownByTransport(status, _) = error {
-                matches!(
-                    status.try_as_status_code().unwrap(),
-                    msquic::StatusCode::QUIC_STATUS_CONNECTION_TIMEOUT
-                        | msquic::StatusCode::QUIC_STATUS_CONNECTION_IDLE
-                )
-            } else {
-                false
-            }
+        if let msquic_async::DgramReceiveError::ConnectionLost(
+            msquic_async::ConnectionError::ShutdownByTransport(status, _),
+        ) = &self.0
+        {
+            matches!(
+                status.try_as_status_code().unwrap(),
+                msquic::StatusCode::QUIC_STATUS_CONNECTION_TIMEOUT
+                    | msquic::StatusCode::QUIC_STATUS_CONNECTION_IDLE
+            )
         } else {
             false
         }
@@ -669,16 +667,15 @@ impl From<msquic_async::ReadError> for ReadError {
 
 impl Error for ReadError {
     fn is_timeout(&self) -> bool {
-        if let msquic_async::ReadError::ConnectionLost(error) = &self.0 {
-            if let msquic_async::ConnectionError::ShutdownByTransport(status, _) = error {
-                matches!(
-                    status.try_as_status_code().unwrap(),
-                    msquic::StatusCode::QUIC_STATUS_CONNECTION_TIMEOUT
-                        | msquic::StatusCode::QUIC_STATUS_CONNECTION_IDLE
-                )
-            } else {
-                false
-            }
+        if let msquic_async::ReadError::ConnectionLost(
+            msquic_async::ConnectionError::ShutdownByTransport(status, _),
+        ) = &self.0
+        {
+            matches!(
+                status.try_as_status_code().unwrap(),
+                msquic::StatusCode::QUIC_STATUS_CONNECTION_TIMEOUT
+                    | msquic::StatusCode::QUIC_STATUS_CONNECTION_IDLE
+            )
         } else {
             false
         }
@@ -863,20 +860,15 @@ impl From<msquic_async::WriteError> for SendStreamError {
 
 impl Error for SendStreamError {
     fn is_timeout(&self) -> bool {
-        if let Self::Write(write_error) = &self {
-            if let msquic_async::WriteError::ConnectionLost(error) = write_error {
-                if let msquic_async::ConnectionError::ShutdownByTransport(status, _) = error {
-                    matches!(
-                        status.try_as_status_code().unwrap(),
-                        msquic::StatusCode::QUIC_STATUS_CONNECTION_TIMEOUT
-                            | msquic::StatusCode::QUIC_STATUS_CONNECTION_IDLE
-                    )
-                } else {
-                    false
-                }
-            } else {
-                false
-            }
+        if let Self::Write(msquic_async::WriteError::ConnectionLost(
+            msquic_async::ConnectionError::ShutdownByTransport(status, _),
+        )) = &self
+        {
+            matches!(
+                status.try_as_status_code().unwrap(),
+                msquic::StatusCode::QUIC_STATUS_CONNECTION_TIMEOUT
+                    | msquic::StatusCode::QUIC_STATUS_CONNECTION_IDLE
+            )
         } else {
             false
         }
