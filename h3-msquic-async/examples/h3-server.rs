@@ -32,21 +32,23 @@ async fn main() -> anyhow::Result<()> {
     let root = Arc::new(cmd_opts.root);
 
     let registration = msquic::Registration::new(ptr::null())
-        .map_err(|status| anyhow::anyhow!("Registration::new failed: 0x{:x}", status))?;
-    let alpn = [msquic::Buffer::from("h3")];
+        .map_err(|status| anyhow::anyhow!("Registration::new failed: {}", status))?;
+    let alpn = [msquic::BufferRef::from("h3")];
 
     // create msquic-async listener
     let configuration = msquic::Configuration::new(
         &registration,
         &alpn,
-        msquic::Settings::new()
-            .set_idle_timeout_ms(10000)
-            .set_peer_bidi_stream_count(100)
-            .set_peer_unidi_stream_count(100)
-            .set_datagram_receive_enabled(true)
-            .set_stream_multi_receive_enabled(true),
+        Some(
+            &msquic::Settings::new()
+                .set_IdleTimeoutMs(10000)
+                .set_PeerBidiStreamCount(100)
+                .set_PeerUnidiStreamCount(100)
+                .set_DatagramReceiveEnabled()
+                .set_StreamMultiReceiveEnabled(),
+        ),
     )
-    .map_err(|status| anyhow::anyhow!("Configuration::new failed: 0x{:x}", status))?;
+    .map_err(|status| anyhow::anyhow!("Configuration::new failed: {}", status))?;
 
     #[cfg(not(feature = "tls-schannel"))]
     {
@@ -85,7 +87,7 @@ async fn main() -> anyhow::Result<()> {
         configuration
             .load_credential(&cred_config)
             .map_err(|status| {
-                anyhow::anyhow!("Configuration::load_credential failed: 0x{:x}", status)
+                anyhow::anyhow!("Configuration::load_credential failed: {}", status)
             })?;
     }
 
@@ -142,7 +144,7 @@ async fn main() -> anyhow::Result<()> {
         configuration
             .load_credential(&cred_config)
             .map_err(|status| {
-                anyhow::anyhow!("Configuration::load_credential failed: 0x{:x}", status)
+                anyhow::anyhow!("Configuration::load_credential failed: {}", status)
             })?;
     };
 
@@ -150,7 +152,7 @@ async fn main() -> anyhow::Result<()> {
         msquic_async::Listener::new(msquic::Listener::new(), &registration, configuration)?;
 
     let addr: SocketAddr = "127.0.0.1:8443".parse()?;
-    listener.start(&[msquic::Buffer::from("h3")], Some(addr))?;
+    listener.start(&[msquic::BufferRef::from("h3")], Some(addr))?;
     let server_addr = listener.local_addr()?;
 
     info!("listening on {}", server_addr);

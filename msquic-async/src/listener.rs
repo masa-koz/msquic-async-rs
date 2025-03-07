@@ -3,7 +3,7 @@ use crate::connection::Connection;
 use std::collections::VecDeque;
 use std::future::Future;
 use std::net::SocketAddr;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 
 use libc::c_void;
@@ -11,7 +11,7 @@ use thiserror::Error;
 use tracing::trace;
 
 /// Listener for incoming connections.
-pub struct Listener(Box<ListenerInner>);
+pub struct Listener(Arc<ListenerInner>);
 
 impl Listener {
     /// Create a new listener.
@@ -20,23 +20,29 @@ impl Listener {
         registration: &msquic::Registration,
         configuration: msquic::Configuration,
     ) -> Result<Self, ListenError> {
-        let inner = Box::new(ListenerInner::new(msquic_listener, configuration));
-        {
-            inner
-                .shared
-                .msquic_listener
-                .open(
-                    registration,
-                    ListenerInner::native_callback,
-                    &*inner as *const _ as *const c_void,
-                )
-                .map_err(ListenError::OtherError)?;
+        let mut inner = Arc::new(ListenerInner::new(msquic_listener, configuration));
+        Arc::get_mut(&mut inner)
+            .unwrap()
+            .shared
+            .msquic_listener
+            .open(
+                registration,
+                Some(ListenerInner::native_callback),
+                std::ptr::null(),
+            )
+            .map_err(ListenError::OtherError)?;
+        unsafe {
+            msquic::Api::set_callback_handler(
+                inner.shared.msquic_listener.as_raw(),
+                ListenerInner::native_callback as *const c_void,
+                Arc::into_raw(inner.clone()) as *const c_void,
+            );
         }
         Ok(Self(inner))
     }
 
     /// Start the listener.
-    pub fn start<T: AsRef<[msquic::Buffer]>>(
+    pub fn start<T: AsRef<[msquic::BufferRef]>>(
         &self,
         alpn: &T,
         local_address: Option<SocketAddr>,
@@ -127,6 +133,12 @@ impl Listener {
     }
 }
 
+impl Drop for Listener {
+    fn drop(&mut self) {
+        self.0.shared.msquic_listener.stop();
+    }
+}
+
 struct ListenerInner {
     exclusive: Mutex<ListenerInnerExclusive>,
     shared: ListenerInnerShared,
@@ -173,64 +185,66 @@ impl ListenerInner {
     }
 
     fn handle_event_new_connection(
-        inner: &Self,
-        payload: &msquic::ListenerEventNewConnection,
-    ) -> u32 {
-        trace!("Listener({:p}) new connection event", inner);
+        &self,
+        _info: msquic::NewConnectionInfo<'_>,
+        connection: msquic::Connection,
+    ) -> msquic::StatusCode {
+        trace!("Listener({:p}) new connection event", self);
 
-        let new_conn = Connection::from_handle(payload.connection);
-        if let Err(status) = new_conn.set_configuration(&inner.shared.configuration) {
-            return status;
+        if let Err(status) = connection.set_configuration(&self.shared.configuration) {
+            return status.try_as_status_code().unwrap();
         }
+        let new_conn = Connection::from_raw(unsafe { connection.into_raw() });
 
-        let mut exclusive = inner.exclusive.lock().unwrap();
+        let mut exclusive = self.exclusive.lock().unwrap();
         exclusive.new_connections.push_back(new_conn);
         exclusive
             .new_connection_waiters
             .drain(..)
             .for_each(|waker| waker.wake());
-        msquic::QUIC_STATUS_SUCCESS
+        msquic::StatusCode::QUIC_STATUS_SUCCESS
     }
 
-    fn handle_event_stop_complete(
-        inner: &Self,
-        _payload: &msquic::ListenerEventStopComplete,
-    ) -> u32 {
-        trace!("Listener({:p}) stop complete", inner);
-        let mut exclusive = inner.exclusive.lock().unwrap();
-        exclusive.state = ListenerState::ShutdownComplete;
+    fn handle_event_stop_complete(&self, _app_close_in_progress: bool) -> msquic::StatusCode {
+        trace!("Listener({:p}) stop complete", self);
+        {
+            let mut exclusive = self.exclusive.lock().unwrap();
+            exclusive.state = ListenerState::ShutdownComplete;
 
-        exclusive
-            .new_connection_waiters
-            .drain(..)
-            .for_each(|waker| waker.wake());
+            exclusive
+                .new_connection_waiters
+                .drain(..)
+                .for_each(|waker| waker.wake());
 
-        exclusive
-            .shutdown_complete_waiters
-            .drain(..)
-            .for_each(|waker| waker.wake());
-        msquic::QUIC_STATUS_SUCCESS
+            exclusive
+                .shutdown_complete_waiters
+                .drain(..)
+                .for_each(|waker| waker.wake());
+        }
+        unsafe {
+            Arc::from_raw(self as *const _);
+        }
+        msquic::StatusCode::QUIC_STATUS_SUCCESS
     }
 
     extern "C" fn native_callback(
-        _listener: msquic::Handle,
+        _listener: msquic::ffi::HQUIC,
         context: *mut c_void,
-        event: &msquic::ListenerEvent,
-    ) -> u32 {
-        let inner = unsafe { &mut *(context as *mut Self) };
-        match event.event_type {
-            msquic::LISTENER_EVENT_NEW_CONNECTION => {
-                Self::handle_event_new_connection(inner, unsafe { &event.payload.new_connection })
-            }
-            msquic::LISTENER_EVENT_STOP_COMPLETE => {
-                Self::handle_event_stop_complete(inner, unsafe { &event.payload.stop_complete })
-            }
+        event: *mut msquic::ffi::QUIC_LISTENER_EVENT,
+    ) -> msquic::ffi::QUIC_STATUS {
+        let inner = unsafe { &*(context as *const Self) };
+        let ev_ref = unsafe { event.as_ref().unwrap() };
+        let event = msquic::ListenerEvent::from(ev_ref);
 
-            _ => {
-                println!("Other callback {}", event.event_type);
-                0
+        let res = match event {
+            msquic::ListenerEvent::NewConnection { info, connection } => {
+                inner.handle_event_new_connection(info, connection)
             }
-        }
+            msquic::ListenerEvent::StopComplete {
+                app_close_in_progress,
+            } => inner.handle_event_stop_complete(app_close_in_progress),
+        };
+        res.into()
     }
 }
 
@@ -256,7 +270,7 @@ impl Future for Stop<'_> {
     }
 }
 
-#[derive(Debug, Error, Clone, PartialEq, Eq)]
+#[derive(Debug, Error, Clone)]
 pub enum ListenError {
     #[error("Not started yet")]
     NotStarted,
@@ -266,6 +280,6 @@ pub enum ListenError {
     Finished,
     #[error("failed")]
     Failed,
-    #[error("other error: status 0x{0:x}")]
-    OtherError(u32),
+    #[error("other error: status {0:?}")]
+    OtherError(msquic::Status),
 }
