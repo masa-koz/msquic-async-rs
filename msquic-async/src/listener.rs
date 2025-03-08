@@ -16,10 +16,10 @@ pub struct Listener(Arc<ListenerInner>);
 impl Listener {
     /// Create a new listener.
     pub fn new(
-        msquic_listener: msquic::Listener,
         registration: &msquic::Registration,
         configuration: msquic::Configuration,
     ) -> Result<Self, ListenError> {
+        let msquic_listener = msquic::Listener::new();
         let mut inner = Arc::new(ListenerInner::new(msquic_listener, configuration));
         Arc::get_mut(&mut inner)
             .unwrap()
