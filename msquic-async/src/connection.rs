@@ -20,10 +20,8 @@ impl Connection {
     /// Create a new connection.
     ///
     /// The connection is not started until `start` is called.
-    pub fn new(
-        msquic_conn: msquic::Connection,
-        registration: &msquic::Registration,
-    ) -> Result<Self, ConnectionError> {
+    pub fn new(registration: &msquic::Registration) -> Result<Self, ConnectionError> {
+        let msquic_conn = msquic::Connection::new();
         let mut inner = Arc::new(ConnectionInner::new(msquic_conn, ConnectionState::Open));
         Arc::get_mut(&mut inner)
             .unwrap()

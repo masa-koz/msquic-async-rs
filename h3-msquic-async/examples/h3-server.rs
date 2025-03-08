@@ -148,8 +148,7 @@ async fn main() -> anyhow::Result<()> {
             })?;
     };
 
-    let listener =
-        msquic_async::Listener::new(msquic::Listener::new(), &registration, configuration)?;
+    let listener = msquic_async::Listener::new(&registration, configuration)?;
 
     let addr: SocketAddr = "127.0.0.1:8443".parse()?;
     listener.start(&[msquic::BufferRef::from("h3")], Some(addr))?;

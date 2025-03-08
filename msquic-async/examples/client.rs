@@ -37,7 +37,7 @@ async fn main() -> anyhow::Result<()> {
         .load_credential(&cred_config)
         .map_err(|status| anyhow::anyhow!("Configuration::load_credential failed: {}", status))?;
 
-    let conn = msquic_async::Connection::new(msquic::Connection::new(), &registration)?;
+    let conn = msquic_async::Connection::new(&registration)?;
     conn.start(&configuration, "127.0.0.1", 4567).await?;
 
     let mut stream = conn
