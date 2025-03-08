@@ -1644,7 +1644,7 @@ fn new_server(
     };
 
     configuration.load_credential(&cred_config).unwrap();
-    let listener = Listener::new(msquic::Listener::new(), registration, configuration)?;
+    let listener = Listener::new(registration, configuration)?;
     Ok(listener)
 }
 
