@@ -2,7 +2,6 @@
 use futures::future;
 use h3_msquic_async::msquic;
 use h3_msquic_async::msquic_async;
-use std::ptr;
 use tokio::io::AsyncWriteExt;
 use tracing::info;
 
@@ -15,8 +14,7 @@ async fn main() -> anyhow::Result<()> {
         .with_max_level(tracing::Level::INFO)
         .init();
 
-    let registration = msquic::Registration::new(ptr::null())
-        .map_err(|status| anyhow::anyhow!("Registration::new failed: {}", status))?;
+    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default())?;
 
     let alpn = [msquic::BufferRef::from("h3")];
     let configuration = msquic::Configuration::new(
@@ -30,13 +28,10 @@ async fn main() -> anyhow::Result<()> {
                 .set_DatagramReceiveEnabled()
                 .set_StreamMultiReceiveEnabled(),
         ),
-    )
-    .map_err(|status| anyhow::anyhow!("Configuration::new failed: {}", status))?;
-    let mut cred_config = msquic::CredentialConfig::new_client();
-    cred_config.cred_flags |= msquic::CREDENTIAL_FLAG_NO_CERTIFICATE_VALIDATION;
-    configuration
-        .load_credential(&cred_config)
-        .map_err(|status| anyhow::anyhow!("Configuration::load_credential failed: {}", status))?;
+    )?;
+    let cred_config = msquic::CredentialConfig::new_client()
+        .set_credential_flags(msquic::CredentialFlags::NO_CERTIFICATE_VALIDATION);
+    configuration.load_credential(&cred_config)?;
 
     let conn = msquic_async::Connection::new(&registration)?;
     conn.start(&configuration, "127.0.0.1", 8443).await?;

@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 use std::future::Future;
 use std::ops::Deref;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::task::{Context, Poll, Waker};
 
 use bytes::Bytes;
@@ -21,40 +21,29 @@ impl Connection {
     ///
     /// The connection is not started until `start` is called.
     pub fn new(registration: &msquic::Registration) -> Result<Self, ConnectionError> {
-        let msquic_conn = msquic::Connection::new();
-        let mut inner = Arc::new(ConnectionInner::new(msquic_conn, ConnectionState::Open));
-        Arc::get_mut(&mut inner)
-            .unwrap()
-            .shared
-            .msquic_conn
-            .open(
-                registration,
-                Some(ConnectionInner::native_callback),
-                std::ptr::null(),
-            )
+        let mut msquic_conn = msquic::Connection::new();
+        let inner = Arc::new(ConnectionInner::new(ConnectionState::Open));
+        let inner_raw = Arc::into_raw(inner.clone());
+        msquic_conn
+            .open(registration, move |conn_ref, ev| {
+                let inner = unsafe { &*inner_raw };
+                inner.callback_handler_impl(conn_ref, ev)
+            })
             .map_err(ConnectionError::OtherError)?;
-        unsafe {
-            inner.shared.msquic_conn.set_callback_handler(
-                Some(ConnectionInner::native_callback),
-                Arc::into_raw(inner.clone()) as *const c_void,
-            );
-        }
+        *inner.shared.msquic_conn.write().unwrap() = Some(msquic_conn);
         trace!("Connection({:p}) Open by local", &*inner);
         Ok(Self(Arc::new(ConnectionInstance(inner))))
     }
 
     pub(crate) fn from_raw(handle: msquic::ffi::HQUIC) -> Self {
         let msquic_conn = unsafe { msquic::Connection::from_raw(handle) };
-        let inner = Arc::new(ConnectionInner::new(
-            msquic_conn,
-            ConnectionState::Connected,
-        ));
-        unsafe {
-            inner.shared.msquic_conn.set_callback_handler(
-                Some(ConnectionInner::native_callback),
-                Arc::into_raw(inner.clone()) as *const c_void,
-            )
-        };
+        let inner = Arc::new(ConnectionInner::new(ConnectionState::Connected));
+        let inner_raw = Arc::into_raw(inner.clone());
+        msquic_conn.set_callback_handler(move |conn_ref, ev| {
+            let inner = unsafe { &*inner_raw };
+            inner.callback_handler_impl(conn_ref, ev)
+        });
+        *inner.shared.msquic_conn.write().unwrap() = Some(msquic_conn);
         trace!("Connection({:p}) Open by peer", &*inner);
         Self(Arc::new(ConnectionInstance(inner)))
     }
@@ -88,6 +77,10 @@ impl Connection {
                 self.0
                     .shared
                     .msquic_conn
+                    .read()
+                    .unwrap()
+                    .as_ref()
+                    .expect("msquic_conn set")
                     .start(configuration, host, port)
                     .map_err(StartError::OtherError)?;
                 exclusive.state = ConnectionState::Connecting;
@@ -248,11 +241,18 @@ impl Connection {
             std::slice::from_raw_parts(data, len)
         };
         let res = unsafe {
-            self.0.shared.msquic_conn.datagram_send(
-                buffers,
-                msquic::SEND_FLAG_NONE,
-                write_buf.into_raw() as *const _,
-            )
+            self.0
+                .shared
+                .msquic_conn
+                .read()
+                .unwrap()
+                .as_ref()
+                .expect("msquic_conn set")
+                .datagram_send(
+                    buffers,
+                    msquic::SEND_FLAG_NONE,
+                    write_buf.into_raw() as *const _,
+                )
         }
         .map_err(DgramSendError::OtherError);
         Poll::Ready(res)
@@ -283,11 +283,18 @@ impl Connection {
             std::slice::from_raw_parts(data, len)
         };
         unsafe {
-            self.0.shared.msquic_conn.datagram_send(
-                buffers,
-                msquic::SEND_FLAG_NONE,
-                write_buf.into_raw() as *const _,
-            )
+            self.0
+                .shared
+                .msquic_conn
+                .read()
+                .unwrap()
+                .as_ref()
+                .expect("msquic_conn set")
+                .datagram_send(
+                    buffers,
+                    msquic::SEND_FLAG_NONE,
+                    write_buf.into_raw() as *const _,
+                )
         }
         .map_err(DgramSendError::OtherError)?;
         Ok(())
@@ -312,6 +319,10 @@ impl Connection {
                 self.0
                     .shared
                     .msquic_conn
+                    .read()
+                    .unwrap()
+                    .as_ref()
+                    .expect("msquic_conn set")
                     .shutdown(msquic::CONNECTION_SHUTDOWN_FLAG_NONE, error_code);
                 exclusive.state = ConnectionState::Shutdown;
             }
@@ -342,6 +353,10 @@ impl Connection {
                 self.0
                     .shared
                     .msquic_conn
+                    .read()
+                    .unwrap()
+                    .as_ref()
+                    .expect("msquic_conn set")
                     .shutdown(msquic::CONNECTION_SHUTDOWN_FLAG_NONE, error_code);
                 exclusive.state = ConnectionState::Shutdown;
             }
@@ -374,6 +389,10 @@ impl Drop for ConnectionInstance {
                     self.0
                         .shared
                         .msquic_conn
+                        .read()
+                        .unwrap()
+                        .as_ref()
+                        .expect("msquic_conn set")
                         .shutdown(msquic::CONNECTION_SHUTDOWN_FLAG_NONE, 0);
                 }
                 ConnectionState::Shutdown | ConnectionState::ShutdownComplete => {}
@@ -402,11 +421,11 @@ struct ConnectionInnerExclusive {
 }
 
 struct ConnectionInnerShared {
-    msquic_conn: msquic::Connection,
+    msquic_conn: RwLock<Option<msquic::Connection>>,
 }
 
 impl ConnectionInner {
-    fn new(msquic_conn: msquic::Connection, state: ConnectionState) -> Self {
+    fn new(state: ConnectionState) -> Self {
         Self {
             exclusive: Mutex::new(ConnectionInnerExclusive {
                 state,
@@ -421,7 +440,9 @@ impl ConnectionInner {
                 write_pool: Vec::new(),
                 shutdown_waiters: Vec::new(),
             }),
-            shared: ConnectionInnerShared { msquic_conn },
+            shared: ConnectionInnerShared {
+                msquic_conn: RwLock::new(None),
+            },
         }
     }
 
@@ -429,7 +450,7 @@ impl ConnectionInner {
         &self,
         _session_resumed: bool,
         _negotiated_alpn: &[u8],
-    ) -> msquic::StatusCode {
+    ) -> Result<(), msquic::Status> {
         trace!("Connection({:p}) Connected", self);
 
         let mut exclusive = self.exclusive.lock().unwrap();
@@ -438,14 +459,14 @@ impl ConnectionInner {
             .start_waiters
             .drain(..)
             .for_each(|waker| waker.wake());
-        msquic::StatusCode::QUIC_STATUS_SUCCESS
+        Ok(())
     }
 
     fn handle_event_shutdown_initiated_by_transport(
         &self,
         status: msquic::Status,
         error_code: u64,
-    ) -> msquic::StatusCode {
+    ) -> Result<(), msquic::Status> {
         trace!("Connection({:p}) Transport shutdown {:?}", self, status);
 
         let mut exclusive = self.exclusive.lock().unwrap();
@@ -459,10 +480,13 @@ impl ConnectionInner {
             .inbound_stream_waiters
             .drain(..)
             .for_each(|waker| waker.wake());
-        msquic::StatusCode::QUIC_STATUS_SUCCESS
+        Ok(())
     }
 
-    fn handle_event_shutdown_initiated_by_peer(&self, error_code: u64) -> msquic::StatusCode {
+    fn handle_event_shutdown_initiated_by_peer(
+        &self,
+        error_code: u64,
+    ) -> Result<(), msquic::Status> {
         trace!("Connection({:p}) App shutdown {}", self, error_code);
 
         let mut exclusive = self.exclusive.lock().unwrap();
@@ -476,16 +500,18 @@ impl ConnectionInner {
             .inbound_stream_waiters
             .drain(..)
             .for_each(|waker| waker.wake());
-        msquic::StatusCode::QUIC_STATUS_SUCCESS
+        Ok(())
     }
 
     fn handle_event_shutdown_complete(
         &self,
-        _handshake_completed: bool,
-        _peer_acknowledged_shutdown: bool,
-        _app_close_in_progress: bool,
-    ) -> msquic::StatusCode {
-        trace!("Connection({:p}) Connection Shutdown complete", self);
+        handshake_completed: bool,
+        peer_acknowledged_shutdown: bool,
+        app_close_in_progress: bool,
+    ) -> Result<(), msquic::Status> {
+        trace!("Connection({:p}) Shutdown complete: handshake_completed={}, peer_acknowledged_shutdown={}, app_close_in_progress={}",
+            self, handshake_completed, peer_acknowledged_shutdown, app_close_in_progress
+        );
 
         {
             let mut exclusive = self.exclusive.lock().unwrap();
@@ -509,14 +535,14 @@ impl ConnectionInner {
         unsafe {
             Arc::from_raw(self as *const _);
         }
-        msquic::StatusCode::QUIC_STATUS_SUCCESS
+        Ok(())
     }
 
     fn handle_event_peer_stream_started(
         &self,
         stream: msquic::StreamRef,
         flags: msquic::ffi::QUIC_STREAM_OPEN_FLAGS,
-    ) -> msquic::StatusCode {
+    ) -> Result<(), msquic::Status> {
         let stream_type = if (flags
             & msquic::ffi::QUIC_STREAM_OPEN_FLAGS_QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL)
             != 0
@@ -554,42 +580,42 @@ impl ConnectionInner {
             }
         }
 
-        msquic::StatusCode::QUIC_STATUS_SUCCESS
+        Ok(())
     }
 
     fn handle_event_streams_available(
         &self,
         bidirectional_count: u16,
         unidirectional_count: u16,
-    ) -> msquic::StatusCode {
+    ) -> Result<(), msquic::Status> {
         trace!(
             "Connection({:p}) Streams available bidirectional_count:{} unidirectional_count:{}",
             self,
             bidirectional_count,
             unidirectional_count
         );
-        msquic::StatusCode::QUIC_STATUS_SUCCESS
+        Ok(())
     }
 
     fn handle_event_datagram_state_changed(
         &self,
         send_enabled: bool,
         max_send_length: u16,
-    ) -> msquic::StatusCode {
+    ) -> Result<(), msquic::Status> {
         trace!(
             "Connection({:p}) Datagram state changed send_enabled:{} max_send_length:{}",
             self,
             send_enabled,
             max_send_length
         );
-        msquic::StatusCode::QUIC_STATUS_SUCCESS
+        Ok(())
     }
 
     fn handle_event_datagram_received(
         &self,
         buffer: &msquic::BufferRef,
         _flags: msquic::ffi::QUIC_RECEIVE_FLAGS,
-    ) -> msquic::StatusCode {
+    ) -> Result<(), msquic::Status> {
         trace!("Connection({:p}) Datagram received", self);
         let buf = Bytes::copy_from_slice(buffer.as_bytes());
         {
@@ -600,14 +626,14 @@ impl ConnectionInner {
                 .drain(..)
                 .for_each(|waker| waker.wake());
         }
-        msquic::StatusCode::QUIC_STATUS_SUCCESS
+        Ok(())
     }
 
     fn handle_event_datagram_send_state_changed(
         &self,
         client_context: *const c_void,
         state: msquic::ffi::QUIC_DATAGRAM_SEND_STATE,
-    ) -> msquic::StatusCode {
+    ) -> Result<(), msquic::Status> {
         trace!(
             "Connection({:p}) Datagram send state changed state:{}",
             self,
@@ -623,62 +649,57 @@ impl ConnectionInner {
             }
             _ => {}
         }
-        msquic::StatusCode::QUIC_STATUS_SUCCESS
+        Ok(())
     }
 
-    extern "C" fn native_callback(
-        _connection: msquic::ffi::HQUIC,
-        context: *mut c_void,
-        event: *mut msquic::ffi::QUIC_CONNECTION_EVENT,
-    ) -> msquic::ffi::QUIC_STATUS {
-        let inner = unsafe { &*(context as *const Self) };
-        let ev_ref = unsafe { event.as_ref().unwrap() };
-        let event = msquic::ConnectionEvent::from(ev_ref);
-
-        let status = match event {
+    fn callback_handler_impl(
+        &self,
+        _connection: msquic::ConnectionRef,
+        ev: msquic::ConnectionEvent,
+    ) -> Result<(), msquic::Status> {
+        match ev {
             msquic::ConnectionEvent::Connected {
                 session_resumed,
                 negotiated_alpn,
-            } => inner.handle_event_connected(session_resumed, negotiated_alpn),
+            } => self.handle_event_connected(session_resumed, negotiated_alpn),
             msquic::ConnectionEvent::ShutdownInitiatedByTransport { status, error_code } => {
-                inner.handle_event_shutdown_initiated_by_transport(status, error_code)
+                self.handle_event_shutdown_initiated_by_transport(status, error_code)
             }
             msquic::ConnectionEvent::ShutdownInitiatedByPeer { error_code } => {
-                inner.handle_event_shutdown_initiated_by_peer(error_code)
+                self.handle_event_shutdown_initiated_by_peer(error_code)
             }
             msquic::ConnectionEvent::ShutdownComplete {
                 handshake_completed,
                 peer_acknowledged_shutdown,
                 app_close_in_progress,
-            } => inner.handle_event_shutdown_complete(
+            } => self.handle_event_shutdown_complete(
                 handshake_completed,
                 peer_acknowledged_shutdown,
                 app_close_in_progress,
             ),
             msquic::ConnectionEvent::PeerStreamStarted { stream, flags } => {
-                inner.handle_event_peer_stream_started(stream, flags)
+                self.handle_event_peer_stream_started(stream, flags)
             }
             msquic::ConnectionEvent::StreamsAvailable {
                 bidirectional_count,
                 unidirectional_count,
-            } => inner.handle_event_streams_available(bidirectional_count, unidirectional_count),
+            } => self.handle_event_streams_available(bidirectional_count, unidirectional_count),
             msquic::ConnectionEvent::DatagramStateChanged {
                 send_enabled,
                 max_send_length,
-            } => inner.handle_event_datagram_state_changed(send_enabled, max_send_length),
+            } => self.handle_event_datagram_state_changed(send_enabled, max_send_length),
             msquic::ConnectionEvent::DatagramReceived { buffer, flags } => {
-                inner.handle_event_datagram_received(buffer, flags)
+                self.handle_event_datagram_received(buffer, flags)
             }
             msquic::ConnectionEvent::DatagramSendStateChanged {
                 client_context,
                 state,
-            } => inner.handle_event_datagram_send_state_changed(client_context, state),
+            } => self.handle_event_datagram_send_state_changed(client_context, state),
             _ => {
-                trace!("Connection({:p}) Other callback {}", inner, ev_ref.Type);
-                msquic::StatusCode::QUIC_STATUS_SUCCESS
+                trace!("Connection({:p}) Other callback", self);
+                Ok(())
             }
-        };
-        status.into()
+        }
     }
 }
 impl Drop for ConnectionInner {
@@ -812,7 +833,15 @@ impl Future for OpenOutboundStream<'_> {
             }
         }
         if stream.is_none() {
-            match Stream::open(&conn.shared.msquic_conn, stream_type.take().unwrap()) {
+            match Stream::open(
+                conn.shared
+                    .msquic_conn
+                    .read()
+                    .unwrap()
+                    .as_ref()
+                    .expect("msquic_conn set"),
+                stream_type.take().unwrap(),
+            ) {
                 Ok(new_stream) => {
                     *stream = Some(new_stream);
                 }

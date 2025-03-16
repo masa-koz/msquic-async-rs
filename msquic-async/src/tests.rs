@@ -5,7 +5,6 @@ use super::{
 use std::future::poll_fn;
 use std::mem;
 use std::net::SocketAddr;
-use std::ptr;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -23,7 +22,7 @@ async fn test_connection_start() {
     let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let registration = msquic::Registration::new(ptr::null()).unwrap();
+    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
     let listener = new_server(
         &registration,
         &msquic::Settings::new().set_IdleTimeoutMs(10000),
@@ -42,6 +41,7 @@ async fn test_connection_start() {
 
         listener.stop().await.unwrap();
         server_tx.send(()).await.unwrap();
+        drop(listener);
     });
 
     let client_config = new_client_config(
@@ -100,7 +100,7 @@ async fn test_connection_start() {
 async fn test_connection_poll_shutdown() {
     let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
 
-    let registration = msquic::Registration::new(ptr::null()).unwrap();
+    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
     let listener = new_server(
         &registration,
         &msquic::Settings::new().set_IdleTimeoutMs(10000),
@@ -143,6 +143,7 @@ async fn test_connection_poll_shutdown() {
         )
         .await
         .unwrap();
+        // conn.shutdown(1).unwrap();
         let res = poll_fn(|cx| conn.poll_shutdown(cx, 1)).await;
         assert!(res.is_ok());
 
@@ -165,7 +166,7 @@ async fn test_connection_poll_shutdown() {
 /// Test for ['Listener::accept()']
 #[test(tokio::test)]
 async fn test_listener_accept() {
-    let registration = msquic::Registration::new(ptr::null()).unwrap();
+    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
     let listener = new_server(
         &registration,
         &msquic::Settings::new().set_IdleTimeoutMs(10000),
@@ -227,7 +228,7 @@ async fn test_listener_accept() {
 async fn test_open_outbound_stream() {
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let registration = msquic::Registration::new(ptr::null()).unwrap();
+    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
 
     let listener = new_server(
         &registration,
@@ -319,7 +320,7 @@ async fn test_open_outbound_stream() {
 async fn test_open_outbound_stream_exceed_limit() -> Result<(), anyhow::Error> {
     let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
 
-    let registration = msquic::Registration::new(ptr::null()).unwrap();
+    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
 
     let listener = new_server(
         &registration,
@@ -442,7 +443,7 @@ async fn test_open_outbound_stream_exceed_limit_and_accepted() {
     let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let registration = msquic::Registration::new(ptr::null()).unwrap();
+    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
 
     let listener = new_server(
         &registration,
@@ -582,7 +583,7 @@ async fn test_open_outbound_stream_exceed_limit_and_accepted() {
 async fn test_poll_write() {
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let registration = msquic::Registration::new(ptr::null()).unwrap();
+    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
 
     let listener = new_server(
         &registration,
@@ -659,7 +660,7 @@ async fn test_poll_write() {
 async fn test_write_chunk() {
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let registration = msquic::Registration::new(ptr::null()).unwrap();
+    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
 
     let listener = new_server(
         &registration,
@@ -734,7 +735,7 @@ async fn test_write_chunk() {
 async fn test_write_chunks() {
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let registration = msquic::Registration::new(ptr::null()).unwrap();
+    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
 
     let listener = new_server(
         &registration,
@@ -809,7 +810,7 @@ async fn test_write_chunks() {
 async fn test_poll_finish_write() {
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let registration = msquic::Registration::new(ptr::null()).unwrap();
+    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
 
     let listener = new_server(
         &registration,
@@ -882,7 +883,7 @@ async fn test_poll_finish_write() {
 async fn test_poll_abort_write() {
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let registration = msquic::Registration::new(ptr::null()).unwrap();
+    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
 
     let listener = new_server(
         &registration,
@@ -957,7 +958,7 @@ async fn test_poll_abort_write() {
 async fn test_poll_read() {
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let registration = msquic::Registration::new(ptr::null()).unwrap();
+    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
 
     let listener = new_server(
         &registration,
@@ -1034,7 +1035,7 @@ async fn test_poll_read() {
 async fn test_read_chunk() {
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let registration = msquic::Registration::new(ptr::null()).unwrap();
+    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
 
     let listener = new_server(
         &registration,
@@ -1138,7 +1139,7 @@ async fn test_read_chunk() {
 async fn test_read_chunk_empty_fin() {
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let registration = msquic::Registration::new(ptr::null()).unwrap();
+    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
 
     let listener = new_server(
         &registration,
@@ -1232,7 +1233,7 @@ async fn test_read_chunk_empty_fin() {
 async fn test_read_chunk_multi_recv() {
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let registration = msquic::Registration::new(ptr::null()).unwrap();
+    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
 
     let listener = new_server(
         &registration,
@@ -1336,7 +1337,7 @@ async fn test_poll_abort_read() {
     let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let registration = msquic::Registration::new(ptr::null()).unwrap();
+    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
 
     let listener = new_server(
         &registration,
@@ -1470,7 +1471,7 @@ async fn datagram_validation() {
     //let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let registration = msquic::Registration::new(ptr::null()).unwrap();
+    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
 
     let listener = new_server(
         &registration,
@@ -1535,12 +1536,11 @@ async fn datagram_validation() {
     });
 }
 
-#[cfg(not(feature = "tls-schannel"))]
+#[cfg(any(not(windows), feature = "openssl"))]
 fn new_server(
     registration: &msquic::Registration,
     settings: &msquic::Settings,
 ) -> Result<Listener> {
-    use std::ffi::CString;
     use std::io::Write;
     use tempfile::NamedTempFile;
 
@@ -1553,36 +1553,23 @@ fn new_server(
     let mut cert_file = NamedTempFile::new().unwrap();
     cert_file.write_all(cert).unwrap();
     let cert_path = cert_file.into_temp_path();
-    let cert_path = CString::new(cert_path.to_str().unwrap().as_bytes()).unwrap();
+    let cert_path = cert_path.to_string_lossy().into_owned();
 
     let mut key_file = NamedTempFile::new().unwrap();
     key_file.write_all(key).unwrap();
     let key_path = key_file.into_temp_path();
-    let key_path = CString::new(key_path.to_str().unwrap().as_bytes()).unwrap();
+    let key_path = key_path.to_string_lossy().into_owned();
 
-    let certificate_file = msquic::CertificateFile {
-        private_key_file: key_path.as_ptr(),
-        certificate_file: cert_path.as_ptr(),
-    };
-
-    let cred_config = msquic::CredentialConfig {
-        cred_type: msquic::CREDENTIAL_TYPE_CERTIFICATE_FILE,
-        cred_flags: msquic::CREDENTIAL_FLAG_NONE,
-        certificate: msquic::CertificateUnion {
-            file: &certificate_file,
-        },
-        principle: ptr::null(),
-        reserved: ptr::null(),
-        async_handler: None,
-        allowed_cipher_suites: 0,
-    };
+    let cred_config = msquic::CredentialConfig::new().set_credential(
+        msquic::Credential::CertificateFile(msquic::CertificateFile::new(key_path, cert_path)),
+    );
 
     configuration.load_credential(&cred_config).unwrap();
     let listener = Listener::new(registration, configuration)?;
     Ok(listener)
 }
 
-#[cfg(feature = "tls-schannel")]
+#[cfg(all(windows, not(feature = "openssl")))]
 fn new_server(
     registration: &msquic::Registration,
     settings: &msquic::Settings,
@@ -1654,8 +1641,8 @@ fn new_client_config(
 ) -> Result<msquic::Configuration> {
     let alpn = [msquic::BufferRef::from("test")];
     let configuration = msquic::Configuration::new(registration, &alpn, Some(settings)).unwrap();
-    let mut cred_config = msquic::CredentialConfig::new_client();
-    cred_config.cred_flags |= msquic::CREDENTIAL_FLAG_NO_CERTIFICATE_VALIDATION;
+    let cred_config = msquic::CredentialConfig::new_client()
+        .set_credential_flags(msquic::CredentialFlags::NO_CERTIFICATE_VALIDATION);
     configuration.load_credential(&cred_config).unwrap();
     Ok(configuration)
 }

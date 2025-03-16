@@ -20,7 +20,7 @@ include = [
 
 [features]
 tracing = ["dep:tracing"]
-tls-schannel = ["msquic-async/tls-schannel"]
+openssl = ["msquic-async/openssl"]
 static = ["msquic-async/static"]
 
 [dependencies]
