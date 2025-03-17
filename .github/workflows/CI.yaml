@@ -124,16 +124,15 @@ jobs:
     name: Test ${{ matrix.os }}
     needs: [style]
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        features: ["", "--features tls-schannel"]
+        features: ["", "--features openssl"]
         exclude:
           - os: ubuntu-latest
-            features: "--features tls-schannel"
-          - os: windows-latest
-            features: ""
+            features: "--features openssl"
           - os: macos-latest
-            features: "--features tls-schannel"
+            features: "--features openssl"
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4

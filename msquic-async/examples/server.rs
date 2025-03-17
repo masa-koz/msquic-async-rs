@@ -1,4 +1,4 @@
-use std::{mem, net::SocketAddr, ptr};
+use std::{mem, net::SocketAddr};
 
 use argh::FromArgs;
 use msquic_async::msquic;
@@ -20,8 +20,7 @@ async fn main() -> anyhow::Result<()> {
 
     let _cmd_opts: CmdOptions = argh::from_env();
 
-    let registration = msquic::Registration::new(ptr::null())
-        .map_err(|status| anyhow::anyhow!("Registration::new failed: {}", status))?;
+    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default())?;
 
     let alpn = [msquic::BufferRef::from("sample")];
 
@@ -37,12 +36,11 @@ async fn main() -> anyhow::Result<()> {
                 .set_DatagramReceiveEnabled()
                 .set_StreamMultiReceiveEnabled(),
         ),
-    )
-    .map_err(|status| anyhow::anyhow!("Configuration::new failed: {}", status))?;
+    )?;
 
-    #[cfg(not(feature = "tls-schannel"))]
+    #[cfg(any(not(windows), feature = "openssl"))]
     {
-        use std::{ffi::CString, io::Write};
+        use std::io::Write;
         use tempfile::NamedTempFile;
 
         let cert = include_bytes!("cert.pem");
@@ -51,37 +49,21 @@ async fn main() -> anyhow::Result<()> {
         let mut cert_file = NamedTempFile::new()?;
         cert_file.write_all(cert)?;
         let cert_path = cert_file.into_temp_path();
-        let cert_path = CString::new(cert_path.to_path_buf().as_os_str().as_encoded_bytes())?;
+        let cert_path = cert_path.to_string_lossy().into_owned();
 
         let mut key_file = NamedTempFile::new()?;
         key_file.write_all(key)?;
         let key_path = key_file.into_temp_path();
-        let key_path = CString::new(key_path.to_path_buf().as_os_str().as_encoded_bytes())?;
+        let key_path = key_path.to_string_lossy().into_owned();
 
-        let certificate_file = msquic::CertificateFile {
-            private_key_file: key_path.as_ptr(),
-            certificate_file: cert_path.as_ptr(),
-        };
+        let cred_config = msquic::CredentialConfig::new().set_credential(
+            msquic::Credential::CertificateFile(msquic::CertificateFile::new(key_path, cert_path)),
+        );
 
-        let cred_config = msquic::CredentialConfig {
-            cred_type: msquic::CREDENTIAL_TYPE_CERTIFICATE_FILE,
-            cred_flags: msquic::CREDENTIAL_FLAG_NONE,
-            certificate: msquic::CertificateUnion {
-                file: &certificate_file,
-            },
-            principle: ptr::null(),
-            reserved: ptr::null(),
-            async_handler: None,
-            allowed_cipher_suites: 0,
-        };
-        configuration
-            .load_credential(&cred_config)
-            .map_err(|status| {
-                anyhow::anyhow!("Configuration::load_credential failed: {}", status)
-            })?;
+        configuration.load_credential(&cred_config)?;
     }
 
-    #[cfg(feature = "tls-schannel")]
+    #[cfg(all(windows, not(feature = "openssl")))]
     {
         use schannel::cert_context::{CertContext, KeySpec};
         use schannel::cert_store::{CertAdd, Memory};
@@ -119,23 +101,11 @@ async fn main() -> anyhow::Result<()> {
 
         let context = store.add_cert(&cert_ctx, CertAdd::Always).unwrap();
 
-        let cred_config = msquic::CredentialConfig {
-            cred_type: msquic::CREDENTIAL_TYPE_CERTIFICATE_CONTEXT,
-            cred_flags: msquic::CREDENTIAL_FLAG_NONE,
-            certificate: msquic::CertificateUnion {
-                context: unsafe { context.as_ptr() },
-            },
-            principle: ptr::null(),
-            reserved: ptr::null(),
-            async_handler: None,
-            allowed_cipher_suites: 0,
-        };
+        let cred_config = msquic::CredentialConfig::new().set_credential(
+            msquic::Credential::CertificateContext(unsafe { context.as_ptr() }),
+        );
 
-        configuration
-            .load_credential(&cred_config)
-            .map_err(|status| {
-                anyhow::anyhow!("Configuration::load_credential failed: {}", status)
-            })?;
+        configuration.load_credential(&cred_config)?;
     };
 
     let listener = msquic_async::Listener::new(&registration, configuration)?;

@@ -3,10 +3,9 @@ use crate::connection::Connection;
 use std::collections::VecDeque;
 use std::future::Future;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::task::{Context, Poll, Waker};
 
-use libc::c_void;
 use thiserror::Error;
 use tracing::trace;
 
@@ -19,25 +18,24 @@ impl Listener {
         registration: &msquic::Registration,
         configuration: msquic::Configuration,
     ) -> Result<Self, ListenError> {
-        let msquic_listener = msquic::Listener::new();
-        let mut inner = Arc::new(ListenerInner::new(msquic_listener, configuration));
-        Arc::get_mut(&mut inner)
-            .unwrap()
-            .shared
-            .msquic_listener
-            .open(
-                registration,
-                Some(ListenerInner::native_callback),
-                std::ptr::null(),
-            )
+        let mut msquic_listener = msquic::Listener::new();
+        let inner = Arc::new(ListenerInner::new(configuration));
+        let inner_raw = Arc::into_raw(inner.clone());
+        msquic_listener
+            .open(registration, move |_, ev| {
+                let inner = unsafe { &*inner_raw };
+                match ev {
+                    msquic::ListenerEvent::NewConnection { info, connection } => {
+                        inner.handle_event_new_connection(info, connection)
+                    }
+                    msquic::ListenerEvent::StopComplete {
+                        app_close_in_progress,
+                    } => inner.handle_event_stop_complete(app_close_in_progress),
+                }
+            })
             .map_err(ListenError::OtherError)?;
-        unsafe {
-            msquic::Api::set_callback_handler(
-                inner.shared.msquic_listener.as_raw(),
-                ListenerInner::native_callback as *const c_void,
-                Arc::into_raw(inner.clone()) as *const c_void,
-            );
-        }
+        *inner.shared.msquic_listener.write().unwrap() = Some(msquic_listener);
+        trace!("Listner({:p}) new", inner);
         Ok(Self(inner))
     }
 
@@ -58,6 +56,10 @@ impl Listener {
         self.0
             .shared
             .msquic_listener
+            .read()
+            .unwrap()
+            .as_ref()
+            .expect("msquic_listener set")
             .start(alpn.as_ref(), local_address.as_ref())
             .map_err(ListenError::OtherError)?;
         exclusive.state = ListenerState::StartComplete;
@@ -71,6 +73,7 @@ impl Listener {
 
     /// Poll to accept a new connection.
     pub fn poll_accept(&self, cx: &mut Context<'_>) -> Poll<Result<Connection, ListenError>> {
+        trace!("Listener({:p}) poll_accept", self);
         let mut exclusive = self.0.exclusive.lock().unwrap();
 
         if !exclusive.new_connections.is_empty() {
@@ -97,6 +100,7 @@ impl Listener {
 
     /// Poll to stop the listener.
     pub fn poll_stop(&self, cx: &mut Context<'_>) -> Poll<Result<(), ListenError>> {
+        trace!("Listener({:p}) poll_stop", self);
         let mut call_stop = false;
         {
             let mut exclusive = self.0.exclusive.lock().unwrap();
@@ -117,7 +121,14 @@ impl Listener {
             exclusive.shutdown_complete_waiters.push(cx.waker().clone());
         }
         if call_stop {
-            self.0.shared.msquic_listener.stop();
+            self.0
+                .shared
+                .msquic_listener
+                .read()
+                .unwrap()
+                .as_ref()
+                .expect("msquic_listener set")
+                .stop();
         }
         Poll::Pending
     }
@@ -127,6 +138,10 @@ impl Listener {
         self.0
             .shared
             .msquic_listener
+            .read()
+            .unwrap()
+            .as_ref()
+            .expect("msquic_listener set")
             .get_local_addr()
             .map(|addr| addr.as_socket().expect("not a socket address"))
             .map_err(|_| ListenError::Failed)
@@ -135,7 +150,15 @@ impl Listener {
 
 impl Drop for Listener {
     fn drop(&mut self) {
-        self.0.shared.msquic_listener.stop();
+        trace!("Listener({:p}) dropping", self);
+        self.0
+            .shared
+            .msquic_listener
+            .read()
+            .unwrap()
+            .as_ref()
+            .expect("msquic_listner set")
+            .stop();
     }
 }
 
@@ -154,8 +177,8 @@ unsafe impl Sync for ListenerInnerExclusive {}
 unsafe impl Send for ListenerInnerExclusive {}
 
 struct ListenerInnerShared {
-    msquic_listener: msquic::Listener,
     configuration: msquic::Configuration,
+    msquic_listener: RwLock<Option<msquic::Listener>>,
 }
 unsafe impl Sync for ListenerInnerShared {}
 unsafe impl Send for ListenerInnerShared {}
@@ -169,7 +192,7 @@ enum ListenerState {
 }
 
 impl ListenerInner {
-    fn new(msquic_listener: msquic::Listener, configuration: msquic::Configuration) -> Self {
+    fn new(configuration: msquic::Configuration) -> Self {
         Self {
             exclusive: Mutex::new(ListenerInnerExclusive {
                 state: ListenerState::Open,
@@ -178,8 +201,8 @@ impl ListenerInner {
                 shutdown_complete_waiters: Vec::new(),
             }),
             shared: ListenerInnerShared {
-                msquic_listener,
                 configuration,
+                msquic_listener: RwLock::new(None),
             },
         }
     }
@@ -187,14 +210,12 @@ impl ListenerInner {
     fn handle_event_new_connection(
         &self,
         _info: msquic::NewConnectionInfo<'_>,
-        connection: msquic::Connection,
-    ) -> msquic::StatusCode {
-        trace!("Listener({:p}) new connection event", self);
+        connection: msquic::ConnectionRef,
+    ) -> Result<(), msquic::Status> {
+        trace!("Listener({:p}) New connection", self);
 
-        if let Err(status) = connection.set_configuration(&self.shared.configuration) {
-            return status.try_as_status_code().unwrap();
-        }
-        let new_conn = Connection::from_raw(unsafe { connection.into_raw() });
+        connection.set_configuration(&self.shared.configuration)?;
+        let new_conn = Connection::from_raw(unsafe { connection.as_raw() });
 
         let mut exclusive = self.exclusive.lock().unwrap();
         exclusive.new_connections.push_back(new_conn);
@@ -202,11 +223,18 @@ impl ListenerInner {
             .new_connection_waiters
             .drain(..)
             .for_each(|waker| waker.wake());
-        msquic::StatusCode::QUIC_STATUS_SUCCESS
+        Ok(())
     }
 
-    fn handle_event_stop_complete(&self, _app_close_in_progress: bool) -> msquic::StatusCode {
-        trace!("Listener({:p}) stop complete", self);
+    fn handle_event_stop_complete(
+        &self,
+        app_close_in_progress: bool,
+    ) -> Result<(), msquic::Status> {
+        trace!(
+            "Listener({:p}) Stop complete: app_close_in_progress={}",
+            self,
+            app_close_in_progress
+        );
         {
             let mut exclusive = self.exclusive.lock().unwrap();
             exclusive.state = ListenerState::ShutdownComplete;
@@ -220,31 +248,22 @@ impl ListenerInner {
                 .shutdown_complete_waiters
                 .drain(..)
                 .for_each(|waker| waker.wake());
+            trace!(
+                "Listener({:p}) new_connections's len={}",
+                self,
+                exclusive.new_connections.len()
+            );
         }
         unsafe {
             Arc::from_raw(self as *const _);
         }
-        msquic::StatusCode::QUIC_STATUS_SUCCESS
+        Ok(())
     }
+}
 
-    extern "C" fn native_callback(
-        _listener: msquic::ffi::HQUIC,
-        context: *mut c_void,
-        event: *mut msquic::ffi::QUIC_LISTENER_EVENT,
-    ) -> msquic::ffi::QUIC_STATUS {
-        let inner = unsafe { &*(context as *const Self) };
-        let ev_ref = unsafe { event.as_ref().unwrap() };
-        let event = msquic::ListenerEvent::from(ev_ref);
-
-        let res = match event {
-            msquic::ListenerEvent::NewConnection { info, connection } => {
-                inner.handle_event_new_connection(info, connection)
-            }
-            msquic::ListenerEvent::StopComplete {
-                app_close_in_progress,
-            } => inner.handle_event_stop_complete(app_close_in_progress),
-        };
-        res.into()
+impl Drop for ListenerInner {
+    fn drop(&mut self) {
+        trace!("ListenerInner({:p}) dropping", self);
     }
 }
 

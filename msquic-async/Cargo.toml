@@ -20,7 +20,7 @@ include = [
 
 [features]
 default = ["tokio"]
-tls-schannel = ["msquic/schannel"]
+openssl = ["msquic/openssl"]
 static = ["msquic/static"]
 
 [dependencies]
