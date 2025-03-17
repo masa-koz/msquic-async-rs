@@ -126,14 +126,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        features: ["", "--features tls-schannel"]
-        exclude:
-          - os: ubuntu-latest
-            features: "--features tls-schannel"
-          - os: windows-latest
-            features: ""
-          - os: macos-latest
-            features: "--features tls-schannel"
+        features: ["", "--features openssl"]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
