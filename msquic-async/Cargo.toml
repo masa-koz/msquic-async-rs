@@ -19,7 +19,7 @@ include = [
 ]
 
 [features]
-default = ["tokio", "static"]
+default = ["tokio"]
 openssl = ["msquic/openssl"]
 static = ["msquic/static"]
 
