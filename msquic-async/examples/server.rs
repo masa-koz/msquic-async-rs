@@ -101,23 +101,11 @@ async fn main() -> anyhow::Result<()> {
 
         let context = store.add_cert(&cert_ctx, CertAdd::Always).unwrap();
 
-        let cred_config = msquic::CredentialConfig {
-            cred_type: msquic::CREDENTIAL_TYPE_CERTIFICATE_CONTEXT,
-            cred_flags: msquic::CREDENTIAL_FLAG_NONE,
-            certificate: msquic::CertificateUnion {
-                context: unsafe { context.as_ptr() },
-            },
-            principle: ptr::null(),
-            reserved: ptr::null(),
-            async_handler: None,
-            allowed_cipher_suites: 0,
-        };
+        let cred_config = msquic::CredentialConfig::new().set_credential(
+            msquic::Credential::CertificateContext(unsafe { context.as_ptr() }),
+        );
 
-        configuration
-            .load_credential(&cred_config)
-            .map_err(|status| {
-                anyhow::anyhow!("Configuration::load_credential failed: {}", status)
-            })?;
+        configuration.load_credential(&cred_config)?;
     };
 
     let listener = msquic_async::Listener::new(&registration, configuration)?;
