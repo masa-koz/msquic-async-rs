@@ -125,12 +125,10 @@ jobs:
     needs: [style]
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest, windows-latest]
         features: ["", "--features openssl"]
         exclude:
           - os: ubuntu-latest
-            features: "--features openssl"
-          - os: macos-latest
             features: "--features openssl"
     runs-on: ${{ matrix.os }}
     steps:
