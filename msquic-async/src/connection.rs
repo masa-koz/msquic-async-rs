@@ -250,7 +250,7 @@ impl Connection {
                 .expect("msquic_conn set")
                 .datagram_send(
                     buffers,
-                    msquic::SEND_FLAG_NONE,
+                    msquic::SendFlags::NONE,
                     write_buf.into_raw() as *const _,
                 )
         }
@@ -292,7 +292,7 @@ impl Connection {
                 .expect("msquic_conn set")
                 .datagram_send(
                     buffers,
-                    msquic::SEND_FLAG_NONE,
+                    msquic::SendFlags::NONE,
                     write_buf.into_raw() as *const _,
                 )
         }
@@ -323,7 +323,7 @@ impl Connection {
                     .unwrap()
                     .as_ref()
                     .expect("msquic_conn set")
-                    .shutdown(msquic::CONNECTION_SHUTDOWN_FLAG_NONE, error_code);
+                    .shutdown(msquic::ConnectionShutdownFlags::NONE, error_code);
                 exclusive.state = ConnectionState::Shutdown;
             }
             ConnectionState::Shutdown => {}
@@ -357,7 +357,7 @@ impl Connection {
                     .unwrap()
                     .as_ref()
                     .expect("msquic_conn set")
-                    .shutdown(msquic::CONNECTION_SHUTDOWN_FLAG_NONE, error_code);
+                    .shutdown(msquic::ConnectionShutdownFlags::NONE, error_code);
                 exclusive.state = ConnectionState::Shutdown;
             }
             _ => {}
@@ -393,7 +393,7 @@ impl Drop for ConnectionInstance {
                         .unwrap()
                         .as_ref()
                         .expect("msquic_conn set")
-                        .shutdown(msquic::CONNECTION_SHUTDOWN_FLAG_NONE, 0);
+                        .shutdown(msquic::ConnectionShutdownFlags::NONE, 0);
                 }
                 ConnectionState::Shutdown | ConnectionState::ShutdownComplete => {}
             }
@@ -541,11 +541,11 @@ impl ConnectionInner {
     fn handle_event_peer_stream_started(
         &self,
         stream: msquic::StreamRef,
-        flags: msquic::ffi::QUIC_STREAM_OPEN_FLAGS,
+        flags: msquic::StreamOpenFlags,
     ) -> Result<(), msquic::Status> {
         let stream_type = if (flags
-            & msquic::ffi::QUIC_STREAM_OPEN_FLAGS_QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL)
-            != 0
+            & msquic::StreamOpenFlags::UNIDIRECTIONAL)
+            == msquic::StreamOpenFlags::UNIDIRECTIONAL
         {
             StreamType::Unidirectional
         } else {
@@ -558,7 +558,7 @@ impl ConnectionInner {
         );
 
         let stream = Stream::from_raw(unsafe { stream.as_raw() }, stream_type);
-        if (flags & msquic::ffi::QUIC_STREAM_OPEN_FLAGS_QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL) != 0 {
+        if (flags & msquic::StreamOpenFlags::UNIDIRECTIONAL) == msquic::StreamOpenFlags::UNIDIRECTIONAL {
             if let (Some(read_stream), None) = stream.split() {
                 let mut exclusive = self.exclusive.lock().unwrap();
                 exclusive.inbound_uni_streams.push_back(read_stream);
@@ -614,7 +614,7 @@ impl ConnectionInner {
     fn handle_event_datagram_received(
         &self,
         buffer: &msquic::BufferRef,
-        _flags: msquic::ffi::QUIC_RECEIVE_FLAGS,
+        _flags: msquic::ReceiveFlags,
     ) -> Result<(), msquic::Status> {
         trace!("Connection({:p}) Datagram received", self);
         let buf = Bytes::copy_from_slice(buffer.as_bytes());
@@ -632,16 +632,16 @@ impl ConnectionInner {
     fn handle_event_datagram_send_state_changed(
         &self,
         client_context: *const c_void,
-        state: msquic::ffi::QUIC_DATAGRAM_SEND_STATE,
+        state: msquic::DatagramSendState,
     ) -> Result<(), msquic::Status> {
         trace!(
-            "Connection({:p}) Datagram send state changed state:{}",
+            "Connection({:p}) Datagram send state changed state:{:?}",
             self,
             state
         );
         match state {
-            msquic::ffi::QUIC_DATAGRAM_SEND_STATE_QUIC_DATAGRAM_SEND_SENT
-            | msquic::ffi::QUIC_DATAGRAM_SEND_STATE_QUIC_DATAGRAM_SEND_CANCELED => {
+            msquic::DatagramSendState::Sent
+            | msquic::DatagramSendState::Canceled => {
                 let mut write_buf = unsafe { WriteBuffer::from_raw(client_context) };
                 let mut exclusive = self.exclusive.lock().unwrap();
                 write_buf.reset();

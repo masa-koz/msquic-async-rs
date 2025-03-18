@@ -32,9 +32,9 @@ impl Stream {
     ) -> Result<Self, StartError> {
         let mut msquic_stream = msquic::Stream::new();
         let flags = if stream_type == StreamType::Unidirectional {
-            msquic::STREAM_OPEN_FLAG_UNIDIRECTIONAL
+            msquic::StreamOpenFlags::UNIDIRECTIONAL
         } else {
-            msquic::STREAM_OPEN_FLAG_NONE
+            msquic::StreamOpenFlags::NONE
         };
         let inner = Arc::new(StreamInner::new(
             stream_type,
@@ -100,12 +100,12 @@ impl Stream {
                     .as_ref()
                     .expect("msquic_stream set")
                     .start(
-                        msquic::STREAM_START_FLAG_SHUTDOWN_ON_FAIL
-                            | msquic::STREAM_START_FLAG_INDICATE_PEER_ACCEPT
+                        msquic::StreamStartFlags::SHUTDOWN_ON_FAIL
+                            | msquic::StreamStartFlags::INDICATE_PEER_ACCEPT
                             | if failed_on_block {
-                                msquic::STREAM_START_FLAG_FAIL_BLOCKED
+                                msquic::StreamStartFlags::FAIL_BLOCKED
                             } else {
-                                msquic::STREAM_START_FLAG_NONE
+                                msquic::StreamStartFlags::NONE
                             },
                     )
                     .map_err(StartError::OtherError);
@@ -641,7 +641,7 @@ impl StreamInstance {
                         .expect("msquic_stream set")
                         .send(
                             buffers,
-                            msquic::SEND_FLAG_NONE,
+                            msquic::SendFlags::NONE,
                             write_buf.into_raw() as *const _,
                         )
                 }
@@ -663,7 +663,7 @@ impl StreamInstance {
                         .expect("msquic_stream set")
                         .send(
                             buffers,
-                            msquic::SEND_FLAG_FIN,
+                            msquic::SendFlags::FIN,
                             write_buf.into_raw() as *const _,
                         )
                 }
@@ -695,7 +695,7 @@ impl StreamInstance {
                     .unwrap()
                     .as_ref()
                     .expect("msquic_stream set")
-                    .shutdown(msquic::STREAM_SHUTDOWN_FLAG_GRACEFUL, 0)
+                    .shutdown(msquic::StreamShutdownFlags::GRACEFUL, 0)
                     .map_err(WriteError::OtherError)
                 {
                     Ok(()) => {
@@ -742,7 +742,7 @@ impl StreamInstance {
                     .unwrap()
                     .as_ref()
                     .expect("msquic_stream set")
-                    .shutdown(msquic::STREAM_SHUTDOWN_FLAG_ABORT_SEND, error_code)
+                    .shutdown(msquic::StreamShutdownFlags::ABORT_SEND, error_code)
                     .map_err(WriteError::OtherError)
                 {
                     Ok(()) => {
@@ -780,7 +780,7 @@ impl StreamInstance {
                     .unwrap()
                     .as_ref()
                     .expect("msquic_stream set")
-                    .shutdown(msquic::STREAM_SHUTDOWN_FLAG_ABORT_SEND, error_code)
+                    .shutdown(msquic::StreamShutdownFlags::ABORT_SEND, error_code)
                     .map_err(WriteError::OtherError)?;
                 exclusive.send_state = StreamSendState::Shutdown;
                 Ok(())
@@ -809,7 +809,7 @@ impl StreamInstance {
                     .unwrap()
                     .as_ref()
                     .expect("msquic_stream set")
-                    .shutdown(msquic::STREAM_SHUTDOWN_FLAG_ABORT_RECEIVE, error_code)
+                    .shutdown(msquic::StreamShutdownFlags::ABORT_RECEIVE, error_code)
                     .map_err(ReadError::OtherError)
                 {
                     Ok(()) => {
@@ -847,7 +847,7 @@ impl StreamInstance {
                     .unwrap()
                     .as_ref()
                     .expect("msquic_stream set")
-                    .shutdown(msquic::STREAM_SHUTDOWN_FLAG_ABORT_RECEIVE, error_code)
+                    .shutdown(msquic::StreamShutdownFlags::ABORT_RECEIVE, error_code)
                     .map_err(ReadError::OtherError)?;
                 exclusive.recv_state = StreamRecvState::ShutdownComplete;
             }
@@ -893,9 +893,9 @@ impl Drop for StreamInstance {
                     .as_ref()
                     .expect("msquic_stream set")
                     .shutdown(
-                        msquic::STREAM_SHUTDOWN_FLAG_ABORT_SEND
-                            | msquic::STREAM_SHUTDOWN_FLAG_ABORT_RECEIVE
-                            | msquic::STREAM_SHUTDOWN_FLAG_IMMEDIATE,
+                        msquic::StreamShutdownFlags::ABORT_SEND
+                            | msquic::StreamShutdownFlags::ABORT_RECEIVE
+                            | msquic::StreamShutdownFlags::IMMEDIATE,
                         0,
                     );
             }
@@ -1101,7 +1101,7 @@ impl StreamInner {
         absolute_offset: u64,
         total_buffer_length: &mut u64,
         buffers: &[msquic::BufferRef],
-        flags: msquic::ffi::QUIC_RECEIVE_FLAGS,
+        flags: msquic::ReceiveFlags,
     ) -> Result<(), msquic::Status> {
         trace!(
             "Stream({:p}, id={:?}) Receive {} offsets {} bytes, fin {}",
@@ -1109,8 +1109,7 @@ impl StreamInner {
             self.shared.id.read(),
             absolute_offset,
             total_buffer_length,
-            (flags & msquic::ffi::QUIC_RECEIVE_FLAGS_QUIC_RECEIVE_FLAG_FIN)
-                == msquic::ffi::QUIC_RECEIVE_FLAGS_QUIC_RECEIVE_FLAG_FIN
+            (flags & msquic::ReceiveFlags::FIN) == msquic::ReceiveFlags::FIN
         );
 
         let arc_inner: Arc<Self> = unsafe { Arc::from_raw(self as *const _) };
@@ -1118,8 +1117,7 @@ impl StreamInner {
         let recv_buffer = StreamRecvBuffer::new(
             absolute_offset as usize,
             buffers,
-            (flags & msquic::ffi::QUIC_RECEIVE_FLAGS_QUIC_RECEIVE_FLAG_FIN)
-                == msquic::ffi::QUIC_RECEIVE_FLAGS_QUIC_RECEIVE_FLAG_FIN,
+            (flags & msquic::ReceiveFlags::FIN) == msquic::ReceiveFlags::FIN
         );
 
         let _ = Arc::into_raw(arc_inner);
