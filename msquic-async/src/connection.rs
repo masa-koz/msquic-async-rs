@@ -543,8 +543,7 @@ impl ConnectionInner {
         stream: msquic::StreamRef,
         flags: msquic::StreamOpenFlags,
     ) -> Result<(), msquic::Status> {
-        let stream_type = if (flags
-            & msquic::StreamOpenFlags::UNIDIRECTIONAL)
+        let stream_type = if (flags & msquic::StreamOpenFlags::UNIDIRECTIONAL)
             == msquic::StreamOpenFlags::UNIDIRECTIONAL
         {
             StreamType::Unidirectional
@@ -558,7 +557,9 @@ impl ConnectionInner {
         );
 
         let stream = Stream::from_raw(unsafe { stream.as_raw() }, stream_type);
-        if (flags & msquic::StreamOpenFlags::UNIDIRECTIONAL) == msquic::StreamOpenFlags::UNIDIRECTIONAL {
+        if (flags & msquic::StreamOpenFlags::UNIDIRECTIONAL)
+            == msquic::StreamOpenFlags::UNIDIRECTIONAL
+        {
             if let (Some(read_stream), None) = stream.split() {
                 let mut exclusive = self.exclusive.lock().unwrap();
                 exclusive.inbound_uni_streams.push_back(read_stream);
@@ -640,8 +641,7 @@ impl ConnectionInner {
             state
         );
         match state {
-            msquic::DatagramSendState::Sent
-            | msquic::DatagramSendState::Canceled => {
+            msquic::DatagramSendState::Sent | msquic::DatagramSendState::Canceled => {
                 let mut write_buf = unsafe { WriteBuffer::from_raw(client_context) };
                 let mut exclusive = self.exclusive.lock().unwrap();
                 write_buf.reset();

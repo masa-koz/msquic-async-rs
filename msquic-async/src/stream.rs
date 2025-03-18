@@ -1117,7 +1117,7 @@ impl StreamInner {
         let recv_buffer = StreamRecvBuffer::new(
             absolute_offset as usize,
             buffers,
-            (flags & msquic::ReceiveFlags::FIN) == msquic::ReceiveFlags::FIN
+            (flags & msquic::ReceiveFlags::FIN) == msquic::ReceiveFlags::FIN,
         );
 
         let _ = Arc::into_raw(arc_inner);
