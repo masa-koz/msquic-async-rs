@@ -1,15 +1,16 @@
 /// This file is based on the `lib.rs` from the `h3-quinn` crate.
-use bytes::{Buf, Bytes, BytesMut};
+use bytes::Buf;
+#[cfg(feature = "datagram")]
+use bytes::{Bytes, BytesMut};
 use futures::{
     future::poll_fn,
     ready,
     stream::{self},
     Stream, StreamExt,
 };
-use h3::{
-    ext::Datagram,
-    quic::{self, Error, StreamId, WriteBuf},
-};
+use h3::quic::{self, Error, StreamId, WriteBuf};
+#[cfg(feature = "datagram")]
+use h3_datagram::{datagram::Datagram, quic_traits};
 pub use msquic_async;
 pub use msquic_async::msquic;
 use std::fmt::{self, Display};
@@ -37,6 +38,7 @@ pub struct Connection {
     opening_uni: Option<
         BoxStreamSync<'static, Result<msquic_async::Stream, msquic_async::StreamStartError>>,
     >,
+    #[cfg(feature = "datagram")]
     datagrams: BoxStreamSync<'static, Result<Bytes, msquic_async::DgramReceiveError>>,
 }
 
@@ -53,6 +55,7 @@ impl Connection {
                 Some((conn.accept_inbound_uni_stream().await, conn))
             })),
             opening_uni: None,
+            #[cfg(feature = "datagram")]
             datagrams: Box::pin(stream::unfold(conn, |conn| async {
                 Some((poll_fn(|cx| conn.poll_receive_datagram(cx)).await, conn))
             })),
@@ -358,7 +361,8 @@ where
     }
 }
 
-impl<B> quic::SendDatagramExt<B> for Connection
+#[cfg(feature = "datagram")]
+impl<B> quic_traits::SendDatagramExt<B> for Connection
 where
     B: Buf,
 {
@@ -375,7 +379,8 @@ where
     }
 }
 
-impl quic::RecvDatagramExt for Connection {
+#[cfg(feature = "datagram")]
+impl quic_traits::RecvDatagramExt for Connection {
     type Buf = Bytes;
 
     type Error = RecvDatagramError;
