@@ -1698,8 +1698,27 @@ async fn multipath_validation() {
 
     set.spawn(async move {
         let conn = listener.accept().await.unwrap();
+
+        let local_addr = conn.get_local_addr().unwrap();
+        let orig_remote_addr = conn.get_remote_addr().unwrap();
+        let new_peer_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+
         let res = poll_fn(|cx| conn.poll_path_event(cx)).await;
-        assert!(res.is_ok());
+        if let Ok(PathEvent::Added(peer_address, local_address, _)) = res {
+            assert_eq!(peer_address.ip(), new_peer_addr.ip());
+            assert_eq!(local_address, local_addr);
+        } else {
+            panic!("unexpected path event");
+        };
+
+        let res = poll_fn(|cx| conn.poll_path_event(cx)).await;
+        if let Ok(PathEvent::Removed(peer_address, local_address, _)) = res {
+            assert_eq!(peer_address, orig_remote_addr);
+            assert_eq!(local_address, local_addr);
+        } else {
+            panic!("unexpected path event");
+        };
+
         server_tx.send(()).await.unwrap();
     });
 
@@ -1722,19 +1741,35 @@ async fn multipath_validation() {
             )
             .await;
         assert!(res.is_ok());
-        let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-        let res = conn.add_local_address(addr);
+
+        let orig_local_addr = conn.get_local_addr().unwrap();
+        let remote_addr = conn.get_remote_addr().unwrap();
+        let new_local_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+
+        let res = conn.add_local_addr(new_local_addr);
         assert!(res.is_ok());
         let res = poll_fn(|cx| conn.poll_path_event(cx)).await;
-        if let Ok(PathEvent::Added(_, local_address, _)) = res {
-            assert_eq!(local_address.ip(), addr.ip());
+        if let Ok(PathEvent::Added(peer_address, local_address, _)) = res {
+            assert_eq!(peer_address, remote_addr);
+            assert_eq!(local_address.ip(), new_local_addr.ip());
         } else {
             panic!("unexpected path event");
-        }
+        };
+
+        let res = conn.remove_local_addr(orig_local_addr.clone());
         assert!(res.is_ok());
+
+        let res = poll_fn(|cx| conn.poll_path_event(cx)).await;
+        if let Ok(PathEvent::Removed(peer_address, local_address, _)) = res {
+            assert_eq!(peer_address, remote_addr);
+            assert_eq!(local_address, orig_local_addr);
+        } else {
+            panic!("unexpected path event");
+        };
+
         client_rx.recv().await.unwrap();
-        let res = poll_fn(|cx| conn.poll_shutdown(cx, 1)).await;
-        assert!(res.is_ok());
+
+        let _ = poll_fn(|cx| conn.poll_shutdown(cx, 1)).await;
         let res = poll_fn(|cx| conn.poll_path_event(cx)).await;
         assert!(res.is_err());
     });
