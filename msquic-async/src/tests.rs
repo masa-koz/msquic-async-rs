@@ -1466,7 +1466,6 @@ async fn test_get_local_addr() {
         assert_eq!(addr.ip(), addr1.ip());
         client_tx.send(()).await.unwrap();
         client_rx.recv().await.unwrap();
-
     });
 
     let mut results = Vec::new();
@@ -1536,7 +1535,6 @@ async fn test_get_remote_addr() {
         assert_eq!(addr.ip(), addr1.ip());
         client_tx.send(()).await.unwrap();
         client_rx.recv().await.unwrap();
-
     });
 
     let mut results = Vec::new();
