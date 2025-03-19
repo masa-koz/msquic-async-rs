@@ -367,6 +367,34 @@ impl Connection {
         Ok(())
     }
 
+    /// Get the local address of the connection.
+    pub fn get_local_addr(&self) -> Result<SocketAddr, ConnectionError> {
+        self.0
+            .shared
+            .msquic_conn
+            .read()
+            .unwrap()
+            .as_ref()
+            .expect("msquic_conn set")
+            .get_local_addr()
+            .map(|addr| addr.as_socket().expect("socket addr"))
+            .map_err(ConnectionError::OtherError)
+    }
+
+    /// Get the remote address of the connection.
+    pub fn get_remote_addr(&self) -> Result<SocketAddr, ConnectionError> {
+        self.0
+            .shared
+            .msquic_conn
+            .read()
+            .unwrap()
+            .as_ref()
+            .expect("msquic_conn set")
+            .get_remote_addr()
+            .map(|addr| addr.as_socket().expect("socket addr"))
+            .map_err(ConnectionError::OtherError)
+    }
+
     // Add a new local address to the connection
     pub fn add_local_address(&self, local_address: SocketAddr) -> Result<(), ConnectionError> {
         let local_address: msquic::Addr = local_address.into();
