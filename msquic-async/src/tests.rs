@@ -1412,6 +1412,144 @@ async fn test_poll_abort_read() {
     });
 }
 
+/// Test for ['Connection::start()']
+#[test(tokio::test)]
+async fn test_get_local_addr() {
+    let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
+    let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
+
+    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let listener = new_server(
+        &registration,
+        &msquic::Settings::new().set_IdleTimeoutMs(10000),
+    )
+    .unwrap();
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    listener
+        .start(&[msquic::BufferRef::from("test")], Some(addr))
+        .expect("listener start");
+    let server_addr = listener.local_addr().expect("listener local_addr");
+    let mut set = JoinSet::new();
+
+    set.spawn(async move {
+        let conn = listener.accept().await.unwrap();
+        let res = conn.get_local_addr();
+        assert!(res.is_ok());
+        let addr = res.unwrap();
+        let addr1: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        assert_eq!(addr.ip(), addr1.ip());
+        server_rx.recv().await.unwrap();
+        server_tx.send(()).await.unwrap();
+    });
+
+    let client_config = new_client_config(
+        &registration,
+        &msquic::Settings::new().set_IdleTimeoutMs(10000),
+    )
+    .unwrap();
+    let conn = Connection::new(&registration).unwrap();
+    set.spawn(async move {
+        let res = conn.get_local_addr();
+        assert!(res.is_err());
+        let res = conn
+            .start(
+                &client_config,
+                &format!("{}", server_addr.ip()),
+                server_addr.port(),
+            )
+            .await;
+        assert!(res.is_ok());
+        let res = conn.get_local_addr();
+        assert!(res.is_ok());
+        let addr = res.unwrap();
+        let addr1: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        assert_eq!(addr.ip(), addr1.ip());
+        client_tx.send(()).await.unwrap();
+        client_rx.recv().await.unwrap();
+    });
+
+    let mut results = Vec::new();
+    while let Some(res) = set.join_next().await {
+        results.push(res);
+    }
+    results.into_iter().for_each(|res| {
+        if let Err(err) = res {
+            if err.is_panic() {
+                std::panic::resume_unwind(err.into_panic());
+            }
+        }
+    });
+}
+
+/// Test for ['Connection::start()']
+#[test(tokio::test)]
+async fn test_get_remote_addr() {
+    let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
+    let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
+
+    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let listener = new_server(
+        &registration,
+        &msquic::Settings::new().set_IdleTimeoutMs(10000),
+    )
+    .unwrap();
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    listener
+        .start(&[msquic::BufferRef::from("test")], Some(addr))
+        .expect("listener start");
+    let server_addr = listener.local_addr().expect("listener local_addr");
+    let mut set = JoinSet::new();
+
+    set.spawn(async move {
+        let conn = listener.accept().await.unwrap();
+        let res = conn.get_remote_addr();
+        assert!(res.is_ok());
+        let addr = res.unwrap();
+        let addr1: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        assert_eq!(addr.ip(), addr1.ip());
+        server_rx.recv().await.unwrap();
+        server_tx.send(()).await.unwrap();
+    });
+
+    let client_config = new_client_config(
+        &registration,
+        &msquic::Settings::new().set_IdleTimeoutMs(10000),
+    )
+    .unwrap();
+    let conn = Connection::new(&registration).unwrap();
+    set.spawn(async move {
+        let res = conn.get_remote_addr();
+        assert!(res.is_err());
+        let res = conn
+            .start(
+                &client_config,
+                &format!("{}", server_addr.ip()),
+                server_addr.port(),
+            )
+            .await;
+        assert!(res.is_ok());
+        let res = conn.get_remote_addr();
+        assert!(res.is_ok());
+        let addr = res.unwrap();
+        let addr1: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        assert_eq!(addr.ip(), addr1.ip());
+        client_tx.send(()).await.unwrap();
+        client_rx.recv().await.unwrap();
+    });
+
+    let mut results = Vec::new();
+    while let Some(res) = set.join_next().await {
+        results.push(res);
+    }
+    results.into_iter().for_each(|res| {
+        if let Err(err) = res {
+            if err.is_panic() {
+                std::panic::resume_unwind(err.into_panic());
+            }
+        }
+    });
+}
+
 #[test]
 fn test_stream_recv_buffers() {
     let buffers = vec![
