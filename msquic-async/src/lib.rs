@@ -11,8 +11,8 @@ pub use msquic;
 pub use buffer::StreamRecvBuffer;
 pub use connection::{
     AcceptInboundStream, AcceptInboundUniStream, Connection, ConnectionError, DgramReceiveError,
-    DgramSendError, OpenOutboundStream, ShutdownError as ConnectionShutdownError,
-    StartError as ConnectionStartError,
+    DgramSendError, OpenOutboundStream, PathEvent, PathEventError,
+    ShutdownError as ConnectionShutdownError, StartError as ConnectionStartError,
 };
 pub use listener::{ListenError, Listener};
 pub use stream::{

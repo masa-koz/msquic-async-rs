@@ -3,6 +3,7 @@ use crate::stream::{ReadStream, StartError as StreamStartError, Stream, StreamTy
 
 use std::collections::VecDeque;
 use std::future::Future;
+use std::net::SocketAddr;
 use std::ops::Deref;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, RwLock};
@@ -10,6 +11,7 @@ use std::task::{Context, Poll, Waker};
 
 use bytes::Bytes;
 use libc::c_void;
+use msquic::ffi;
 use thiserror::Error;
 use tracing::trace;
 
@@ -364,6 +366,71 @@ impl Connection {
         }
         Ok(())
     }
+
+    // Add a new local address to the connection
+    pub fn add_local_address(&self, local_address: SocketAddr) -> Result<(), ConnectionError> {
+        let local_address: msquic::Addr = local_address.into();
+        unsafe {
+            msquic::Api::set_param(
+                self.0
+                    .shared
+                    .msquic_conn
+                    .read()
+                    .unwrap()
+                    .as_ref()
+                    .expect("msquic_conn set")
+                    .as_raw(),
+                ffi::QUIC_PARAM_CONN_ADD_LOCAL_ADDRESS,
+                std::mem::size_of::<msquic::Addr>() as u32,
+                &local_address as *const _ as *const c_void,
+            )
+            .map_err(ConnectionError::OtherError)
+        }
+    }
+
+    // Remove a existing local address from the connection
+    pub fn remove_local_address(&self, local_address: SocketAddr) -> Result<(), ConnectionError> {
+        let local_address: msquic::Addr = local_address.into();
+        unsafe {
+            msquic::Api::set_param(
+                self.0
+                    .shared
+                    .msquic_conn
+                    .read()
+                    .unwrap()
+                    .as_ref()
+                    .expect("msquic_conn set")
+                    .as_raw(),
+                ffi::QUIC_PARAM_CONN_REMOVE_LOCAL_ADDRESS,
+                std::mem::size_of::<msquic::Addr>() as u32,
+                &local_address as *const _ as *const c_void,
+            )
+            .map_err(ConnectionError::OtherError)
+        }
+    }
+
+    /// Poll to read a path event.
+    pub fn poll_path_event(&self, cx: &mut Context<'_>) -> Poll<Result<PathEvent, PathEventError>> {
+        let mut exclusive = self.0.exclusive.lock().unwrap();
+        match exclusive.state {
+            ConnectionState::Open | ConnectionState::Connecting => {
+                return Poll::Ready(Err(PathEventError::HandshakeNotConfirmed));
+            }
+            ConnectionState::Connected | ConnectionState::Shutdown => {
+                if let Some(event) = exclusive.path_events.pop_front() {
+                    return Poll::Ready(Ok(event));
+                }
+            }
+            ConnectionState::ShutdownComplete => {
+                return Poll::Ready(Err(PathEventError::ConnectionLost(
+                    exclusive.error.as_ref().expect("error").clone(),
+                )));
+            }
+        }
+
+        exclusive.path_event_waiters.push(cx.waker().clone());
+        Poll::Pending
+    }
 }
 
 struct ConnectionInstance(Arc<ConnectionInner>);
@@ -418,6 +485,8 @@ struct ConnectionInnerExclusive {
     recv_waiters: Vec<Waker>,
     write_pool: Vec<WriteBuffer>,
     shutdown_waiters: Vec<Waker>,
+    path_events: VecDeque<PathEvent>,
+    path_event_waiters: Vec<Waker>,
 }
 
 struct ConnectionInnerShared {
@@ -439,6 +508,8 @@ impl ConnectionInner {
                 recv_waiters: Vec::new(),
                 write_pool: Vec::new(),
                 shutdown_waiters: Vec::new(),
+                path_events: VecDeque::new(),
+                path_event_waiters: Vec::new(),
             }),
             shared: ConnectionInnerShared {
                 msquic_conn: RwLock::new(None),
@@ -529,6 +600,10 @@ impl ConnectionInner {
                 .for_each(|waker| waker.wake());
             exclusive
                 .shutdown_waiters
+                .drain(..)
+                .for_each(|waker| waker.wake());
+            exclusive
+                .path_event_waiters
                 .drain(..)
                 .for_each(|waker| waker.wake());
         }
@@ -652,6 +727,87 @@ impl ConnectionInner {
         Ok(())
     }
 
+    fn handle_event_path_added(
+        &self,
+        peer_address: &msquic::Addr,
+        local_address: &msquic::Addr,
+        path_id: u32,
+    ) -> Result<(), msquic::Status> {
+        trace!(
+            "Connection({:p}) A new path added PeerAddress={}, LocalAddress={}, path_id={}",
+            self,
+            peer_address.as_socket().unwrap(),
+            local_address.as_socket().unwrap(),
+            path_id,
+        );
+        let mut exclusive = self.exclusive.lock().unwrap();
+        exclusive.path_events.push_back(PathEvent::Added(
+            peer_address.as_socket().unwrap(),
+            local_address.as_socket().unwrap(),
+            path_id,
+        ));
+        exclusive
+            .path_event_waiters
+            .drain(..)
+            .for_each(|waker| waker.wake());
+        Ok(())
+    }
+
+    fn handle_event_path_removed(
+        &self,
+        peer_address: &msquic::Addr,
+        local_address: &msquic::Addr,
+        path_id: u32,
+    ) -> Result<(), msquic::Status> {
+        trace!(
+            "Connection({:p}) An existing path removed PeerAddress={}, LocalAddress={}, path_id={}",
+            self,
+            peer_address.as_socket().unwrap(),
+            local_address.as_socket().unwrap(),
+            path_id,
+        );
+        let mut exclusive = self.exclusive.lock().unwrap();
+        exclusive.path_events.push_back(PathEvent::Removed(
+            peer_address.as_socket().unwrap(),
+            local_address.as_socket().unwrap(),
+            path_id,
+        ));
+        exclusive
+            .path_event_waiters
+            .drain(..)
+            .for_each(|waker| waker.wake());
+        Ok(())
+    }
+
+    fn handle_event_path_status_changed(
+        &self,
+        peer_address: &msquic::Addr,
+        local_address: &msquic::Addr,
+        path_id: u32,
+        is_active: bool,
+    ) -> Result<(), msquic::Status> {
+        trace!(
+            "Connection({:p}) A path's status changed PeerAddress={}, LocalAddress={}, path_id={}, is_active={}",
+            self,
+            peer_address.as_socket().unwrap(),
+            local_address.as_socket().unwrap(),
+            path_id,
+            is_active
+        );
+        let mut exclusive = self.exclusive.lock().unwrap();
+        exclusive.path_events.push_back(PathEvent::StatusChanged(
+            peer_address.as_socket().unwrap(),
+            local_address.as_socket().unwrap(),
+            path_id,
+            is_active,
+        ));
+        exclusive
+            .path_event_waiters
+            .drain(..)
+            .for_each(|waker| waker.wake());
+        Ok(())
+    }
+
     fn callback_handler_impl(
         &self,
         _connection: msquic::ConnectionRef,
@@ -695,6 +851,27 @@ impl ConnectionInner {
                 client_context,
                 state,
             } => self.handle_event_datagram_send_state_changed(client_context, state),
+            msquic::ConnectionEvent::PathAdded {
+                peer_address,
+                local_address,
+                path_id,
+            } => self.handle_event_path_added(peer_address, local_address, path_id),
+            msquic::ConnectionEvent::PathRemoved {
+                peer_address,
+                local_address,
+                path_id,
+            } => self.handle_event_path_removed(peer_address, local_address, path_id),
+            msquic::ConnectionEvent::PathStatusChanged {
+                peer_address,
+                local_address,
+                path_id,
+                is_active,
+            } => self.handle_event_path_status_changed(
+                peer_address,
+                local_address,
+                path_id,
+                is_active,
+            ),
             _ => {
                 trace!("Connection({:p}) Other callback", self);
                 Ok(())
@@ -715,6 +892,14 @@ enum ConnectionState {
     Connected,
     Shutdown,
     ShutdownComplete,
+}
+
+/// Events that can occur for the management of path
+#[derive(Debug, Clone)]
+pub enum PathEvent {
+    Added(SocketAddr, SocketAddr, u32),
+    Removed(SocketAddr, SocketAddr, u32),
+    StatusChanged(SocketAddr, SocketAddr, u32, bool),
 }
 
 /// Errors that can occur when managing a connection.
@@ -772,6 +957,17 @@ pub enum StartError {
 pub enum ShutdownError {
     #[error("connection not started yet")]
     ConnectionNotStarted,
+    #[error("connection lost")]
+    ConnectionLost(#[from] ConnectionError),
+    #[error("other error: status {0:?}")]
+    OtherError(msquic::Status),
+}
+
+/// Errors that can occur when reading a path event.
+#[derive(Debug, Error, Clone)]
+pub enum PathEventError {
+    #[error("handshake not confirmed yet")]
+    HandshakeNotConfirmed,
     #[error("connection lost")]
     ConnectionLost(#[from] ConnectionError),
     #[error("other error: status {0:?}")]

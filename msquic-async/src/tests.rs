@@ -1,5 +1,6 @@
 use super::{
-    Connection, ConnectionError, ConnectionStartError, ListenError, Listener, StreamRecvBuffer,
+    Connection, ConnectionError, ConnectionStartError, ListenError, Listener, PathEvent,
+    StreamRecvBuffer,
 };
 
 use std::future::poll_fn;
@@ -1521,6 +1522,83 @@ async fn datagram_validation() {
         client_rx.recv().await.expect("recv");
 
         Ok::<_, anyhow::Error>(())
+    });
+
+    let mut results = Vec::new();
+    while let Some(res) = set.join_next().await {
+        results.push(res);
+    }
+    results.into_iter().for_each(|res| {
+        if let Err(err) = res {
+            if err.is_panic() {
+                std::panic::resume_unwind(err.into_panic());
+            }
+        }
+    });
+}
+
+/// Test for ['Connection::start()']
+#[test(tokio::test)]
+async fn multipath_validation() {
+    // let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
+    let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
+
+    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let listener = new_server(
+        &registration,
+        &msquic::Settings::new()
+            .set_IdleTimeoutMs(10000)
+            .set_MultipathEnabled(),
+    )
+    .unwrap();
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    listener
+        .start(&[msquic::BufferRef::from("test")], Some(addr))
+        .expect("listener start");
+    let server_addr = listener.local_addr().expect("listener local_addr");
+    let mut set = JoinSet::new();
+
+    set.spawn(async move {
+        let conn = listener.accept().await.unwrap();
+        let res = poll_fn(|cx| conn.poll_path_event(cx)).await;
+        assert!(res.is_ok());
+        server_tx.send(()).await.unwrap();
+    });
+
+    let client_config = new_client_config(
+        &registration,
+        &msquic::Settings::new()
+            .set_IdleTimeoutMs(10000)
+            .set_MultipathEnabled(),
+    )
+    .unwrap();
+    let conn = Connection::new(&registration).unwrap();
+    set.spawn(async move {
+        let res = poll_fn(|cx| conn.poll_path_event(cx)).await;
+        assert!(res.is_err());
+        let res = conn
+            .start(
+                &client_config,
+                &format!("{}", server_addr.ip()),
+                server_addr.port(),
+            )
+            .await;
+        assert!(res.is_ok());
+        let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let res = conn.add_local_address(addr);
+        assert!(res.is_ok());
+        let res = poll_fn(|cx| conn.poll_path_event(cx)).await;
+        if let Ok(PathEvent::Added(_, local_address, _)) = res {
+            assert_eq!(local_address.ip(), addr.ip());
+        } else {
+            panic!("unexpected path event");
+        }
+        assert!(res.is_ok());
+        client_rx.recv().await.unwrap();
+        let res = poll_fn(|cx| conn.poll_shutdown(cx, 1)).await;
+        assert!(res.is_ok());
+        let res = poll_fn(|cx| conn.poll_path_event(cx)).await;
+        assert!(res.is_err());
     });
 
     let mut results = Vec::new();
