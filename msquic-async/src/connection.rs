@@ -396,8 +396,8 @@ impl Connection {
     }
 
     // Add a new local address to the connection
-    pub fn add_local_address(&self, local_address: SocketAddr) -> Result<(), ConnectionError> {
-        let local_address: msquic::Addr = local_address.into();
+    pub fn add_local_addr(&self, local_addr: SocketAddr) -> Result<(), ConnectionError> {
+        let local_addr: msquic::Addr = local_addr.into();
         unsafe {
             msquic::Api::set_param(
                 self.0
@@ -410,15 +410,15 @@ impl Connection {
                     .as_raw(),
                 ffi::QUIC_PARAM_CONN_ADD_LOCAL_ADDRESS,
                 std::mem::size_of::<msquic::Addr>() as u32,
-                &local_address as *const _ as *const c_void,
+                &local_addr as *const _ as *const c_void,
             )
             .map_err(ConnectionError::OtherError)
         }
     }
 
     // Remove a existing local address from the connection
-    pub fn remove_local_address(&self, local_address: SocketAddr) -> Result<(), ConnectionError> {
-        let local_address: msquic::Addr = local_address.into();
+    pub fn remove_local_addr(&self, local_addr: SocketAddr) -> Result<(), ConnectionError> {
+        let local_addr: msquic::Addr = local_addr.into();
         unsafe {
             msquic::Api::set_param(
                 self.0
@@ -431,7 +431,7 @@ impl Connection {
                     .as_raw(),
                 ffi::QUIC_PARAM_CONN_REMOVE_LOCAL_ADDRESS,
                 std::mem::size_of::<msquic::Addr>() as u32,
-                &local_address as *const _ as *const c_void,
+                &local_addr as *const _ as *const c_void,
             )
             .map_err(ConnectionError::OtherError)
         }
