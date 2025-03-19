@@ -1712,6 +1712,15 @@ async fn multipath_validation() {
         };
 
         let res = poll_fn(|cx| conn.poll_path_event(cx)).await;
+        if let Ok(PathEvent::StatusChanged(peer_address, local_address, _, is_active)) = res {
+            assert_eq!(peer_address, orig_remote_addr);
+            assert_eq!(local_address, local_addr);
+            assert!(!is_active)
+        } else {
+            panic!("unexpected path event");
+        };
+
+        let res = poll_fn(|cx| conn.poll_path_event(cx)).await;
         if let Ok(PathEvent::Removed(peer_address, local_address, _)) = res {
             assert_eq!(peer_address, orig_remote_addr);
             assert_eq!(local_address, local_addr);
@@ -1752,6 +1761,18 @@ async fn multipath_validation() {
         if let Ok(PathEvent::Added(peer_address, local_address, _)) = res {
             assert_eq!(peer_address, remote_addr);
             assert_eq!(local_address.ip(), new_local_addr.ip());
+        } else {
+            panic!("unexpected path event");
+        };
+
+        let res = conn.set_path_status(0, false);
+        assert!(res.is_ok());
+
+        let res = poll_fn(|cx| conn.poll_path_event(cx)).await;
+        if let Ok(PathEvent::StatusChanged(peer_address, local_address, _, is_active)) = res {
+            assert_eq!(peer_address, remote_addr);
+            assert_eq!(local_address, orig_local_addr);
+            assert!(!is_active);
         } else {
             panic!("unexpected path event");
         };

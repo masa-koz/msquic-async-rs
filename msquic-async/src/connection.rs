@@ -437,6 +437,30 @@ impl Connection {
         }
     }
 
+    // Set path's status to active/backup
+    pub fn set_path_status(&self, path_id: u32, is_active: bool) -> Result<(), ConnectionError> {
+        let path_status = msquic::ffi::QUIC_PATH_STATUS {
+            PathId: path_id,
+            Active: if is_active { 1 } else { 0 },
+        };
+        unsafe {
+            msquic::Api::set_param(
+                self.0
+                    .shared
+                    .msquic_conn
+                    .read()
+                    .unwrap()
+                    .as_ref()
+                    .expect("msquic_conn set")
+                    .as_raw(),
+                ffi::QUIC_PARAM_CONN_PATH_STATUS,
+                std::mem::size_of::<msquic::ffi::QUIC_PATH_STATUS>() as u32,
+                &path_status as *const _ as *const c_void,
+            )
+            .map_err(ConnectionError::OtherError)
+        }
+    }
+
     /// Poll to read a path event.
     pub fn poll_path_event(&self, cx: &mut Context<'_>) -> Poll<Result<PathEvent, PathEventError>> {
         let mut exclusive = self.0.exclusive.lock().unwrap();
