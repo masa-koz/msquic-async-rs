@@ -406,31 +406,10 @@ impl Deref for ConnectionInstance {
 impl Drop for ConnectionInstance {
     fn drop(&mut self) {
         trace!("ConnectionInstance(Inner:{:p}) dropping", &*self.0);
-        // {
-        //     let exclusive = self.0.exclusive.lock().unwrap();
-        //     match exclusive.state {
-        //         ConnectionState::Open
-        //         | ConnectionState::Connecting
-        //         | ConnectionState::Connected => {
-        //             trace!("ConnectionInstance(Inner:{:p}) shutdown while dropping", &*self.0);
-        //             self.0
-        //                 .shared
-        //                 .msquic_conn
-        //                 .read()
-        //                 .unwrap()
-        //                 .as_ref()
-        //                 .expect("msquic_conn set")
-        //                 .shutdown(msquic::ConnectionShutdownFlags::NONE, 0);
-        //         }
-        //         ConnectionState::Shutdown | ConnectionState::ShutdownComplete => {}
-        //     }
-        // }
-        {
-            let mut exclusive = self.0.shared.msquic_conn.write().unwrap();
-            let msquic_conn = exclusive.take();
-            drop(exclusive);
-            drop(msquic_conn);
-        }
+        let mut exclusive = self.0.shared.msquic_conn.write().unwrap();
+        let msquic_conn = exclusive.take();
+        drop(exclusive);
+        drop(msquic_conn);
     }
 }
 

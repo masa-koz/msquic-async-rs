@@ -21,7 +21,6 @@ impl Listener {
         let mut msquic_listener = msquic::Listener::new();
         let inner = Arc::new(ListenerInner::new(configuration));
         let inner_in_ev = inner.clone();
-        let _ = Arc::into_raw(inner.clone());
         msquic_listener
             .open(registration, move |_, ev| match ev {
                 msquic::ListenerEvent::NewConnection { info, connection } => {
@@ -157,16 +156,10 @@ impl Drop for Listener {
             .as_ref()
             .expect("msquic_listner set")
             .stop();
-        {
-            let mut exclusive = self.0.shared.msquic_listener.write().unwrap();
-            let msquic_listener = exclusive.take();
-            drop(exclusive);
-            drop(msquic_listener);
-            let mut exclusive = self.0.shared.configuration.write().unwrap();
-            let configuration = exclusive.take();
-            drop(exclusive);
-            drop(configuration);
-        }
+        let mut exclusive = self.0.shared.msquic_listener.write().unwrap();
+        let msquic_listener = exclusive.take();
+        drop(exclusive);
+        drop(msquic_listener);
     }
 }
 
@@ -185,7 +178,7 @@ unsafe impl Sync for ListenerInnerExclusive {}
 unsafe impl Send for ListenerInnerExclusive {}
 
 struct ListenerInnerShared {
-    configuration: RwLock<Option<msquic::Configuration>>,
+    configuration: msquic::Configuration,
     msquic_listener: RwLock<Option<msquic::Listener>>,
 }
 unsafe impl Sync for ListenerInnerShared {}
@@ -209,7 +202,7 @@ impl ListenerInner {
                 shutdown_complete_waiters: Vec::new(),
             }),
             shared: ListenerInnerShared {
-                configuration: RwLock::new(Some(configuration)),
+                configuration,
                 msquic_listener: RwLock::new(None),
             },
         }
@@ -222,8 +215,7 @@ impl ListenerInner {
     ) -> Result<(), msquic::Status> {
         trace!("Listener({:p}) New connection", self);
 
-        connection
-            .set_configuration(self.shared.configuration.read().unwrap().as_ref().unwrap())?;
+        connection.set_configuration(&self.shared.configuration)?;
         let new_conn = Connection::from_raw(unsafe { connection.as_raw() });
 
         let mut exclusive = self.exclusive.lock().unwrap();

@@ -803,6 +803,7 @@ async fn test_write_chunks() {
 #[test(tokio::test)]
 async fn test_poll_finish_write() {
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
+    let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
 
     let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
 
@@ -828,6 +829,7 @@ async fn test_poll_finish_write() {
         let mut stream = conn.accept_inbound_uni_stream().await.unwrap();
         let _ = poll_fn(|cx| stream.poll_read(cx, &mut buf)).await;
 
+        server_rx.recv().await.unwrap();
         server_tx.send(()).await.unwrap();
     });
 
@@ -852,6 +854,7 @@ async fn test_poll_finish_write() {
 
         let res = poll_fn(|cx| stream.poll_finish_write(cx)).await;
         assert!(res.is_ok());
+        client_tx.send(()).await.unwrap();
         let res = poll_fn(|cx| stream.poll_write(cx, b"hello world", false)).await;
         // assert_eq!(res, Err(WriteError::Finished));
         assert!(res.is_err());
@@ -876,6 +879,7 @@ async fn test_poll_finish_write() {
 #[test(tokio::test)]
 async fn test_poll_abort_write() {
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
+    let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
 
     let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
 
@@ -902,7 +906,7 @@ async fn test_poll_abort_write() {
         let res = poll_fn(|cx| stream.poll_read(cx, &mut buf)).await;
         // assert_eq!(res, Err(ReadError::Reset(0)));
         assert!(res.is_err());
-
+        server_rx.recv().await.unwrap();
         server_tx.send(()).await.unwrap();
     });
 
@@ -930,7 +934,7 @@ async fn test_poll_abort_write() {
         let res = poll_fn(|cx| stream.poll_write(cx, b"hello world", false)).await;
         // assert_eq!(res, Err(WriteError::Finished));
         assert!(res.is_err());
-
+        client_tx.send(()).await.unwrap();
         client_rx.recv().await.expect("recv");
     });
 
@@ -1130,6 +1134,7 @@ async fn test_read_chunk() {
 #[test(tokio::test)]
 async fn test_read_chunk_empty_fin() {
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
+    let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
 
     let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
 
@@ -1171,6 +1176,7 @@ async fn test_read_chunk_empty_fin() {
         if let Some(chunk) = res.unwrap() {
             assert!(chunk.is_empty() && chunk.fin());
         }
+        server_rx.recv().await.unwrap();
 
         server_tx.send(()).await.unwrap();
     });
@@ -1201,7 +1207,7 @@ async fn test_read_chunk_empty_fin() {
         client_rx.recv().await.expect("recv");
 
         poll_fn(|cx| stream.poll_finish_write(cx)).await.unwrap();
-
+        client_tx.send(()).await.unwrap();
         client_rx.recv().await.expect("recv");
     });
 
@@ -1594,7 +1600,7 @@ fn test_stream_recv_buffers() {
 
 #[test(tokio::test)]
 async fn datagram_validation() {
-    //let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
+    let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
     let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
@@ -1618,9 +1624,17 @@ async fn datagram_validation() {
         let res = listener.accept().await;
         assert!(res.is_ok());
         let conn = res.expect("accept");
-        let res = poll_fn(|cx| conn.poll_receive_datagram(cx)).await;
+        let res = timeout(
+            std::time::Duration::from_secs(10),
+            poll_fn(|cx| conn.poll_receive_datagram(cx)),
+        )
+        .await;
+        if res.is_err() {
+            panic!("no datagram received");
+        }
+        let res = res.unwrap();
         assert_eq!(res.ok(), Some(Bytes::from("hello world")));
-
+        server_rx.recv().await.unwrap();
         server_tx.send(()).await.expect("send");
 
         Ok::<_, anyhow::Error>(())
@@ -1641,9 +1655,11 @@ async fn datagram_validation() {
         .await;
     assert!(res.is_ok());
     set.spawn(async move {
-        let res = poll_fn(|cx| conn.poll_send_datagram(cx, &Bytes::from("hello world"))).await;
-        assert!(res.is_ok());
-
+        for _ in 0..3 {
+            let res = poll_fn(|cx| conn.poll_send_datagram(cx, &Bytes::from("hello world"))).await;
+            assert!(res.is_ok());
+        }
+        client_tx.send(()).await.unwrap();
         client_rx.recv().await.expect("recv");
 
         Ok::<_, anyhow::Error>(())
