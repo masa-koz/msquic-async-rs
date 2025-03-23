@@ -223,7 +223,7 @@ impl ListenerInner {
         trace!("Listener({:p}) New connection", self);
 
         connection
-            .set_configuration(&self.shared.configuration.read().unwrap().as_ref().unwrap())?;
+            .set_configuration(self.shared.configuration.read().unwrap().as_ref().unwrap())?;
         let new_conn = Connection::from_raw(unsafe { connection.as_raw() });
 
         let mut exclusive = self.exclusive.lock().unwrap();

@@ -862,7 +862,7 @@ struct StreamInstance(Arc<StreamInner>);
 impl Drop for StreamInstance {
     fn drop(&mut self) {
         trace!("StreamInstance({:p}) dropping", &*self.0);
-        let mut exclusive = self.0.exclusive.lock().unwrap();
+        let exclusive = self.0.exclusive.lock().unwrap();
         match exclusive.state {
             StreamState::Start | StreamState::StartComplete => {
                 trace!("StreamInstance({:p}) shutdown while dropping", &*self.0);
