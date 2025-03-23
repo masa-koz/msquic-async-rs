@@ -25,11 +25,10 @@ impl Connection {
     pub fn new(registration: &msquic::Registration) -> Result<Self, ConnectionError> {
         let mut msquic_conn = msquic::Connection::new();
         let inner = Arc::new(ConnectionInner::new(ConnectionState::Open));
-        let inner_raw = Arc::into_raw(inner.clone());
+        let inner_in_ev = inner.clone();
         msquic_conn
             .open(registration, move |conn_ref, ev| {
-                let inner = unsafe { &*inner_raw };
-                inner.callback_handler_impl(conn_ref, ev)
+                inner_in_ev.callback_handler_impl(conn_ref, ev)
             })
             .map_err(ConnectionError::OtherError)?;
         *inner.shared.msquic_conn.write().unwrap() = Some(msquic_conn);
@@ -40,10 +39,9 @@ impl Connection {
     pub(crate) fn from_raw(handle: msquic::ffi::HQUIC) -> Self {
         let msquic_conn = unsafe { msquic::Connection::from_raw(handle) };
         let inner = Arc::new(ConnectionInner::new(ConnectionState::Connected));
-        let inner_raw = Arc::into_raw(inner.clone());
+        let inner_in_ev = inner.clone();
         msquic_conn.set_callback_handler(move |conn_ref, ev| {
-            let inner = unsafe { &*inner_raw };
-            inner.callback_handler_impl(conn_ref, ev)
+            inner_in_ev.callback_handler_impl(conn_ref, ev)
         });
         *inner.shared.msquic_conn.write().unwrap() = Some(msquic_conn);
         trace!("Connection({:p}) Open by peer", &*inner);
@@ -497,26 +495,11 @@ impl Deref for ConnectionInstance {
 
 impl Drop for ConnectionInstance {
     fn drop(&mut self) {
-        trace!("Connection({:p}) dropping", &*self.0);
-        {
-            let exclusive = self.0.exclusive.lock().unwrap();
-            match exclusive.state {
-                ConnectionState::Open
-                | ConnectionState::Connecting
-                | ConnectionState::Connected => {
-                    trace!("Connection({:p}) shutdown while dropping", &*self.0);
-                    self.0
-                        .shared
-                        .msquic_conn
-                        .read()
-                        .unwrap()
-                        .as_ref()
-                        .expect("msquic_conn set")
-                        .shutdown(msquic::ConnectionShutdownFlags::NONE, 0);
-                }
-                ConnectionState::Shutdown | ConnectionState::ShutdownComplete => {}
-            }
-        }
+        trace!("ConnectionInstance(Inner:{:p}) dropping", &*self.0);
+        let mut exclusive = self.0.shared.msquic_conn.write().unwrap();
+        let msquic_conn = exclusive.take();
+        drop(exclusive);
+        drop(msquic_conn);
     }
 }
 
@@ -659,9 +642,15 @@ impl ConnectionInner {
                 .drain(..)
                 .for_each(|waker| waker.wake());
         }
-        unsafe {
-            Arc::from_raw(self as *const _);
-        }
+        // unsafe {
+        //     Arc::from_raw(self as *const _);
+        // }
+        // {
+        //     let mut exclusive = self.shared.msquic_conn.write().unwrap();
+        //     let msquic_conn = exclusive.take();
+        //     drop(exclusive);
+        //     drop(msquic_conn);
+        // }
         Ok(())
     }
 
