@@ -135,18 +135,16 @@ async fn test_connection_poll_shutdown() {
     )
     .unwrap();
     let conn = Connection::new(&registration).unwrap();
+    conn.start(
+        &client_config,
+        &format!("{}", server_addr.ip()),
+        server_addr.port(),
+    )
+    .await
+    .unwrap();
     set.spawn(async move {
-        conn.start(
-            &client_config,
-            &format!("{}", server_addr.ip()),
-            server_addr.port(),
-        )
-        .await
-        .unwrap();
-        // conn.shutdown(1).unwrap();
         let res = poll_fn(|cx| conn.poll_shutdown(cx, 1)).await;
         assert!(res.is_ok());
-
         client_tx.send(()).await.expect("send");
     });
 
