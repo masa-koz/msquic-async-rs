@@ -198,15 +198,13 @@ async fn test_listener_accept() {
     )
     .unwrap();
     let conn = Connection::new(&registration).unwrap();
-    set.spawn(async move {
-        let _ = conn
-            .start(
-                &client_config,
-                &format!("{}", server_addr.ip()),
-                server_addr.port(),
-            )
-            .await;
-    });
+    let _ = conn
+        .start(
+            &client_config,
+            &format!("{}", server_addr.ip()),
+            server_addr.port(),
+        )
+        .await;
 
     let mut results = Vec::new();
     while let Some(res) = set.join_next().await {
@@ -264,15 +262,14 @@ async fn test_open_outbound_stream() {
     )
     .unwrap();
     let conn = Connection::new(&registration).unwrap();
+    conn.start(
+        &client_config,
+        &format!("{}", server_addr.ip()),
+        server_addr.port(),
+    )
+    .await
+    .unwrap();
     set.spawn(async move {
-        conn.start(
-            &client_config,
-            &format!("{}", server_addr.ip()),
-            server_addr.port(),
-        )
-        .await
-        .unwrap();
-
         let res = timeout(
             std::time::Duration::from_millis(1000),
             conn.open_outbound_stream(crate::StreamType::Bidirectional, false),
@@ -358,15 +355,14 @@ async fn test_open_outbound_stream_exceed_limit() -> Result<(), anyhow::Error> {
     )
     .unwrap();
     let conn = Connection::new(&registration).unwrap();
+    conn.start(
+        &client_config,
+        &format!("{}", server_addr.ip()),
+        server_addr.port(),
+    )
+    .await
+    .unwrap();
     set.spawn(async move {
-        conn.start(
-            &client_config,
-            &format!("{}", server_addr.ip()),
-            server_addr.port(),
-        )
-        .await
-        .unwrap();
-
         // Test for Bidirectional
         let res = timeout(
             std::time::Duration::from_millis(1000),
@@ -480,15 +476,14 @@ async fn test_open_outbound_stream_exceed_limit_and_accepted() {
     )
     .unwrap();
     let conn = Connection::new(&registration).unwrap();
+    conn.start(
+        &client_config,
+        &format!("{}", server_addr.ip()),
+        server_addr.port(),
+    )
+    .await
+    .unwrap();
     set.spawn(async move {
-        conn.start(
-            &client_config,
-            &format!("{}", server_addr.ip()),
-            server_addr.port(),
-        )
-        .await
-        .unwrap();
-
         // Test for Bidirectional
         let res = timeout(
             std::time::Duration::from_millis(1000),
@@ -614,14 +609,14 @@ async fn test_poll_write() {
     )
     .unwrap();
     let conn = Connection::new(&registration).unwrap();
+    conn.start(
+        &client_config,
+        &format!("{}", server_addr.ip()),
+        server_addr.port(),
+    )
+    .await
+    .unwrap();
     set.spawn(async move {
-        conn.start(
-            &client_config,
-            &format!("{}", server_addr.ip()),
-            server_addr.port(),
-        )
-        .await
-        .unwrap();
         let mut stream = conn
             .open_outbound_stream(crate::StreamType::Unidirectional, false)
             .await
@@ -691,14 +686,14 @@ async fn test_write_chunk() {
     )
     .unwrap();
     let conn = Connection::new(&registration).unwrap();
+    conn.start(
+        &client_config,
+        &format!("{}", server_addr.ip()),
+        server_addr.port(),
+    )
+    .await
+    .unwrap();
     set.spawn(async move {
-        conn.start(
-            &client_config,
-            &format!("{}", server_addr.ip()),
-            server_addr.port(),
-        )
-        .await
-        .unwrap();
         let mut stream = conn
             .open_outbound_stream(crate::StreamType::Unidirectional, false)
             .await
@@ -766,14 +761,14 @@ async fn test_write_chunks() {
     )
     .unwrap();
     let conn = Connection::new(&registration).unwrap();
+    conn.start(
+        &client_config,
+        &format!("{}", server_addr.ip()),
+        server_addr.port(),
+    )
+    .await
+    .unwrap();
     set.spawn(async move {
-        conn.start(
-            &client_config,
-            &format!("{}", server_addr.ip()),
-            server_addr.port(),
-        )
-        .await
-        .unwrap();
         let mut stream = conn
             .open_outbound_stream(crate::StreamType::Unidirectional, false)
             .await
@@ -841,14 +836,14 @@ async fn test_poll_finish_write() {
     )
     .unwrap();
     let conn = Connection::new(&registration).unwrap();
+    conn.start(
+        &client_config,
+        &format!("{}", server_addr.ip()),
+        server_addr.port(),
+    )
+    .await
+    .unwrap();
     set.spawn(async move {
-        conn.start(
-            &client_config,
-            &format!("{}", server_addr.ip()),
-            server_addr.port(),
-        )
-        .await
-        .unwrap();
         let mut stream = conn
             .open_outbound_stream(crate::StreamType::Unidirectional, false)
             .await
@@ -916,14 +911,14 @@ async fn test_poll_abort_write() {
     )
     .unwrap();
     let conn = Connection::new(&registration).unwrap();
+    conn.start(
+        &client_config,
+        &format!("{}", server_addr.ip()),
+        server_addr.port(),
+    )
+    .await
+    .unwrap();
     set.spawn(async move {
-        conn.start(
-            &client_config,
-            &format!("{}", server_addr.ip()),
-            server_addr.port(),
-        )
-        .await
-        .unwrap();
         let mut stream = conn
             .open_outbound_stream(crate::StreamType::Unidirectional, false)
             .await
@@ -994,15 +989,14 @@ async fn test_poll_read() {
     )
     .unwrap();
     let conn = Connection::new(&registration).unwrap();
+    conn.start(
+        &client_config,
+        &format!("{}", server_addr.ip()),
+        server_addr.port(),
+    )
+    .await
+    .unwrap();
     set.spawn(async move {
-        conn.start(
-            &client_config,
-            &format!("{}", server_addr.ip()),
-            server_addr.port(),
-        )
-        .await
-        .unwrap();
-
         let mut stream = conn
             .open_outbound_stream(crate::StreamType::Unidirectional, false)
             .await
@@ -1092,15 +1086,14 @@ async fn test_read_chunk() {
     )
     .unwrap();
     let conn = Connection::new(&registration).unwrap();
+    conn.start(
+        &client_config,
+        &format!("{}", server_addr.ip()),
+        server_addr.port(),
+    )
+    .await
+    .unwrap();
     set.spawn(async move {
-        conn.start(
-            &client_config,
-            &format!("{}", server_addr.ip()),
-            server_addr.port(),
-        )
-        .await
-        .unwrap();
-
         let mut stream = conn
             .open_outbound_stream(crate::StreamType::Unidirectional, false)
             .await
@@ -1188,15 +1181,14 @@ async fn test_read_chunk_empty_fin() {
     )
     .unwrap();
     let conn = Connection::new(&registration).unwrap();
+    conn.start(
+        &client_config,
+        &format!("{}", server_addr.ip()),
+        server_addr.port(),
+    )
+    .await
+    .unwrap();
     set.spawn(async move {
-        conn.start(
-            &client_config,
-            &format!("{}", server_addr.ip()),
-            server_addr.port(),
-        )
-        .await
-        .unwrap();
-
         let mut stream = conn
             .open_outbound_stream(crate::StreamType::Unidirectional, false)
             .await
@@ -1289,15 +1281,14 @@ async fn test_read_chunk_multi_recv() {
     )
     .unwrap();
     let conn = Connection::new(&registration).unwrap();
+    conn.start(
+        &client_config,
+        &format!("{}", server_addr.ip()),
+        server_addr.port(),
+    )
+    .await
+    .unwrap();
     set.spawn(async move {
-        conn.start(
-            &client_config,
-            &format!("{}", server_addr.ip()),
-            server_addr.port(),
-        )
-        .await
-        .unwrap();
-
         let mut stream = conn
             .open_outbound_stream(crate::StreamType::Unidirectional, false)
             .await
@@ -1371,15 +1362,14 @@ async fn test_poll_abort_read() {
     )
     .unwrap();
     let conn = Connection::new(&registration).unwrap();
+    conn.start(
+        &client_config,
+        &format!("{}", server_addr.ip()),
+        server_addr.port(),
+    )
+    .await
+    .unwrap();
     set.spawn(async move {
-        conn.start(
-            &client_config,
-            &format!("{}", server_addr.ip()),
-            server_addr.port(),
-        )
-        .await
-        .unwrap();
-
         let mut stream = conn
             .open_outbound_stream(crate::StreamType::Unidirectional, false)
             .await
@@ -1446,17 +1436,17 @@ async fn test_get_local_addr() {
     )
     .unwrap();
     let conn = Connection::new(&registration).unwrap();
+    let res = conn.get_local_addr();
+    assert!(res.is_err());
+    let res = conn
+        .start(
+            &client_config,
+            &format!("{}", server_addr.ip()),
+            server_addr.port(),
+        )
+        .await;
+    assert!(res.is_ok());
     set.spawn(async move {
-        let res = conn.get_local_addr();
-        assert!(res.is_err());
-        let res = conn
-            .start(
-                &client_config,
-                &format!("{}", server_addr.ip()),
-                server_addr.port(),
-            )
-            .await;
-        assert!(res.is_ok());
         let res = conn.get_local_addr();
         assert!(res.is_ok());
         let addr = res.unwrap();
@@ -1515,17 +1505,17 @@ async fn test_get_remote_addr() {
     )
     .unwrap();
     let conn = Connection::new(&registration).unwrap();
+    let res = conn.get_remote_addr();
+    assert!(res.is_err());
+    let res = conn
+        .start(
+            &client_config,
+            &format!("{}", server_addr.ip()),
+            server_addr.port(),
+        )
+        .await;
+    assert!(res.is_ok());
     set.spawn(async move {
-        let res = conn.get_remote_addr();
-        assert!(res.is_err());
-        let res = conn
-            .start(
-                &client_config,
-                &format!("{}", server_addr.ip()),
-                server_addr.port(),
-            )
-            .await;
-        assert!(res.is_ok());
         let res = conn.get_remote_addr();
         assert!(res.is_ok());
         let addr = res.unwrap();
@@ -1642,15 +1632,15 @@ async fn datagram_validation() {
     )
     .unwrap();
     let conn = Connection::new(&registration).unwrap();
+    let res = conn
+        .start(
+            &client_config,
+            &format!("{}", server_addr.ip()),
+            server_addr.port(),
+        )
+        .await;
+    assert!(res.is_ok());
     set.spawn(async move {
-        let res = conn
-            .start(
-                &client_config,
-                &format!("{}", server_addr.ip()),
-                server_addr.port(),
-            )
-            .await;
-        assert!(res.is_ok());
         let res = poll_fn(|cx| conn.poll_send_datagram(cx, &Bytes::from("hello world"))).await;
         assert!(res.is_ok());
 
