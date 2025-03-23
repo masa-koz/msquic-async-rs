@@ -42,11 +42,10 @@ impl Stream {
             StreamRecvState::Closed,
             true,
         ));
-        let inner_raw = Arc::into_raw(inner.clone());
+        let inner_in_ev = inner.clone();
         msquic_stream
             .open(msquic_conn, flags, move |stream_ref, ev| {
-                let inner = unsafe { &*inner_raw };
-                inner.callback_handler_impl(stream_ref, ev)
+                inner_in_ev.callback_handler_impl(stream_ref, ev)
             })
             .map_err(StartError::OtherError)?;
         *inner.shared.msquic_stream.write().unwrap() = Some(msquic_stream);
@@ -67,10 +66,9 @@ impl Stream {
             StreamRecvState::StartComplete,
             false,
         ));
-        let inner_raw = Arc::into_raw(inner.clone());
+        let inner_in_ev = inner.clone();
         msquic_stream.set_callback_handler(move |stream_ref, ev| {
-            let inner = unsafe { &*inner_raw };
-            inner.callback_handler_impl(stream_ref, ev)
+            inner_in_ev.callback_handler_impl(stream_ref, ev)
         });
         *inner.shared.msquic_stream.write().unwrap() = Some(msquic_stream);
         let stream = Self(Arc::new(StreamInstance(inner)));
@@ -865,22 +863,6 @@ impl Drop for StreamInstance {
     fn drop(&mut self) {
         trace!("StreamInstance({:p}) dropping", &*self.0);
         let mut exclusive = self.0.exclusive.lock().unwrap();
-        if !exclusive.recv_buffers.is_empty() {
-            trace!(
-                "StreamInstance({:p}) read complete {}",
-                &*self.0,
-                exclusive.recv_len - exclusive.read_complete_cursor
-            );
-            exclusive.recv_buffers.clear();
-            self.0
-                .shared
-                .msquic_stream
-                .read()
-                .unwrap()
-                .as_ref()
-                .expect("msquic_stream set")
-                .receive_complete((exclusive.recv_len - exclusive.read_complete_cursor) as u64);
-        }
         match exclusive.state {
             StreamState::Start | StreamState::StartComplete => {
                 trace!("StreamInstance({:p}) shutdown while dropping", &*self.0);
@@ -1228,6 +1210,23 @@ impl StreamInner {
         );
         {
             let mut exclusive = self.exclusive.lock().unwrap();
+
+            if !exclusive.recv_buffers.is_empty() {
+                trace!(
+                    "StreamInner({:p}) read complete {}",
+                    self,
+                    exclusive.recv_len - exclusive.read_complete_cursor
+                );
+                exclusive.recv_buffers.clear();
+                self.shared
+                    .msquic_stream
+                    .read()
+                    .unwrap()
+                    .as_ref()
+                    .expect("msquic_stream set")
+                    .receive_complete((exclusive.recv_len - exclusive.read_complete_cursor) as u64);
+            }
+
             exclusive.state = StreamState::ShutdownComplete;
             exclusive.recv_state = StreamRecvState::ShutdownComplete;
             exclusive.send_state = StreamSendState::ShutdownComplete;
@@ -1257,9 +1256,15 @@ impl StreamInner {
                 .drain(..)
                 .for_each(|waker| waker.wake());
         }
-        unsafe {
-            Arc::from_raw(self as *const _);
-        }
+        // unsafe {
+        //     Arc::from_raw(self as *const _);
+        // }
+        let _ = self
+            .shared
+            .msquic_stream
+            .write()
+            .expect("msquic_stream set")
+            .take();
         Ok(())
     }
 

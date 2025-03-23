@@ -20,22 +20,20 @@ impl Listener {
     ) -> Result<Self, ListenError> {
         let mut msquic_listener = msquic::Listener::new();
         let inner = Arc::new(ListenerInner::new(configuration));
-        let inner_raw = Arc::into_raw(inner.clone());
+        let inner_in_ev = inner.clone();
+        let _ = Arc::into_raw(inner.clone());
         msquic_listener
-            .open(registration, move |_, ev| {
-                let inner = unsafe { &*inner_raw };
-                match ev {
-                    msquic::ListenerEvent::NewConnection { info, connection } => {
-                        inner.handle_event_new_connection(info, connection)
-                    }
-                    msquic::ListenerEvent::StopComplete {
-                        app_close_in_progress,
-                    } => inner.handle_event_stop_complete(app_close_in_progress),
+            .open(registration, move |_, ev| match ev {
+                msquic::ListenerEvent::NewConnection { info, connection } => {
+                    inner_in_ev.handle_event_new_connection(info, connection)
                 }
+                msquic::ListenerEvent::StopComplete {
+                    app_close_in_progress,
+                } => inner_in_ev.handle_event_stop_complete(app_close_in_progress),
             })
             .map_err(ListenError::OtherError)?;
         *inner.shared.msquic_listener.write().unwrap() = Some(msquic_listener);
-        trace!("Listner({:p}) new", inner);
+        trace!("Listener({:p}) new", inner);
         Ok(Self(inner))
     }
 
@@ -150,7 +148,7 @@ impl Listener {
 
 impl Drop for Listener {
     fn drop(&mut self) {
-        trace!("Listener({:p}) dropping", self);
+        trace!("Listener({:p}) dropping", self.0);
         self.0
             .shared
             .msquic_listener
@@ -159,6 +157,16 @@ impl Drop for Listener {
             .as_ref()
             .expect("msquic_listner set")
             .stop();
+        {
+            let mut exclusive = self.0.shared.msquic_listener.write().unwrap();
+            let msquic_listener = exclusive.take();
+            drop(exclusive);
+            drop(msquic_listener);
+            let mut exclusive = self.0.shared.configuration.write().unwrap();
+            let configuration = exclusive.take();
+            drop(exclusive);
+            drop(configuration);
+        }
     }
 }
 
@@ -177,7 +185,7 @@ unsafe impl Sync for ListenerInnerExclusive {}
 unsafe impl Send for ListenerInnerExclusive {}
 
 struct ListenerInnerShared {
-    configuration: msquic::Configuration,
+    configuration: RwLock<Option<msquic::Configuration>>,
     msquic_listener: RwLock<Option<msquic::Listener>>,
 }
 unsafe impl Sync for ListenerInnerShared {}
@@ -201,7 +209,7 @@ impl ListenerInner {
                 shutdown_complete_waiters: Vec::new(),
             }),
             shared: ListenerInnerShared {
-                configuration,
+                configuration: RwLock::new(Some(configuration)),
                 msquic_listener: RwLock::new(None),
             },
         }
@@ -214,7 +222,7 @@ impl ListenerInner {
     ) -> Result<(), msquic::Status> {
         trace!("Listener({:p}) New connection", self);
 
-        connection.set_configuration(&self.shared.configuration)?;
+        connection.set_configuration(&self.shared.configuration.read().unwrap().as_ref().unwrap())?;
         let new_conn = Connection::from_raw(unsafe { connection.as_raw() });
 
         let mut exclusive = self.exclusive.lock().unwrap();
@@ -254,9 +262,9 @@ impl ListenerInner {
                 exclusive.new_connections.len()
             );
         }
-        unsafe {
-            Arc::from_raw(self as *const _);
-        }
+        // unsafe {
+        //     Arc::from_raw(self as *const _);
+        // }
         Ok(())
     }
 }
@@ -264,6 +272,7 @@ impl ListenerInner {
 impl Drop for ListenerInner {
     fn drop(&mut self) {
         trace!("ListenerInner({:p}) dropping", self);
+        trace!("msquic_listener: {:?}", self.shared.msquic_listener.read().unwrap());
     }
 }
 
