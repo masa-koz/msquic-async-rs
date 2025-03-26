@@ -1,4 +1,4 @@
-use crate::stream::StreamInner;
+use crate::stream::StreamInstance;
 
 use std::io::IoSlice;
 use std::ops::Range;
@@ -13,7 +13,7 @@ use tracing::trace;
 ///
 /// It implements [`bytes::Buf`] and is backed by a list of [`msquic::ffi::QUIC_BUFFER`].
 pub struct StreamRecvBuffer {
-    stream: Option<Arc<StreamInner>>,
+    stream: Option<Arc<StreamInstance>>,
     buffers: Vec<msquic::ffi::QUIC_BUFFER>,
     offset: usize,
     len: usize,
@@ -50,7 +50,7 @@ impl StreamRecvBuffer {
         buf
     }
 
-    pub(crate) fn set_stream(&mut self, stream: Arc<StreamInner>) {
+    pub(crate) fn set_stream(&mut self, stream: Arc<StreamInstance>) {
         trace!(
             "StreamRecvBuffer({:p}) set StreamInner({:p})",
             self.buffers

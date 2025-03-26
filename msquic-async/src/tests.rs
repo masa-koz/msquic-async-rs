@@ -459,13 +459,13 @@ async fn test_open_outbound_stream_exceed_limit_and_accepted() {
     set.spawn(async move {
         let conn = listener.accept().await.unwrap();
 
-        let _ = conn.accept_inbound_stream().await.unwrap();
-        let _ = conn.accept_inbound_stream().await.unwrap();
-        let _ = conn.accept_inbound_stream().await.unwrap();
+        let _a = conn.accept_inbound_stream().await.unwrap();
+        let _b = conn.accept_inbound_stream().await.unwrap();
+        let _c = conn.accept_inbound_stream().await.unwrap();
 
-        let _ = conn.accept_inbound_uni_stream().await.unwrap();
-        let _ = conn.accept_inbound_uni_stream().await.unwrap();
-        let _ = conn.accept_inbound_uni_stream().await.unwrap();
+        let _d = conn.accept_inbound_uni_stream().await.unwrap();
+        let _e = conn.accept_inbound_uni_stream().await.unwrap();
+        let _f = conn.accept_inbound_uni_stream().await.unwrap();
 
         server_rx.recv().await.unwrap();
         server_tx.send(()).await.unwrap();

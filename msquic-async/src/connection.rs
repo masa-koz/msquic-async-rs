@@ -6,7 +6,7 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::ops::Deref;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 
 use bytes::Bytes;
@@ -30,9 +30,8 @@ impl Connection {
                 inner_in_ev.callback_handler_impl(conn_ref, ev)
             })
             .map_err(ConnectionError::OtherError)?;
-        *inner.shared.msquic_conn.write().unwrap() = Some(msquic_conn);
         trace!("Connection({:p}) Open by local", &*inner);
-        Ok(Self(Arc::new(ConnectionInstance(inner))))
+        Ok(Self(Arc::new(ConnectionInstance { inner, msquic_conn })))
     }
 
     pub(crate) fn from_raw(handle: msquic::ffi::HQUIC) -> Self {
@@ -42,9 +41,8 @@ impl Connection {
         msquic_conn.set_callback_handler(move |conn_ref, ev| {
             inner_in_ev.callback_handler_impl(conn_ref, ev)
         });
-        *inner.shared.msquic_conn.write().unwrap() = Some(msquic_conn);
         trace!("Connection({:p}) Open by peer", &*inner);
-        Self(Arc::new(ConnectionInstance(inner)))
+        Self(Arc::new(ConnectionInstance { inner, msquic_conn }))
     }
 
     /// Start the connection.
@@ -74,12 +72,7 @@ impl Connection {
         match exclusive.state {
             ConnectionState::Open => {
                 self.0
-                    .shared
                     .msquic_conn
-                    .read()
-                    .unwrap()
-                    .as_ref()
-                    .expect("msquic_conn set")
                     .start(configuration, host, port)
                     .map_err(StartError::OtherError)?;
                 exclusive.state = ConnectionState::Connecting;
@@ -240,18 +233,11 @@ impl Connection {
             std::slice::from_raw_parts(data, len)
         };
         let res = unsafe {
-            self.0
-                .shared
-                .msquic_conn
-                .read()
-                .unwrap()
-                .as_ref()
-                .expect("msquic_conn set")
-                .datagram_send(
-                    buffers,
-                    msquic::SendFlags::NONE,
-                    write_buf.into_raw() as *const _,
-                )
+            self.0.msquic_conn.datagram_send(
+                buffers,
+                msquic::SendFlags::NONE,
+                write_buf.into_raw() as *const _,
+            )
         }
         .map_err(DgramSendError::OtherError);
         Poll::Ready(res)
@@ -282,18 +268,11 @@ impl Connection {
             std::slice::from_raw_parts(data, len)
         };
         unsafe {
-            self.0
-                .shared
-                .msquic_conn
-                .read()
-                .unwrap()
-                .as_ref()
-                .expect("msquic_conn set")
-                .datagram_send(
-                    buffers,
-                    msquic::SendFlags::NONE,
-                    write_buf.into_raw() as *const _,
-                )
+            self.0.msquic_conn.datagram_send(
+                buffers,
+                msquic::SendFlags::NONE,
+                write_buf.into_raw() as *const _,
+            )
         }
         .map_err(DgramSendError::OtherError)?;
         Ok(())
@@ -316,12 +295,7 @@ impl Connection {
             }
             ConnectionState::Connected => {
                 self.0
-                    .shared
                     .msquic_conn
-                    .read()
-                    .unwrap()
-                    .as_ref()
-                    .expect("msquic_conn set")
                     .shutdown(msquic::ConnectionShutdownFlags::NONE, error_code);
                 exclusive.state = ConnectionState::Shutdown;
             }
@@ -350,12 +324,7 @@ impl Connection {
             }
             ConnectionState::Connected => {
                 self.0
-                    .shared
                     .msquic_conn
-                    .read()
-                    .unwrap()
-                    .as_ref()
-                    .expect("msquic_conn set")
                     .shutdown(msquic::ConnectionShutdownFlags::NONE, error_code);
                 exclusive.state = ConnectionState::Shutdown;
             }
@@ -367,12 +336,7 @@ impl Connection {
     /// Get the local address of the connection.
     pub fn get_local_addr(&self) -> Result<SocketAddr, ConnectionError> {
         self.0
-            .shared
             .msquic_conn
-            .read()
-            .unwrap()
-            .as_ref()
-            .expect("msquic_conn set")
             .get_local_addr()
             .map(|addr| addr.as_socket().expect("socket addr"))
             .map_err(ConnectionError::OtherError)
@@ -381,41 +345,34 @@ impl Connection {
     /// Get the remote address of the connection.
     pub fn get_remote_addr(&self) -> Result<SocketAddr, ConnectionError> {
         self.0
-            .shared
             .msquic_conn
-            .read()
-            .unwrap()
-            .as_ref()
-            .expect("msquic_conn set")
             .get_remote_addr()
             .map(|addr| addr.as_socket().expect("socket addr"))
             .map_err(ConnectionError::OtherError)
     }
 }
 
-struct ConnectionInstance(Arc<ConnectionInner>);
+struct ConnectionInstance {
+    inner: Arc<ConnectionInner>,
+    msquic_conn: msquic::Connection,
+}
 
 impl Deref for ConnectionInstance {
     type Target = ConnectionInner;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.inner
     }
 }
 
 impl Drop for ConnectionInstance {
     fn drop(&mut self) {
-        trace!("ConnectionInstance(Inner:{:p}) dropping", &*self.0);
-        let mut exclusive = self.0.shared.msquic_conn.write().unwrap();
-        let msquic_conn = exclusive.take();
-        drop(exclusive);
-        drop(msquic_conn);
+        trace!("ConnectionInstance(Inner:{:p}) dropping", &*self.inner);
     }
 }
 
 struct ConnectionInner {
     exclusive: Mutex<ConnectionInnerExclusive>,
-    shared: ConnectionInnerShared,
 }
 
 struct ConnectionInnerExclusive {
@@ -430,10 +387,6 @@ struct ConnectionInnerExclusive {
     recv_waiters: Vec<Waker>,
     write_pool: Vec<WriteBuffer>,
     shutdown_waiters: Vec<Waker>,
-}
-
-struct ConnectionInnerShared {
-    msquic_conn: RwLock<Option<msquic::Connection>>,
 }
 
 impl ConnectionInner {
@@ -452,9 +405,6 @@ impl ConnectionInner {
                 write_pool: Vec::new(),
                 shutdown_waiters: Vec::new(),
             }),
-            shared: ConnectionInnerShared {
-                msquic_conn: RwLock::new(None),
-            },
         }
     }
 
@@ -815,7 +765,7 @@ impl Future for ConnectionStart<'_> {
 
 /// Future produced by [`Connection::open_outbound_stream()`].
 pub struct OpenOutboundStream<'a> {
-    conn: &'a ConnectionInner,
+    conn: &'a ConnectionInstance,
     stream_type: Option<crate::stream::StreamType>,
     stream: Option<crate::stream::Stream>,
     fail_on_blocked: bool,
@@ -834,7 +784,7 @@ impl Future for OpenOutboundStream<'_> {
             ..
         } = *this;
 
-        let mut exclusive = conn.exclusive.lock().unwrap();
+        let mut exclusive = conn.inner.exclusive.lock().unwrap();
         match exclusive.state {
             ConnectionState::Open => {
                 return Poll::Ready(Err(StreamStartError::ConnectionNotStarted));
@@ -851,15 +801,7 @@ impl Future for OpenOutboundStream<'_> {
             }
         }
         if stream.is_none() {
-            match Stream::open(
-                conn.shared
-                    .msquic_conn
-                    .read()
-                    .unwrap()
-                    .as_ref()
-                    .expect("msquic_conn set"),
-                stream_type.take().unwrap(),
-            ) {
+            match Stream::open(&conn.msquic_conn, stream_type.take().unwrap()) {
                 Ok(new_stream) => {
                     *stream = Some(new_stream);
                 }

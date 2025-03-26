@@ -3,14 +3,17 @@ use crate::connection::Connection;
 use std::collections::VecDeque;
 use std::future::Future;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 
 use thiserror::Error;
 use tracing::trace;
 
 /// Listener for incoming connections.
-pub struct Listener(Arc<ListenerInner>);
+pub struct Listener {
+    inner: Arc<ListenerInner>,
+    msquic_listener: msquic::Listener,
+}
 
 impl Listener {
     /// Create a new listener.
@@ -31,9 +34,11 @@ impl Listener {
                 } => inner_in_ev.handle_event_stop_complete(app_close_in_progress),
             })
             .map_err(ListenError::OtherError)?;
-        *inner.shared.msquic_listener.write().unwrap() = Some(msquic_listener);
         trace!("Listener({:p}) new", inner);
-        Ok(Self(inner))
+        Ok(Self {
+            inner,
+            msquic_listener,
+        })
     }
 
     /// Start the listener.
@@ -42,7 +47,7 @@ impl Listener {
         alpn: &T,
         local_address: Option<SocketAddr>,
     ) -> Result<(), ListenError> {
-        let mut exclusive = self.0.exclusive.lock().unwrap();
+        let mut exclusive = self.inner.exclusive.lock().unwrap();
         match exclusive.state {
             ListenerState::Open | ListenerState::ShutdownComplete => {}
             ListenerState::StartComplete | ListenerState::Shutdown => {
@@ -50,13 +55,7 @@ impl Listener {
             }
         }
         let local_address: Option<msquic::Addr> = local_address.map(|x| x.into());
-        self.0
-            .shared
-            .msquic_listener
-            .read()
-            .unwrap()
-            .as_ref()
-            .expect("msquic_listener set")
+        self.msquic_listener
             .start(alpn.as_ref(), local_address.as_ref())
             .map_err(ListenError::OtherError)?;
         exclusive.state = ListenerState::StartComplete;
@@ -71,7 +70,7 @@ impl Listener {
     /// Poll to accept a new connection.
     pub fn poll_accept(&self, cx: &mut Context<'_>) -> Poll<Result<Connection, ListenError>> {
         trace!("Listener({:p}) poll_accept", self);
-        let mut exclusive = self.0.exclusive.lock().unwrap();
+        let mut exclusive = self.inner.exclusive.lock().unwrap();
 
         if !exclusive.new_connections.is_empty() {
             return Poll::Ready(Ok(exclusive.new_connections.pop_front().unwrap()));
@@ -100,7 +99,7 @@ impl Listener {
         trace!("Listener({:p}) poll_stop", self);
         let mut call_stop = false;
         {
-            let mut exclusive = self.0.exclusive.lock().unwrap();
+            let mut exclusive = self.inner.exclusive.lock().unwrap();
 
             match exclusive.state {
                 ListenerState::Open => {
@@ -118,27 +117,14 @@ impl Listener {
             exclusive.shutdown_complete_waiters.push(cx.waker().clone());
         }
         if call_stop {
-            self.0
-                .shared
-                .msquic_listener
-                .read()
-                .unwrap()
-                .as_ref()
-                .expect("msquic_listener set")
-                .stop();
+            self.msquic_listener.stop();
         }
         Poll::Pending
     }
 
     /// Get the local address the listener is bound to.
     pub fn local_addr(&self) -> Result<SocketAddr, ListenError> {
-        self.0
-            .shared
-            .msquic_listener
-            .read()
-            .unwrap()
-            .as_ref()
-            .expect("msquic_listener set")
+        self.msquic_listener
             .get_local_addr()
             .map(|addr| addr.as_socket().expect("not a socket address"))
             .map_err(|_| ListenError::Failed)
@@ -147,19 +133,7 @@ impl Listener {
 
 impl Drop for Listener {
     fn drop(&mut self) {
-        trace!("Listener({:p}) dropping", self.0);
-        self.0
-            .shared
-            .msquic_listener
-            .read()
-            .unwrap()
-            .as_ref()
-            .expect("msquic_listner set")
-            .stop();
-        let mut exclusive = self.0.shared.msquic_listener.write().unwrap();
-        let msquic_listener = exclusive.take();
-        drop(exclusive);
-        drop(msquic_listener);
+        trace!("Listener(Inner: {:p}) dropping", self.inner);
     }
 }
 
@@ -179,7 +153,6 @@ unsafe impl Send for ListenerInnerExclusive {}
 
 struct ListenerInnerShared {
     configuration: msquic::Configuration,
-    msquic_listener: RwLock<Option<msquic::Listener>>,
 }
 unsafe impl Sync for ListenerInnerShared {}
 unsafe impl Send for ListenerInnerShared {}
@@ -201,10 +174,7 @@ impl ListenerInner {
                 new_connection_waiters: Vec::new(),
                 shutdown_complete_waiters: Vec::new(),
             }),
-            shared: ListenerInnerShared {
-                configuration,
-                msquic_listener: RwLock::new(None),
-            },
+            shared: ListenerInnerShared { configuration },
         }
     }
 
@@ -265,10 +235,6 @@ impl ListenerInner {
 impl Drop for ListenerInner {
     fn drop(&mut self) {
         trace!("ListenerInner({:p}) dropping", self);
-        trace!(
-            "msquic_listener: {:?}",
-            self.shared.msquic_listener.read().unwrap()
-        );
     }
 }
 
