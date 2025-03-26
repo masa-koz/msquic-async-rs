@@ -1131,6 +1131,7 @@ impl StreamInner {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn handle_event_shutdown_complete(
         &self,
         msquic_stream: msquic::StreamRef,
