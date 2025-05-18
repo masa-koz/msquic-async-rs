@@ -21,19 +21,17 @@ impl Listener {
         registration: &msquic::Registration,
         configuration: msquic::Configuration,
     ) -> Result<Self, ListenError> {
-        let mut msquic_listener = msquic::Listener::new();
         let inner = Arc::new(ListenerInner::new(configuration));
         let inner_in_ev = inner.clone();
-        msquic_listener
-            .open(registration, move |_, ev| match ev {
-                msquic::ListenerEvent::NewConnection { info, connection } => {
-                    inner_in_ev.handle_event_new_connection(info, connection)
-                }
-                msquic::ListenerEvent::StopComplete {
-                    app_close_in_progress,
-                } => inner_in_ev.handle_event_stop_complete(app_close_in_progress),
-            })
-            .map_err(ListenError::OtherError)?;
+        let msquic_listener = msquic::Listener::open(registration, move |_, ev| match ev {
+            msquic::ListenerEvent::NewConnection { info, connection } => {
+                inner_in_ev.handle_event_new_connection(info, connection)
+            }
+            msquic::ListenerEvent::StopComplete {
+                app_close_in_progress,
+            } => inner_in_ev.handle_event_stop_complete(app_close_in_progress),
+        })
+        .map_err(ListenError::OtherError)?;
         trace!("Listener({:p}) new", inner);
         Ok(Self {
             inner,

@@ -1,4 +1,5 @@
 use std::{mem, net::SocketAddr};
+use std::future::poll_fn;
 
 use argh::FromArgs;
 use msquic_async::msquic;
@@ -25,7 +26,7 @@ async fn main() -> anyhow::Result<()> {
     let alpn = [msquic::BufferRef::from("sample")];
 
     // create msquic-async listener
-    let configuration = msquic::Configuration::new(
+    let configuration = msquic::Configuration::open(
         &registration,
         &alpn,
         Some(
@@ -38,7 +39,7 @@ async fn main() -> anyhow::Result<()> {
         ),
     )?;
 
-    #[cfg(any(not(windows), feature = "openssl"))]
+    #[cfg(any(not(windows), feature = "quictls"))]
     {
         use std::io::Write;
         use tempfile::NamedTempFile;
@@ -63,7 +64,7 @@ async fn main() -> anyhow::Result<()> {
         configuration.load_credential(&cred_config)?;
     }
 
-    #[cfg(all(windows, not(feature = "openssl")))]
+    #[cfg(all(windows, not(feature = "quictls")))]
     {
         use schannel::cert_context::{CertContext, KeySpec};
         use schannel::cert_store::{CertAdd, Memory};
@@ -131,10 +132,11 @@ async fn main() -> anyhow::Result<()> {
                             String::from_utf8_lossy(&buf[0..len])
                         );
                         stream.write_all(&buf[0..len]).await?;
+                        poll_fn(|cx| stream.poll_finish_write(cx)).await?;
                         mem::drop(stream);
                     }
                     Err(err) => {
-                        error!("error on accept {}", err);
+                        error!("error on accept stream: {}", err);
                         break;
                     }
                 }

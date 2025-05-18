@@ -14,7 +14,7 @@ async fn main() -> anyhow::Result<()> {
     let registration = msquic::Registration::new(&msquic::RegistrationConfig::default())?;
 
     let alpn = [msquic::BufferRef::from("sample")];
-    let configuration = msquic::Configuration::new(
+    let configuration = msquic::Configuration::open(
         &registration,
         &alpn,
         Some(

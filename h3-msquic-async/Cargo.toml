@@ -21,7 +21,7 @@ include = [
 [features]
 tracing = ["dep:tracing"]
 datagram = ["dep:h3-datagram"]
-openssl = ["msquic-async/openssl"]
+quictls = ["msquic-async/quictls"]
 static = ["msquic-async/static"]
 
 [dependencies]
