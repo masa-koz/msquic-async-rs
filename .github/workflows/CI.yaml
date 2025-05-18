@@ -139,7 +139,7 @@ jobs:
         with:
           submodules: recursive
       - name: Prepare Machine
-        run: scripts/prepare-machine.ps1 -Tls quictls -ForBuild -InstallTestCertificates
+        run: msquic/scripts/prepare-machine.ps1 -Tls quictls -ForBuild -InstallTestCertificates
         shell: pwsh
       - name: Install Rust stable
         uses: actions-rs/toolchain@v1
