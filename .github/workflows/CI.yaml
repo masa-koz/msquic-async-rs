@@ -127,19 +127,20 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        features: ["", "--features quictls"]
-        exclude:
-          - os: ubuntu-latest
-            features: "--features quictls"
-          - os: macos-latest
-            features: "--features quictls"
+        features: ["", "--features static"]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           submodules: true
-      - name: Prepare Machine
+      - name: Prepare Machine for Windows
+        if: runner.os == 'Windows'
+        run: scripts/prepare-machine.ps1 -Tls schannel -ForBuild -InstallTestCertificates
+        shell: pwsh
+        working-directory: msquic
+      - name: Prepare Machine for Linux/MacOS
+        if: runner.os != 'Windows'
         run: scripts/prepare-machine.ps1 -Tls quictls -ForBuild -InstallTestCertificates
         shell: pwsh
         working-directory: msquic
