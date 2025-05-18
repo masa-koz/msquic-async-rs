@@ -29,7 +29,6 @@ impl Stream {
         msquic_conn: &msquic::Connection,
         stream_type: StreamType,
     ) -> Result<Self, StartError> {
-        let mut msquic_stream = msquic::Stream::new();
         let flags = if stream_type == StreamType::Unidirectional {
             msquic::StreamOpenFlags::UNIDIRECTIONAL
         } else {
@@ -42,21 +41,23 @@ impl Stream {
             true,
         ));
         let inner_in_ev = inner.clone();
-        msquic_stream
-            .open(msquic_conn, flags, move |stream_ref, ev| {
-                inner_in_ev.callback_handler_impl(stream_ref, ev)
-            })
-            .map_err(StartError::OtherError)?;
+        let msquic_stream = msquic::Stream::open(msquic_conn, flags, move |stream_ref, ev| {
+            inner_in_ev.callback_handler_impl(stream_ref, ev)
+        })
+        .map_err(StartError::OtherError)?;
         let stream_handle = unsafe { msquic_stream.as_raw() };
-        trace!(
-            "Stream(Inner: {:p}, HQUIC: {:p}) Open by local",
-            inner,
-            stream_handle
-        );
-        Ok(Self(Arc::new(StreamInstance {
+        let instance = Arc::new(StreamInstance {
             inner,
             msquic_stream,
-        })))
+        });
+        trace!(
+            "StreamInstance({:p}, Inner: {:p}, HQUIC: {:p}) Open by local",
+            instance,
+            instance.inner,
+            stream_handle
+        );
+
+        Ok(Self(instance))
     }
 
     pub(crate) fn from_raw(handle: msquic::ffi::HQUIC, stream_type: StreamType) -> Self {
@@ -82,7 +83,8 @@ impl Stream {
             msquic_stream,
         }));
         trace!(
-            "Stream(Inner: {:p}, HQUIC: {:p}, id: {:?}) Start by peer",
+            "StreamInstance({:p}, Inner: {:p}, HQUIC: {:p}, id: {:?}) Start by peer",
+            stream.0,
             stream.0.inner,
             stream_handle,
             stream.id()
@@ -823,7 +825,7 @@ impl StreamInstance {
     pub(crate) fn read_complete(&self, buffer: &StreamRecvBuffer) {
         let buffer_range = buffer.range();
         trace!(
-            "StreamInner({:p}) read complete offset={} len={}",
+            "StreamInstance({:p}) read complete offset={} len={}",
             self,
             buffer_range.start,
             buffer_range.end - buffer_range.start
@@ -835,7 +837,7 @@ impl StreamInstance {
         }
         let complete_len = if let Some(complete_range) = exclusive.read_complete_map.first() {
             trace!(
-                "StreamInner({:p}) complete read offset={} len={}",
+                "StreamInstance({:p}) complete read offset={} len={}",
                 self,
                 complete_range.start,
                 complete_range.end - complete_range.start
@@ -862,7 +864,7 @@ impl StreamInstance {
         };
         if let Some(complete_len) = complete_len {
             trace!(
-                "StreamInner({:p}) call receive_complete len={}",
+                "StreamInstance({:p}) call receive_complete len={}",
                 self,
                 complete_len
             );
@@ -873,7 +875,7 @@ impl StreamInstance {
 
 impl Drop for StreamInstance {
     fn drop(&mut self) {
-        trace!("StreamInstance(Inner: {:p}) dropping", self.inner);
+        trace!("StreamInstance({:p}) dropping", self);
         let exclusive = self.inner.exclusive.lock().unwrap();
         match exclusive.state {
             StreamState::Start | StreamState::StartComplete => {
@@ -992,7 +994,7 @@ impl StreamInner {
             self.shared.id.write().unwrap().replace(id);
         }
         trace!(
-            "Stream({:p}, id={:?}) start complete status={:?}, peer_accepted={}, id={}",
+            "StreamInner({:p}, id={:?}) start complete status={:?}, peer_accepted={}, id={}",
             self,
             self.shared.id.read(),
             status,
@@ -1027,7 +1029,7 @@ impl StreamInner {
         flags: msquic::ReceiveFlags,
     ) -> Result<(), msquic::Status> {
         trace!(
-            "Stream({:p}, id={:?}) Receive {} offsets {} bytes, fin {}",
+            "StreamInner({:p}, id={:?}) Receive {} offsets {} bytes, fin {}",
             self,
             self.shared.id.read(),
             absolute_offset,
@@ -1057,7 +1059,7 @@ impl StreamInner {
         client_context: *const c_void,
     ) -> Result<(), msquic::Status> {
         trace!(
-            "Stream({:p}, id={:?}) Send complete",
+            "StreamInner({:p}, id={:?}) Send complete",
             self,
             self.shared.id.read()
         );
@@ -1071,7 +1073,7 @@ impl StreamInner {
 
     fn handle_event_peer_send_shutdown(&self) -> Result<(), msquic::Status> {
         trace!(
-            "Stream({:p}, id={:?}) Peer send shutdown",
+            "StreamInner({:p}, id={:?}) Peer send shutdown",
             self,
             self.shared.id.read()
         );
@@ -1086,7 +1088,7 @@ impl StreamInner {
 
     fn handle_event_peer_send_aborted(&self, error_code: u64) -> Result<(), msquic::Status> {
         trace!(
-            "Stream({:p}, id={:?}) Peer send aborted",
+            "StreamInner({:p}, id={:?}) Peer send aborted",
             self,
             self.shared.id.read()
         );
@@ -1102,7 +1104,7 @@ impl StreamInner {
 
     fn handle_event_peer_receive_aborted(&self, error_code: u64) -> Result<(), msquic::Status> {
         trace!(
-            "Stream({:p}, id={:?}) Peer receive aborted",
+            "StreamInner({:p}, id={:?}) Peer receive aborted",
             self,
             self.shared.id.read()
         );
@@ -1118,7 +1120,7 @@ impl StreamInner {
 
     fn handle_event_send_shutdown_complete(&self, _graceful: bool) -> Result<(), msquic::Status> {
         trace!(
-            "Stream({:p}, id={:?}) Send shutdown complete",
+            "StreamInner({:p}, id={:?}) Send shutdown complete",
             self,
             self.shared.id.read()
         );
@@ -1143,7 +1145,7 @@ impl StreamInner {
         connection_close_status: msquic::Status,
     ) -> Result<(), msquic::Status> {
         trace!(
-            "Stream({:p}, id={:?}) Shutdown complete",
+            "StreamInner({:p}, id={:?}) Shutdown complete",
             self,
             self.shared.id.read()
         );
@@ -1201,7 +1203,7 @@ impl StreamInner {
 
     fn handle_event_ideal_send_buffer_size(&self, _byte_count: u64) -> Result<(), msquic::Status> {
         trace!(
-            "Stream({:p}, id={:?}) Ideal send buffer size",
+            "StreamInner({:p}, id={:?}) Ideal send buffer size",
             self,
             self.shared.id.read()
         );
@@ -1210,7 +1212,7 @@ impl StreamInner {
 
     fn handle_event_peer_accepted(&self) -> Result<(), msquic::Status> {
         trace!(
-            "Stream({:p}, id={:?}) Peer accepted",
+            "StreamInner({:p}, id={:?}) Peer accepted",
             self,
             self.shared.id.read()
         );
@@ -1279,7 +1281,7 @@ impl StreamInner {
             }
             msquic::StreamEvent::PeerAccepted => self.handle_event_peer_accepted(),
             _ => {
-                trace!("Stream({:p}) Other callback", self);
+                trace!("StreamInner({:p}) Other callback", self);
                 Ok(())
             }
         }

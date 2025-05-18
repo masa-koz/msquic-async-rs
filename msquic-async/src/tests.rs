@@ -1678,7 +1678,7 @@ async fn datagram_validation() {
     });
 }
 
-#[cfg(any(not(windows), feature = "openssl"))]
+#[cfg(any(not(windows), feature = "quictls"))]
 fn new_server(
     registration: &msquic::Registration,
     settings: &msquic::Settings,
@@ -1687,7 +1687,7 @@ fn new_server(
     use tempfile::NamedTempFile;
 
     let alpn = [msquic::BufferRef::from("test")];
-    let configuration = msquic::Configuration::new(registration, &alpn, Some(settings)).unwrap();
+    let configuration = msquic::Configuration::open(registration, &alpn, Some(settings)).unwrap();
 
     let cert = include_bytes!("../examples/cert.pem");
     let key = include_bytes!("../examples/key.pem");
@@ -1711,7 +1711,7 @@ fn new_server(
     Ok(listener)
 }
 
-#[cfg(all(windows, not(feature = "openssl")))]
+#[cfg(all(windows, not(feature = "quictls")))]
 fn new_server(
     registration: &msquic::Registration,
     settings: &msquic::Settings,
@@ -1723,7 +1723,7 @@ fn new_server(
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     let alpn = [msquic::BufferRef::from("test")];
-    let configuration = msquic::Configuration::new(registration, &alpn, Some(settings)).unwrap();
+    let configuration = msquic::Configuration::open(registration, &alpn, Some(settings)).unwrap();
 
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
     let name = format!(
@@ -1774,7 +1774,7 @@ fn new_client_config(
     settings: &msquic::Settings,
 ) -> Result<msquic::Configuration> {
     let alpn = [msquic::BufferRef::from("test")];
-    let configuration = msquic::Configuration::new(registration, &alpn, Some(settings)).unwrap();
+    let configuration = msquic::Configuration::open(registration, &alpn, Some(settings)).unwrap();
     let cred_config = msquic::CredentialConfig::new_client()
         .set_credential_flags(msquic::CredentialFlags::NO_CERTIFICATE_VALIDATION);
     configuration.load_credential(&cred_config).unwrap();

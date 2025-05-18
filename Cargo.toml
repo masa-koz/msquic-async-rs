@@ -16,7 +16,7 @@ h3 = "0.0.7"
 h3-datagram = "0.0.1"
 http = "1"
 libc = "0.2.153"
-msquic = { version = "2.5.0-beta", path = "./msquic" }
+msquic = { version = "2.6.0-beta", path = "./msquic" }
 msquic-async = { version = "0.2.0", path = "./msquic-async" }
 rangemap = "1.5.1"
 schannel = "0.1.27"

@@ -52,7 +52,7 @@ impl StreamRecvBuffer {
 
     pub(crate) fn set_stream(&mut self, stream: Arc<StreamInstance>) {
         trace!(
-            "StreamRecvBuffer({:p}) set StreamInner({:p})",
+            "StreamRecvBuffer({:p}) set StreamInstance({:p})",
             self.buffers
                 .first()
                 .map(|x| x.Buffer)

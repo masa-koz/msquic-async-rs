@@ -20,7 +20,7 @@ include = [
 
 [features]
 default = ["tokio"]
-openssl = ["msquic/openssl"]
+quictls = ["msquic/quictls"]
 static = ["msquic/static"]
 
 [dependencies]

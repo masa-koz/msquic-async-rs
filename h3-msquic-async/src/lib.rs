@@ -842,9 +842,7 @@ impl From<SendStreamError> for std::io::Error {
     fn from(value: SendStreamError) -> Self {
         match value {
             SendStreamError::Write(err) => err.into(),
-            SendStreamError::NotReady => {
-                std::io::Error::new(std::io::ErrorKind::Other, "send stream is not ready")
-            }
+            SendStreamError::NotReady => std::io::Error::other("send stream is not ready"),
         }
     }
 }

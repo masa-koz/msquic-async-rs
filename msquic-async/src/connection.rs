@@ -22,14 +22,12 @@ impl Connection {
     ///
     /// The connection is not started until `start` is called.
     pub fn new(registration: &msquic::Registration) -> Result<Self, ConnectionError> {
-        let mut msquic_conn = msquic::Connection::new();
         let inner = Arc::new(ConnectionInner::new(ConnectionState::Open));
         let inner_in_ev = inner.clone();
-        msquic_conn
-            .open(registration, move |conn_ref, ev| {
-                inner_in_ev.callback_handler_impl(conn_ref, ev)
-            })
-            .map_err(ConnectionError::OtherError)?;
+        let msquic_conn = msquic::Connection::open(registration, move |conn_ref, ev| {
+            inner_in_ev.callback_handler_impl(conn_ref, ev)
+        })
+        .map_err(ConnectionError::OtherError)?;
         trace!("Connection({:p}) Open by local", &*inner);
         Ok(Self(Arc::new(ConnectionInstance { inner, msquic_conn })))
     }
