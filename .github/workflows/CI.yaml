@@ -136,7 +136,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout repository
-      - uses: actions/checkout@v4
+        uses: actions/checkout@v4
         with:
           submodules: true
       - name: Prepare Machine
