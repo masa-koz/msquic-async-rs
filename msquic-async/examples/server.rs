@@ -1,5 +1,5 @@
-use std::{mem, net::SocketAddr};
 use std::future::poll_fn;
+use std::{mem, net::SocketAddr};
 
 use argh::FromArgs;
 use msquic_async::msquic;
