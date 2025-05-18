@@ -140,8 +140,9 @@ jobs:
         with:
           submodules: true
       - name: Prepare Machine
-        run: msquic/scripts/prepare-machine.ps1 -Tls quictls -ForBuild -InstallTestCertificates
+        run: scripts/prepare-machine.ps1 -Tls quictls -ForBuild -InstallTestCertificates
         shell: pwsh
+        working-directory: msquic
       - name: Install Rust stable
         uses: actions-rs/toolchain@v1
         with:
