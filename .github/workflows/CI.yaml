@@ -127,12 +127,12 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        features: ["", "--features openssl"]
+        features: ["", "--features quictls"]
         exclude:
           - os: ubuntu-latest
-            features: "--features openssl"
+            features: "--features quictls"
           - os: macos-latest
-            features: "--features openssl"
+            features: "--features quictls"
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
