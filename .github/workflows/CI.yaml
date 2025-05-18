@@ -135,9 +135,8 @@ jobs:
             features: "--features quictls"
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: Prepare Machine
         run: msquic/scripts/prepare-machine.ps1 -Tls quictls -ForBuild -InstallTestCertificates
         shell: pwsh
