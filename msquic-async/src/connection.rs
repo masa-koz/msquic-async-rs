@@ -28,8 +28,13 @@ impl Connection {
             inner_in_ev.callback_handler_impl(conn_ref, ev)
         })
         .map_err(ConnectionError::OtherError)?;
-        trace!("Connection({:p}) Open by local", &*inner);
-        Ok(Self(Arc::new(ConnectionInstance { inner, msquic_conn })))
+        let instance = Arc::new(ConnectionInstance { inner, msquic_conn });
+        trace!(
+            "ConnectionInstance({:p}, Inner: {:p}) Open by local",
+            instance,
+            instance.inner
+        );
+        Ok(Self(instance))
     }
 
     pub(crate) fn from_raw(handle: msquic::ffi::HQUIC) -> Self {
@@ -39,8 +44,13 @@ impl Connection {
         msquic_conn.set_callback_handler(move |conn_ref, ev| {
             inner_in_ev.callback_handler_impl(conn_ref, ev)
         });
-        trace!("Connection({:p}) Open by peer", &*inner);
-        Self(Arc::new(ConnectionInstance { inner, msquic_conn }))
+        let instance = Arc::new(ConnectionInstance { inner, msquic_conn });
+        trace!(
+            "ConnectionInstance({:p}, Inner: {:p}) Open by peer",
+            instance,
+            instance.inner
+        );
+        Self(instance)
     }
 
     /// Start the connection.
@@ -365,7 +375,7 @@ impl Deref for ConnectionInstance {
 
 impl Drop for ConnectionInstance {
     fn drop(&mut self) {
-        trace!("ConnectionInstance(Inner:{:p}) dropping", &*self.inner);
+        trace!("ConnectionInstance({:p}) dropping", self);
     }
 }
 
@@ -411,7 +421,7 @@ impl ConnectionInner {
         _session_resumed: bool,
         _negotiated_alpn: &[u8],
     ) -> Result<(), msquic::Status> {
-        trace!("Connection({:p}) Connected", self);
+        trace!("ConnectionInner({:p}) Connected", self);
 
         let mut exclusive = self.exclusive.lock().unwrap();
         exclusive.state = ConnectionState::Connected;
@@ -427,7 +437,11 @@ impl ConnectionInner {
         status: msquic::Status,
         error_code: u64,
     ) -> Result<(), msquic::Status> {
-        trace!("Connection({:p}) Transport shutdown {:?}", self, status);
+        trace!(
+            "ConnectionInner({:p}) Transport shutdown {:?}",
+            self,
+            status
+        );
 
         let mut exclusive = self.exclusive.lock().unwrap();
         exclusive.state = ConnectionState::Shutdown;
@@ -447,7 +461,7 @@ impl ConnectionInner {
         &self,
         error_code: u64,
     ) -> Result<(), msquic::Status> {
-        trace!("Connection({:p}) App shutdown {}", self, error_code);
+        trace!("ConnectionInner({:p}) App shutdown {}", self, error_code);
 
         let mut exclusive = self.exclusive.lock().unwrap();
         exclusive.state = ConnectionState::Shutdown;
@@ -469,7 +483,7 @@ impl ConnectionInner {
         peer_acknowledged_shutdown: bool,
         app_close_in_progress: bool,
     ) -> Result<(), msquic::Status> {
-        trace!("Connection({:p}) Shutdown complete: handshake_completed={}, peer_acknowledged_shutdown={}, app_close_in_progress={}",
+        trace!("ConnectionInner({:p}) Shutdown complete: handshake_completed={}, peer_acknowledged_shutdown={}, app_close_in_progress={}",
             self, handshake_completed, peer_acknowledged_shutdown, app_close_in_progress
         );
 
@@ -492,15 +506,6 @@ impl ConnectionInner {
                 .drain(..)
                 .for_each(|waker| waker.wake());
         }
-        // unsafe {
-        //     Arc::from_raw(self as *const _);
-        // }
-        // {
-        //     let mut exclusive = self.shared.msquic_conn.write().unwrap();
-        //     let msquic_conn = exclusive.take();
-        //     drop(exclusive);
-        //     drop(msquic_conn);
-        // }
         Ok(())
     }
 
@@ -517,7 +522,7 @@ impl ConnectionInner {
             StreamType::Bidirectional
         };
         trace!(
-            "Connection({:p}) Peer stream started {:?}",
+            "ConnectionInner({:p}) Peer stream started {:?}",
             self,
             stream_type
         );
@@ -556,7 +561,7 @@ impl ConnectionInner {
         unidirectional_count: u16,
     ) -> Result<(), msquic::Status> {
         trace!(
-            "Connection({:p}) Streams available bidirectional_count:{} unidirectional_count:{}",
+            "ConnectionInner({:p}) Streams available bidirectional_count:{} unidirectional_count:{}",
             self,
             bidirectional_count,
             unidirectional_count
@@ -570,7 +575,7 @@ impl ConnectionInner {
         max_send_length: u16,
     ) -> Result<(), msquic::Status> {
         trace!(
-            "Connection({:p}) Datagram state changed send_enabled:{} max_send_length:{}",
+            "ConnectionInner({:p}) Datagram state changed send_enabled:{} max_send_length:{}",
             self,
             send_enabled,
             max_send_length
@@ -583,7 +588,7 @@ impl ConnectionInner {
         buffer: &msquic::BufferRef,
         _flags: msquic::ReceiveFlags,
     ) -> Result<(), msquic::Status> {
-        trace!("Connection({:p}) Datagram received", self);
+        trace!("ConnectionInner({:p}) Datagram received", self);
         let buf = Bytes::copy_from_slice(buffer.as_bytes());
         {
             let mut exclusive = self.exclusive.lock().unwrap();
@@ -602,7 +607,7 @@ impl ConnectionInner {
         state: msquic::DatagramSendState,
     ) -> Result<(), msquic::Status> {
         trace!(
-            "Connection({:p}) Datagram send state changed state:{:?}",
+            "ConnectionInner({:p}) Datagram send state changed state:{:?}",
             self,
             state
         );
@@ -662,7 +667,7 @@ impl ConnectionInner {
                 state,
             } => self.handle_event_datagram_send_state_changed(client_context, state),
             _ => {
-                trace!("Connection({:p}) Other callback", self);
+                trace!("ConnectionInner({:p}) Other callback", self);
                 Ok(())
             }
         }
