@@ -1,4 +1,5 @@
 use msquic_async::msquic;
+use std::future::poll_fn;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::info;
 
@@ -37,9 +38,10 @@ async fn main() -> anyhow::Result<()> {
         .open_outbound_stream(msquic_async::StreamType::Bidirectional, false)
         .await?;
     stream.write_all("hello".as_bytes()).await?;
+    poll_fn(|cx| stream.poll_finish_write(cx)).await?;
     let mut buf = [0u8; 1024];
     let len = stream.read(&mut buf).await?;
     info!("received: {}", String::from_utf8_lossy(&buf[0..len]));
-
+    poll_fn(|cx| conn.poll_shutdown(cx, 0)).await?;
     Ok(())
 }
