@@ -843,7 +843,7 @@ impl From<SendStreamError> for std::io::Error {
         match value {
             SendStreamError::Write(err) => err.into(),
             SendStreamError::NotReady => {
-                std::io::Error::new(std::io::ErrorKind::Other, "send stream is not ready")
+                std::io::Error::other("send stream is not ready")
             }
         }
     }
