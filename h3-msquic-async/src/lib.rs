@@ -1,25 +1,26 @@
 /// This file is based on the `lib.rs` from the `h3-quinn` crate.
 use bytes::Buf;
-#[cfg(feature = "datagram")]
-use bytes::{Bytes, BytesMut};
 use futures::{
     future::poll_fn,
     ready,
     stream::{self},
     Stream, StreamExt,
 };
-use h3::quic::{self, Error, StreamId, WriteBuf};
-#[cfg(feature = "datagram")]
-use h3_datagram::{datagram::Datagram, quic_traits};
+use h3::{
+    error::Code,
+    quic::{self, ConnectionErrorIncoming, StreamErrorIncoming, StreamId, WriteBuf},
+};
 pub use msquic_async;
 pub use msquic_async::msquic;
-use std::fmt::{self, Display};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{self, Poll};
 use tokio_util::sync::ReusableBoxFuture;
 #[cfg(feature = "tracing")]
 use tracing::instrument;
+
+#[cfg(feature = "datagram")]
+pub mod datagram;
 
 /// BoxStream with Sync trait
 type BoxStreamSync<'a, T> = Pin<Box<dyn Stream<Item = T> + Sync + Send + 'a>>;
@@ -38,8 +39,6 @@ pub struct Connection {
     opening_uni: Option<
         BoxStreamSync<'static, Result<msquic_async::Stream, msquic_async::StreamStartError>>,
     >,
-    #[cfg(feature = "datagram")]
-    datagrams: BoxStreamSync<'static, Result<Bytes, msquic_async::DgramReceiveError>>,
 }
 
 impl Connection {
@@ -55,196 +54,45 @@ impl Connection {
                 Some((conn.accept_inbound_uni_stream().await, conn))
             })),
             opening_uni: None,
-            #[cfg(feature = "datagram")]
-            datagrams: Box::pin(stream::unfold(conn, |conn| async {
-                Some((poll_fn(|cx| conn.poll_receive_datagram(cx)).await, conn))
-            })),
         }
     }
 }
 
-/// The error type for [`Connection`]
-///
-/// Wraps reasons a msquic connection might be lost.
-#[derive(Debug)]
-pub struct ConnectionError(msquic_async::ConnectionError);
-
-impl std::error::Error for ConnectionError {}
-
-impl fmt::Display for ConnectionError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl Error for ConnectionError {
-    fn is_timeout(&self) -> bool {
-        if let msquic_async::ConnectionError::ShutdownByTransport(status, _) = &self.0 {
-            matches!(
+fn convert_connection_error(e: msquic_async::ConnectionError) -> ConnectionErrorIncoming {
+    match e {
+        msquic_async::ConnectionError::ShutdownByPeer(error_code) => {
+            ConnectionErrorIncoming::ApplicationClose { error_code }
+        }
+        msquic_async::ConnectionError::ShutdownByTransport(status, code) => {
+            if matches!(
                 status.try_as_status_code().unwrap(),
                 msquic::StatusCode::QUIC_STATUS_CONNECTION_TIMEOUT
                     | msquic::StatusCode::QUIC_STATUS_CONNECTION_IDLE
-            )
-        } else {
-            false
-        }
-    }
-
-    fn err_code(&self) -> Option<u64> {
-        match self.0 {
-            msquic_async::ConnectionError::ShutdownByPeer(error_code) => Some(error_code),
-            _ => None,
-        }
-    }
-}
-
-impl From<msquic_async::ConnectionError> for ConnectionError {
-    fn from(e: msquic_async::ConnectionError) -> Self {
-        Self(e)
-    }
-}
-
-#[derive(Debug)]
-pub struct StreamStartError(msquic_async::StreamStartError);
-
-impl std::error::Error for StreamStartError {}
-
-impl fmt::Display for StreamStartError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl Error for StreamStartError {
-    fn is_timeout(&self) -> bool {
-        if let msquic_async::StreamStartError::ConnectionLost(
-            msquic_async::ConnectionError::ShutdownByTransport(status, _),
-        ) = &self.0
-        {
-            matches!(
-                status.try_as_status_code().unwrap(),
-                msquic::StatusCode::QUIC_STATUS_CONNECTION_TIMEOUT
-                    | msquic::StatusCode::QUIC_STATUS_CONNECTION_IDLE
-            )
-        } else {
-            false
-        }
-    }
-
-    fn err_code(&self) -> Option<u64> {
-        match self.0 {
-            msquic_async::StreamStartError::ConnectionLost(
-                msquic_async::ConnectionError::ShutdownByPeer(error_code),
-            ) => Some(error_code),
-            _ => None,
-        }
-    }
-}
-
-impl From<msquic_async::StreamStartError> for StreamStartError {
-    fn from(e: msquic_async::StreamStartError) -> Self {
-        Self(e)
-    }
-}
-
-#[derive(Debug)]
-pub struct RecvDatagramError(msquic_async::DgramReceiveError);
-
-impl std::error::Error for RecvDatagramError {}
-
-impl fmt::Display for RecvDatagramError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl Error for RecvDatagramError {
-    fn is_timeout(&self) -> bool {
-        if let msquic_async::DgramReceiveError::ConnectionLost(
-            msquic_async::ConnectionError::ShutdownByTransport(status, _),
-        ) = &self.0
-        {
-            matches!(
-                status.try_as_status_code().unwrap(),
-                msquic::StatusCode::QUIC_STATUS_CONNECTION_TIMEOUT
-                    | msquic::StatusCode::QUIC_STATUS_CONNECTION_IDLE
-            )
-        } else {
-            false
-        }
-    }
-
-    fn err_code(&self) -> Option<u64> {
-        match self.0 {
-            msquic_async::DgramReceiveError::ConnectionLost(
-                msquic_async::ConnectionError::ShutdownByPeer(error_code),
-            ) => Some(error_code),
-            _ => None,
-        }
-    }
-}
-
-impl From<msquic_async::DgramReceiveError> for RecvDatagramError {
-    fn from(e: msquic_async::DgramReceiveError) -> Self {
-        Self(e)
-    }
-}
-
-/// Types of errors when sending a datagram.
-#[derive(Debug)]
-pub enum SendDatagramError {
-    /// The connection has not been started
-    ConnectionNotStarted,
-    /// Datagrams are not supported by the peer
-    UnsupportedByPeer,
-    /// Datagrams are locally disabled
-    Disabled,
-    /// The datagram was too large to be sent.
-    TooLarge,
-    /// Network error
-    ConnectionLost(Box<dyn Error>),
-    /// Other error
-    OtherError(msquic::Status),
-}
-
-impl fmt::Display for SendDatagramError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            SendDatagramError::ConnectionNotStarted => write!(f, "connection not started"),
-            SendDatagramError::UnsupportedByPeer => write!(f, "datagrams not supported by peer"),
-            SendDatagramError::Disabled => write!(f, "datagram support disabled"),
-            SendDatagramError::TooLarge => write!(f, "datagram too large"),
-            SendDatagramError::ConnectionLost(_) => write!(f, "connection lost"),
-            SendDatagramError::OtherError(status) => write!(f, "other error: {}", status),
-        }
-    }
-}
-
-impl std::error::Error for SendDatagramError {}
-
-impl Error for SendDatagramError {
-    fn is_timeout(&self) -> bool {
-        false
-    }
-
-    fn err_code(&self) -> Option<u64> {
-        match self {
-            Self::ConnectionLost(err) => err.err_code(),
-            _ => None,
-        }
-    }
-}
-
-impl From<msquic_async::DgramSendError> for SendDatagramError {
-    fn from(value: msquic_async::DgramSendError) -> Self {
-        match value {
-            msquic_async::DgramSendError::ConnectionNotStarted => Self::ConnectionNotStarted,
-            msquic_async::DgramSendError::Denied => Self::UnsupportedByPeer,
-            msquic_async::DgramSendError::TooBig => Self::TooLarge,
-            msquic_async::DgramSendError::ConnectionLost(err) => {
-                Self::ConnectionLost(ConnectionError::from(err).into())
+            ) {
+                ConnectionErrorIncoming::Timeout
+            } else {
+                ConnectionErrorIncoming::Undefined(Arc::new(
+                    msquic_async::ConnectionError::ShutdownByTransport(status, code),
+                ))
             }
-            msquic_async::DgramSendError::OtherError(status) => Self::OtherError(status),
+        }
+
+        error @ msquic_async::ConnectionError::ShutdownByLocal
+        | error @ msquic_async::ConnectionError::ConnectionClosed
+        | error @ msquic_async::ConnectionError::OtherError(_) => {
+            ConnectionErrorIncoming::Undefined(Arc::new(error))
+        }
+    }
+}
+
+fn convert_start_error(e: msquic_async::StreamStartError) -> ConnectionErrorIncoming {
+    match e {
+        msquic_async::StreamStartError::ConnectionLost(error) => convert_connection_error(error),
+
+        error @ msquic_async::StreamStartError::ConnectionNotStarted
+        | error @ msquic_async::StreamStartError::LimitReached
+        | error @ msquic_async::StreamStartError::OtherError(_) => {
+            ConnectionErrorIncoming::Undefined(Arc::new(error))
         }
     }
 }
@@ -255,22 +103,20 @@ where
 {
     type RecvStream = RecvStream;
     type OpenStreams = OpenStreams;
-    type AcceptError = StreamStartError;
 
     #[cfg_attr(feature = "tracing", instrument(skip_all, level = "trace"))]
     fn poll_accept_bidi(
         &mut self,
         cx: &mut task::Context<'_>,
-    ) -> Poll<Result<Option<Self::BidiStream>, Self::AcceptError>> {
-        let stream = match ready!(self.incoming.poll_next_unpin(cx)) {
-            Some(x) => x?,
-            None => return Poll::Ready(Ok(None)),
-        };
+    ) -> Poll<Result<Self::BidiStream, ConnectionErrorIncoming>> {
+        let stream = ready!(self.incoming.poll_next_unpin(cx))
+            .expect("self.incoming BoxStream never returns None")
+            .map_err(convert_start_error)?;
         if let (Some(read), Some(write)) = stream.split() {
-            Poll::Ready(Ok(Some(Self::BidiStream {
+            Poll::Ready(Ok(Self::BidiStream {
                 send: Self::SendStream::new(write),
                 recv: RecvStream::new(read),
-            })))
+            }))
         } else {
             unreachable!("msquic-async should always return a bidirectional stream");
         }
@@ -280,12 +126,11 @@ where
     fn poll_accept_recv(
         &mut self,
         cx: &mut task::Context<'_>,
-    ) -> Poll<Result<Option<Self::RecvStream>, Self::AcceptError>> {
-        let recv = match ready!(self.incoming_uni.poll_next_unpin(cx)) {
-            Some(x) => x?,
-            None => return Poll::Ready(Ok(None)),
-        };
-        Poll::Ready(Ok(Some(Self::RecvStream::new(recv))))
+    ) -> Poll<Result<Self::RecvStream, ConnectionErrorIncoming>> {
+        let recv = ready!(self.incoming_uni.poll_next_unpin(cx))
+            .expect("self.incoming_uni BoxStream never returns None")
+            .map_err(convert_start_error)?;
+        Poll::Ready(Ok(Self::RecvStream::new(recv)))
     }
 
     fn opener(&self) -> Self::OpenStreams {
@@ -303,13 +148,12 @@ where
 {
     type SendStream = SendStream<B>;
     type BidiStream = BidiStream<B>;
-    type OpenError = StreamStartError;
 
     #[cfg_attr(feature = "tracing", instrument(skip_all, level = "trace"))]
     fn poll_open_bidi(
         &mut self,
         cx: &mut task::Context<'_>,
-    ) -> Poll<Result<Self::BidiStream, Self::OpenError>> {
+    ) -> Poll<Result<Self::BidiStream, StreamErrorIncoming>> {
         if self.opening.is_none() {
             self.opening = Some(Box::pin(stream::unfold(self.conn.clone(), |conn| async {
                 Some((
@@ -321,7 +165,11 @@ where
             })));
         }
 
-        let stream = ready!(self.opening.as_mut().unwrap().poll_next_unpin(cx)).unwrap()?;
+        let stream = ready!(self.opening.as_mut().unwrap().poll_next_unpin(cx))
+            .unwrap()
+            .map_err(|e| StreamErrorIncoming::ConnectionErrorIncoming {
+                connection_error: convert_start_error(e),
+            })?;
         if let (Some(read), Some(write)) = stream.split() {
             Poll::Ready(Ok(Self::BidiStream {
                 send: Self::SendStream::new(write),
@@ -336,7 +184,7 @@ where
     fn poll_open_send(
         &mut self,
         cx: &mut task::Context<'_>,
-    ) -> Poll<Result<Self::SendStream, Self::OpenError>> {
+    ) -> Poll<Result<Self::SendStream, StreamErrorIncoming>> {
         if self.opening_uni.is_none() {
             self.opening_uni = Some(Box::pin(stream::unfold(self.conn.clone(), |conn| async {
                 Some((
@@ -347,7 +195,11 @@ where
             })));
         }
 
-        let stream = ready!(self.opening_uni.as_mut().unwrap().poll_next_unpin(cx)).unwrap()?;
+        let stream = ready!(self.opening_uni.as_mut().unwrap().poll_next_unpin(cx))
+            .unwrap()
+            .map_err(|e| StreamErrorIncoming::ConnectionErrorIncoming {
+                connection_error: convert_start_error(e),
+            })?;
         if let (None, Some(write)) = stream.split() {
             Poll::Ready(Ok(Self::SendStream::new(write)))
         } else {
@@ -356,46 +208,8 @@ where
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all, level = "trace"))]
-    fn close(&mut self, code: h3::error::Code, _reason: &[u8]) {
+    fn close(&mut self, code: Code, _reason: &[u8]) {
         self.conn.shutdown(code.value()).ok();
-    }
-}
-
-#[cfg(feature = "datagram")]
-impl<B> quic_traits::SendDatagramExt<B> for Connection
-where
-    B: Buf,
-{
-    type Error = SendDatagramError;
-
-    #[cfg_attr(feature = "tracing", instrument(skip_all, level = "trace"))]
-    fn send_datagram(&mut self, data: Datagram<B>) -> Result<(), SendDatagramError> {
-        // TODO investigate static buffer from known max datagram size
-        let mut buf = BytesMut::new();
-        data.encode(&mut buf);
-        self.conn.send_datagram(&buf.freeze())?;
-
-        Ok(())
-    }
-}
-
-#[cfg(feature = "datagram")]
-impl quic_traits::RecvDatagramExt for Connection {
-    type Buf = Bytes;
-
-    type Error = RecvDatagramError;
-
-    #[inline]
-    #[cfg_attr(feature = "tracing", instrument(skip_all, level = "trace"))]
-    fn poll_accept_datagram(
-        &mut self,
-        cx: &mut task::Context<'_>,
-    ) -> Poll<Result<Option<Self::Buf>, Self::Error>> {
-        match ready!(self.datagrams.poll_next_unpin(cx)) {
-            Some(Ok(x)) => Poll::Ready(Ok(Some(x))),
-            Some(Err(e)) => Poll::Ready(Err(e.into())),
-            None => Poll::Ready(Ok(None)),
-        }
     }
 }
 
@@ -419,13 +233,12 @@ where
 {
     type SendStream = SendStream<B>;
     type BidiStream = BidiStream<B>;
-    type OpenError = StreamStartError;
 
     #[cfg_attr(feature = "tracing", instrument(skip_all, level = "trace"))]
     fn poll_open_bidi(
         &mut self,
         cx: &mut task::Context<'_>,
-    ) -> Poll<Result<Self::BidiStream, Self::OpenError>> {
+    ) -> Poll<Result<Self::BidiStream, StreamErrorIncoming>> {
         if self.opening.is_none() {
             self.opening = Some(Box::pin(stream::unfold(self.conn.clone(), |conn| async {
                 Some((
@@ -436,7 +249,11 @@ where
             })));
         }
 
-        let stream = ready!(self.opening.as_mut().unwrap().poll_next_unpin(cx)).unwrap()?;
+        let stream = ready!(self.opening.as_mut().unwrap().poll_next_unpin(cx))
+            .unwrap()
+            .map_err(|e| StreamErrorIncoming::ConnectionErrorIncoming {
+                connection_error: convert_start_error(e),
+            })?;
         if let (Some(read), Some(write)) = stream.split() {
             Poll::Ready(Ok(Self::BidiStream {
                 send: Self::SendStream::new(write),
@@ -451,7 +268,7 @@ where
     fn poll_open_send(
         &mut self,
         cx: &mut task::Context<'_>,
-    ) -> Poll<Result<Self::SendStream, Self::OpenError>> {
+    ) -> Poll<Result<Self::SendStream, StreamErrorIncoming>> {
         if self.opening_uni.is_none() {
             self.opening_uni = Some(Box::pin(stream::unfold(self.conn.clone(), |conn| async {
                 Some((
@@ -462,7 +279,11 @@ where
             })));
         }
 
-        let stream = ready!(self.opening_uni.as_mut().unwrap().poll_next_unpin(cx)).unwrap()?;
+        let stream = ready!(self.opening_uni.as_mut().unwrap().poll_next_unpin(cx))
+            .unwrap()
+            .map_err(|e| StreamErrorIncoming::ConnectionErrorIncoming {
+                connection_error: convert_start_error(e),
+            })?;
         if let (None, Some(write)) = stream.split() {
             Poll::Ready(Ok(Self::SendStream::new(write)))
         } else {
@@ -471,7 +292,7 @@ where
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all, level = "trace"))]
-    fn close(&mut self, code: h3::error::Code, _reason: &[u8]) {
+    fn close(&mut self, code: Code, _reason: &[u8]) {
         self.conn.shutdown(code.value()).ok();
     }
 }
@@ -512,12 +333,11 @@ where
 
 impl<B: Buf> quic::RecvStream for BidiStream<B> {
     type Buf = msquic_async::StreamRecvBuffer;
-    type Error = ReadError;
 
     fn poll_data(
         &mut self,
         cx: &mut task::Context<'_>,
-    ) -> Poll<Result<Option<Self::Buf>, Self::Error>> {
+    ) -> Poll<Result<Option<Self::Buf>, StreamErrorIncoming>> {
         self.recv.poll_data(cx)
     }
 
@@ -534,13 +354,11 @@ impl<B> quic::SendStream<B> for BidiStream<B>
 where
     B: Buf,
 {
-    type Error = SendStreamError;
-
-    fn poll_ready(&mut self, cx: &mut task::Context<'_>) -> Poll<Result<(), Self::Error>> {
+    fn poll_ready(&mut self, cx: &mut task::Context<'_>) -> Poll<Result<(), StreamErrorIncoming>> {
         self.send.poll_ready(cx)
     }
 
-    fn poll_finish(&mut self, cx: &mut task::Context<'_>) -> Poll<Result<(), Self::Error>> {
+    fn poll_finish(&mut self, cx: &mut task::Context<'_>) -> Poll<Result<(), StreamErrorIncoming>> {
         self.send.poll_finish(cx)
     }
 
@@ -548,7 +366,7 @@ where
         self.send.reset(reset_code)
     }
 
-    fn send_data<D: Into<WriteBuf<B>>>(&mut self, data: D) -> Result<(), Self::Error> {
+    fn send_data<D: Into<WriteBuf<B>>>(&mut self, data: D) -> Result<(), StreamErrorIncoming> {
         self.send.send_data(data)
     }
 
@@ -564,7 +382,7 @@ where
         &mut self,
         cx: &mut task::Context<'_>,
         buf: &mut D,
-    ) -> Poll<Result<usize, Self::Error>> {
+    ) -> Poll<Result<usize, StreamErrorIncoming>> {
         self.send.poll_send(cx, buf)
     }
 }
@@ -597,13 +415,12 @@ impl RecvStream {
 
 impl quic::RecvStream for RecvStream {
     type Buf = msquic_async::StreamRecvBuffer;
-    type Error = ReadError;
 
     #[cfg_attr(feature = "tracing", instrument(skip_all, level = "trace"))]
     fn poll_data(
         &mut self,
         cx: &mut task::Context<'_>,
-    ) -> Poll<Result<Option<Self::Buf>, Self::Error>> {
+    ) -> Poll<Result<Option<Self::Buf>, StreamErrorIncoming>> {
         if let Some(stream) = self.stream.take() {
             self.read_chunk_fut.set(async move {
                 let chunk = poll_fn(|cx| stream.poll_read_chunk(cx)).await;
@@ -613,7 +430,9 @@ impl quic::RecvStream for RecvStream {
 
         let (stream, chunk) = ready!(self.read_chunk_fut.poll(cx));
         self.stream = Some(stream);
-        let chunk = chunk?.filter(|x| !x.is_empty() || !x.fin());
+        let chunk = chunk
+            .map_err(convert_read_error_to_stream_error)?
+            .filter(|x| !x.is_empty() || !x.fin());
         Poll::Ready(Ok(chunk))
     }
 
@@ -634,65 +453,19 @@ impl quic::RecvStream for RecvStream {
     }
 }
 
-/// The error type for [`RecvStream`]
-///
-/// Wraps errors that occur when reading from a receive stream.
-#[derive(Debug)]
-pub struct ReadError(msquic_async::ReadError);
-
-impl From<ReadError> for std::io::Error {
-    fn from(value: ReadError) -> Self {
-        value.0.into()
-    }
-}
-
-impl std::error::Error for ReadError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.0.source()
-    }
-}
-
-impl fmt::Display for ReadError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl From<ReadError> for Arc<dyn Error> {
-    fn from(e: ReadError) -> Self {
-        Arc::new(e)
-    }
-}
-
-impl From<msquic_async::ReadError> for ReadError {
-    fn from(e: msquic_async::ReadError) -> Self {
-        Self(e)
-    }
-}
-
-impl Error for ReadError {
-    fn is_timeout(&self) -> bool {
-        if let msquic_async::ReadError::ConnectionLost(
-            msquic_async::ConnectionError::ShutdownByTransport(status, _),
-        ) = &self.0
-        {
-            matches!(
-                status.try_as_status_code().unwrap(),
-                msquic::StatusCode::QUIC_STATUS_CONNECTION_TIMEOUT
-                    | msquic::StatusCode::QUIC_STATUS_CONNECTION_IDLE
-            )
-        } else {
-            false
+fn convert_read_error_to_stream_error(error: msquic_async::ReadError) -> StreamErrorIncoming {
+    match error {
+        msquic_async::ReadError::Reset(error_code) => {
+            StreamErrorIncoming::StreamTerminated { error_code }
         }
-    }
-
-    fn err_code(&self) -> Option<u64> {
-        match self.0 {
-            msquic_async::ReadError::ConnectionLost(
-                msquic_async::ConnectionError::ShutdownByPeer(error_code),
-            ) => Some(error_code),
-            msquic_async::ReadError::Reset(error_code) => Some(error_code),
-            _ => None,
+        msquic_async::ReadError::ConnectionLost(connection_error) => {
+            StreamErrorIncoming::ConnectionErrorIncoming {
+                connection_error: convert_connection_error(connection_error),
+            }
+        }
+        error @ msquic_async::ReadError::Closed
+        | error @ msquic_async::ReadError::OtherError(_) => {
+            StreamErrorIncoming::Unknown(Box::new(error))
         }
     }
 }
@@ -731,10 +504,8 @@ impl<B> quic::SendStream<B> for SendStream<B>
 where
     B: Buf,
 {
-    type Error = SendStreamError;
-
     #[cfg_attr(feature = "tracing", instrument(skip_all, level = "trace"))]
-    fn poll_ready(&mut self, cx: &mut task::Context<'_>) -> Poll<Result<(), Self::Error>> {
+    fn poll_ready(&mut self, cx: &mut task::Context<'_>) -> Poll<Result<(), StreamErrorIncoming>> {
         if let Some(ref mut data) = self.writing {
             while data.has_remaining() {
                 if let Some(mut stream) = self.stream.take() {
@@ -750,7 +521,7 @@ where
                 match res {
                     Ok(cnt) => data.advance(cnt),
                     Err(err) => {
-                        return Poll::Ready(Err(SendStreamError::Write(err)));
+                        return Poll::Ready(Err(convert_write_error_to_stream_error(err)));
                     }
                 }
             }
@@ -760,12 +531,12 @@ where
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all, level = "trace"))]
-    fn poll_finish(&mut self, cx: &mut task::Context<'_>) -> Poll<Result<(), Self::Error>> {
+    fn poll_finish(&mut self, cx: &mut task::Context<'_>) -> Poll<Result<(), StreamErrorIncoming>> {
         self.stream
             .as_mut()
             .unwrap()
             .poll_finish_write(cx)
-            .map_err(|e| e.into())
+            .map_err(convert_write_error_to_stream_error)
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all, level = "trace"))]
@@ -774,9 +545,18 @@ where
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all, level = "trace"))]
-    fn send_data<D: Into<WriteBuf<B>>>(&mut self, data: D) -> Result<(), Self::Error> {
+    fn send_data<D: Into<WriteBuf<B>>>(&mut self, data: D) -> Result<(), StreamErrorIncoming> {
         if self.writing.is_some() {
-            return Err(Self::Error::NotReady);
+            // This can only happen if the traits are misused by h3 itself
+            // If this happens log an error and close the connection with H3_INTERNAL_ERROR
+
+            #[cfg(feature = "tracing")]
+            tracing::error!("send_data called while send stream is not ready");
+            return Err(StreamErrorIncoming::ConnectionErrorIncoming {
+                connection_error: ConnectionErrorIncoming::InternalError(
+                    "internal error in the http stack".to_string(),
+                ),
+            });
         }
         self.writing = Some(data.into());
         Ok(())
@@ -803,7 +583,7 @@ where
         &mut self,
         cx: &mut task::Context<'_>,
         buf: &mut D,
-    ) -> Poll<Result<usize, Self::Error>> {
+    ) -> Poll<Result<usize, StreamErrorIncoming>> {
         if self.writing.is_some() {
             // This signifies a bug in implementation
             panic!("poll_send called while send stream is not ready")
@@ -819,77 +599,25 @@ where
                 buf.advance(written);
                 Poll::Ready(Ok(written))
             }
-            Err(err) => Poll::Ready(Err(SendStreamError::Write(err))),
+            Err(err) => Poll::Ready(Err(convert_write_error_to_stream_error(err))),
         }
     }
 }
 
-/// The error type for [`SendStream`]
-///
-/// Wraps errors that can happen writing to or polling a send stream.
-#[derive(Debug)]
-pub enum SendStreamError {
-    /// Errors when writing, wrapping a [`msquic_async::WriteError`]
-    Write(msquic_async::WriteError),
-    /// Error when the stream is not ready, because it is still sending
-    /// data from a previous call
-    NotReady,
-    // /// Error when the stream is closed
-    // StreamClosed(ClosedStream),
-}
-
-impl From<SendStreamError> for std::io::Error {
-    fn from(value: SendStreamError) -> Self {
-        match value {
-            SendStreamError::Write(err) => err.into(),
-            SendStreamError::NotReady => std::io::Error::other("send stream is not ready"),
+fn convert_write_error_to_stream_error(error: msquic_async::WriteError) -> StreamErrorIncoming {
+    match error {
+        msquic_async::WriteError::Stopped(error_code) => {
+            StreamErrorIncoming::StreamTerminated { error_code }
         }
-    }
-}
-
-impl std::error::Error for SendStreamError {}
-
-impl Display for SendStreamError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self)
-    }
-}
-
-impl From<msquic_async::WriteError> for SendStreamError {
-    fn from(e: msquic_async::WriteError) -> Self {
-        Self::Write(e)
-    }
-}
-
-impl Error for SendStreamError {
-    fn is_timeout(&self) -> bool {
-        if let Self::Write(msquic_async::WriteError::ConnectionLost(
-            msquic_async::ConnectionError::ShutdownByTransport(status, _),
-        )) = &self
-        {
-            matches!(
-                status.try_as_status_code().unwrap(),
-                msquic::StatusCode::QUIC_STATUS_CONNECTION_TIMEOUT
-                    | msquic::StatusCode::QUIC_STATUS_CONNECTION_IDLE
-            )
-        } else {
-            false
+        msquic_async::WriteError::ConnectionLost(connection_error) => {
+            StreamErrorIncoming::ConnectionErrorIncoming {
+                connection_error: convert_connection_error(connection_error),
+            }
         }
-    }
-
-    fn err_code(&self) -> Option<u64> {
-        match self {
-            Self::Write(msquic_async::WriteError::Stopped(error_code)) => Some(*error_code),
-            Self::Write(msquic_async::WriteError::ConnectionLost(
-                msquic_async::ConnectionError::ShutdownByPeer(error_code),
-            )) => Some(*error_code),
-            _ => None,
+        error @ msquic_async::WriteError::Closed
+        | error @ msquic_async::WriteError::Finished
+        | error @ msquic_async::WriteError::OtherError(_) => {
+            StreamErrorIncoming::Unknown(Box::new(error))
         }
-    }
-}
-
-impl From<SendStreamError> for Arc<dyn Error> {
-    fn from(e: SendStreamError) -> Self {
-        Arc::new(e)
     }
 }

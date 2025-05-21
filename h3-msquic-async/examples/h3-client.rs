@@ -1,9 +1,10 @@
 /// This file is based on the `client.rs` example from the `h3` crate.
 use futures::future;
+use h3::error::{ConnectionError, StreamError};
 use h3_msquic_async::msquic;
 use h3_msquic_async::msquic_async;
 use tokio::io::AsyncWriteExt;
-use tracing::info;
+use tracing::{error, info};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -39,8 +40,7 @@ async fn main() -> anyhow::Result<()> {
     let (mut driver, mut send_request) = h3::client::new(h3_conn).await?;
 
     let drive = async move {
-        future::poll_fn(|cx| driver.poll_close(cx)).await?;
-        Ok::<(), anyhow::Error>(())
+        Err::<(), ConnectionError>(future::poll_fn(|cx| driver.poll_close(cx)).await)
     };
     let request = async move {
         info!("sending request ...");
@@ -75,8 +75,28 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let (req_res, drive_res) = tokio::join!(request, drive);
-    req_res?;
-    drive_res?;
+    if let Err(err) = req_res {
+        match err.downcast::<StreamError>() {
+            Ok(err) => {
+                if err.is_h3_no_error() {
+                    info!("connection closed with H3_NO_ERROR");
+                } else {
+                    error!("request failed: {:?}", err);
+                }
+            }
+            Err(err) => {
+                error!("request failed: {:?}", err);
+            }
+        }
+    }
+    if let Err(err) = drive_res {
+        if err.is_h3_no_error() {
+            info!("connection closed with H3_NO_ERROR");
+        } else {
+            error!("connection closed with error: {:?}", err);
+            return Err(err.into());
+        }
+    }
 
     Ok(())
 }

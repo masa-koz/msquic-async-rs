@@ -19,6 +19,7 @@ include = [
 ]
 
 [features]
+default = ["datagram"]
 tracing = ["dep:tracing"]
 datagram = ["dep:h3-datagram"]
 quictls = ["msquic-async/quictls"]
