@@ -1,7 +1,5 @@
 /// This file is based on the `lib.rs` from the `h3-quinn` crate.
 use bytes::Buf;
-#[cfg(feature = "datagram")]
-use bytes::{Bytes, BytesMut};
 use futures::{
     future::poll_fn,
     ready,
@@ -12,8 +10,6 @@ use h3::{
     error::Code,
     quic::{self, ConnectionErrorIncoming, StreamErrorIncoming, StreamId, WriteBuf},
 };
-#[cfg(feature = "datagram")]
-use h3_datagram::{datagram::Datagram, quic_traits};
 pub use msquic_async;
 pub use msquic_async::msquic;
 use std::pin::Pin;
@@ -22,6 +18,9 @@ use std::task::{self, Poll};
 use tokio_util::sync::ReusableBoxFuture;
 #[cfg(feature = "tracing")]
 use tracing::instrument;
+
+#[cfg(feature = "datagram")]
+pub mod datagram;
 
 /// BoxStream with Sync trait
 type BoxStreamSync<'a, T> = Pin<Box<dyn Stream<Item = T> + Sync + Send + 'a>>;
@@ -40,8 +39,6 @@ pub struct Connection {
     opening_uni: Option<
         BoxStreamSync<'static, Result<msquic_async::Stream, msquic_async::StreamStartError>>,
     >,
-    #[cfg(feature = "datagram")]
-    datagrams: BoxStreamSync<'static, Result<Bytes, msquic_async::DgramReceiveError>>,
 }
 
 impl Connection {
@@ -57,10 +54,6 @@ impl Connection {
                 Some((conn.accept_inbound_uni_stream().await, conn))
             })),
             opening_uni: None,
-            #[cfg(feature = "datagram")]
-            datagrams: Box::pin(stream::unfold(conn, |conn| async {
-                Some((poll_fn(|cx| conn.poll_receive_datagram(cx)).await, conn))
-            })),
         }
     }
 }
@@ -68,9 +61,7 @@ impl Connection {
 fn convert_connection_error(e: msquic_async::ConnectionError) -> ConnectionErrorIncoming {
     match e {
         msquic_async::ConnectionError::ShutdownByPeer(error_code) => {
-            ConnectionErrorIncoming::ApplicationClose {
-                error_code,
-            }
+            ConnectionErrorIncoming::ApplicationClose { error_code }
         }
         msquic_async::ConnectionError::ShutdownByTransport(status, code) => {
             if matches!(
@@ -219,44 +210,6 @@ where
     #[cfg_attr(feature = "tracing", instrument(skip_all, level = "trace"))]
     fn close(&mut self, code: Code, _reason: &[u8]) {
         self.conn.shutdown(code.value()).ok();
-    }
-}
-
-#[cfg(feature = "datagram")]
-impl<B> quic_traits::SendDatagramExt<B> for Connection
-where
-    B: Buf,
-{
-    type Error = SendDatagramError;
-
-    #[cfg_attr(feature = "tracing", instrument(skip_all, level = "trace"))]
-    fn send_datagram(&mut self, data: Datagram<B>) -> Result<(), SendDatagramError> {
-        // TODO investigate static buffer from known max datagram size
-        let mut buf = BytesMut::new();
-        data.encode(&mut buf);
-        self.conn.send_datagram(&buf.freeze())?;
-
-        Ok(())
-    }
-}
-
-#[cfg(feature = "datagram")]
-impl quic_traits::RecvDatagramExt for Connection {
-    type Buf = Bytes;
-
-    type Error = RecvDatagramError;
-
-    #[inline]
-    #[cfg_attr(feature = "tracing", instrument(skip_all, level = "trace"))]
-    fn poll_accept_datagram(
-        &mut self,
-        cx: &mut task::Context<'_>,
-    ) -> Poll<Result<Option<Self::Buf>, Self::Error>> {
-        match ready!(self.datagrams.poll_next_unpin(cx)) {
-            Some(Ok(x)) => Poll::Ready(Ok(Some(x))),
-            Some(Err(e)) => Poll::Ready(Err(e.into())),
-            None => Poll::Ready(Ok(None)),
-        }
     }
 }
 
