@@ -269,6 +269,13 @@ impl Connection {
             }
         }
 
+        if !exclusive.dgram_send_enabled {
+            return Err(DgramSendError::Denied);
+        }
+        if buf.len() > exclusive.dgram_max_send_length as usize {
+            return Err(DgramSendError::TooBig);
+        }
+        
         let mut write_buf = exclusive.write_pool.pop().unwrap_or(WriteBuffer::new());
         let _ = write_buf.put_zerocopy(buf);
         let buffers = unsafe {
@@ -394,6 +401,8 @@ struct ConnectionInnerExclusive {
     recv_buffers: VecDeque<Bytes>,
     recv_waiters: Vec<Waker>,
     write_pool: Vec<WriteBuffer>,
+    dgram_send_enabled: bool,
+    dgram_max_send_length: u16,
     shutdown_waiters: Vec<Waker>,
 }
 
@@ -411,6 +420,8 @@ impl ConnectionInner {
                 recv_buffers: VecDeque::new(),
                 recv_waiters: Vec::new(),
                 write_pool: Vec::new(),
+                dgram_send_enabled: false,
+                dgram_max_send_length: 0,
                 shutdown_waiters: Vec::new(),
             }),
         }
@@ -580,6 +591,9 @@ impl ConnectionInner {
             send_enabled,
             max_send_length
         );
+        let mut exclusive = self.exclusive.lock().unwrap();
+        exclusive.dgram_send_enabled = send_enabled;
+        exclusive.dgram_max_send_length = max_send_length;
         Ok(())
     }
 
