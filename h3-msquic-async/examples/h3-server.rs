@@ -9,7 +9,7 @@ use http::{Request, StatusCode};
 use tokio::{fs::File, io::AsyncReadExt};
 use tracing::{error, info};
 
-use h3::{error::ErrorLevel, quic::BidiStream, server::RequestStream};
+use h3::{quic::BidiStream, server::RequestStream};
 
 #[derive(FromArgs, Clone)]
 /// server args
@@ -141,7 +141,14 @@ async fn main() -> anyhow::Result<()> {
                 h3::server::Connection::new(h3_msquic_async::Connection::new(conn)).await?;
             loop {
                 match h3_conn.accept().await {
-                    Ok(Some((req, stream))) => {
+                    Ok(Some(req_resolver)) => {
+                        let (req, stream) = match req_resolver.resolve_request().await {
+                            Ok(req) => req,
+                            Err(err) => {
+                                error!("error resolving request: {}", err);
+                                continue;
+                            }
+                        };
                         info!("new request: {:#?}", req);
 
                         let root = root.clone();
@@ -160,10 +167,7 @@ async fn main() -> anyhow::Result<()> {
 
                     Err(err) => {
                         error!("error on accept {}", err);
-                        match err.get_error_level() {
-                            ErrorLevel::ConnectionError => break,
-                            ErrorLevel::StreamError => continue,
-                        }
+                        break;
                     }
                 }
             }

@@ -442,13 +442,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "h3"
+version = "0.0.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10872b55cfb02a821b69dc7cf8dc6a71d6af25eb9a79662bec4a9d016056b3be"
+dependencies = [
+ "bytes",
+ "fastrand",
+ "futures-util",
+ "http",
+ "pin-project-lite",
+ "tokio",
+]
+
+[[package]]
 name = "h3-datagram"
 version = "0.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "98c058c00e0ff53a456ad97cc0df2d0f44fbe7a2c11c9eca87c25471ca68fa1c"
 dependencies = [
  "bytes",
- "h3",
+ "h3 0.0.7",
  "pin-project-lite",
 ]
 
@@ -460,7 +474,7 @@ dependencies = [
  "argh",
  "bytes",
  "futures",
- "h3",
+ "h3 0.0.8",
  "h3-datagram",
  "http",
  "msquic-async",
