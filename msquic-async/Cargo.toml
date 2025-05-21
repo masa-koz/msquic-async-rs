@@ -1,6 +1,6 @@
 [package]
 name = "msquic-async"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["Masahiro Kozuka <masa.koz@outlook.com>"]
 edition = "2021"
 description = "MsQuic based quic library that supports async operation"
