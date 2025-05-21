@@ -69,7 +69,7 @@ fn convert_connection_error(e: msquic_async::ConnectionError) -> ConnectionError
     match e {
         msquic_async::ConnectionError::ShutdownByPeer(error_code) => {
             ConnectionErrorIncoming::ApplicationClose {
-                error_code: error_code.into(),
+                error_code,
             }
         }
         msquic_async::ConnectionError::ShutdownByTransport(status, code) => {
@@ -120,7 +120,7 @@ where
     ) -> Poll<Result<Self::BidiStream, ConnectionErrorIncoming>> {
         let stream = ready!(self.incoming.poll_next_unpin(cx))
             .expect("self.incoming BoxStream never returns None")
-            .map_err(|e| convert_start_error(e))?;
+            .map_err(convert_start_error)?;
         if let (Some(read), Some(write)) = stream.split() {
             Poll::Ready(Ok(Self::BidiStream {
                 send: Self::SendStream::new(write),
@@ -138,7 +138,7 @@ where
     ) -> Poll<Result<Self::RecvStream, ConnectionErrorIncoming>> {
         let recv = ready!(self.incoming_uni.poll_next_unpin(cx))
             .expect("self.incoming_uni BoxStream never returns None")
-            .map_err(|e| convert_start_error(e))?;
+            .map_err(convert_start_error)?;
         Poll::Ready(Ok(Self::RecvStream::new(recv)))
     }
 
@@ -478,7 +478,7 @@ impl quic::RecvStream for RecvStream {
         let (stream, chunk) = ready!(self.read_chunk_fut.poll(cx));
         self.stream = Some(stream);
         let chunk = chunk
-            .map_err(|e| convert_read_error_to_stream_error(e))?
+            .map_err(convert_read_error_to_stream_error)?
             .filter(|x| !x.is_empty() || !x.fin());
         Poll::Ready(Ok(chunk))
     }
@@ -583,7 +583,7 @@ where
             .as_mut()
             .unwrap()
             .poll_finish_write(cx)
-            .map_err(|e| convert_write_error_to_stream_error(e))
+            .map_err(convert_write_error_to_stream_error)
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all, level = "trace"))]

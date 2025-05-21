@@ -40,7 +40,7 @@ async fn main() -> anyhow::Result<()> {
     let (mut driver, mut send_request) = h3::client::new(h3_conn).await?;
 
     let drive = async move {
-        return Err::<(), ConnectionError>(future::poll_fn(|cx| driver.poll_close(cx)).await);
+        Err::<(), ConnectionError>(future::poll_fn(|cx| driver.poll_close(cx)).await)
     };
     let request = async move {
         info!("sending request ...");
