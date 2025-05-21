@@ -275,7 +275,7 @@ impl Connection {
         if buf.len() > exclusive.dgram_max_send_length as usize {
             return Err(DgramSendError::TooBig);
         }
-        
+
         let mut write_buf = exclusive.write_pool.pop().unwrap_or(WriteBuffer::new());
         let _ = write_buf.put_zerocopy(buf);
         let buffers = unsafe {
