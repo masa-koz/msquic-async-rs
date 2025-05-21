@@ -1,6 +1,6 @@
 [package]
 name = "h3-msquic-async"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Masahiro Kozuka <masa.koz@outlook.com>"]
 edition = "2021"
 description = "MsQuic-Async based library for using h3"
@@ -19,7 +19,7 @@ include = [
 ]
 
 [features]
-default = ["datagram"]
+default = []
 tracing = ["dep:tracing"]
 datagram = ["dep:h3-datagram"]
 quictls = ["msquic-async/quictls"]
