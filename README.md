@@ -8,16 +8,10 @@
 
 Note that MsQuic, which is used to implement QUIC, needs to be built and linked. This is done automatically when building h3-msquic-async, but requires the cmake command to be available during the build process.
 
-### Windows
+### Windows, Linux, MacOS
 Add msquic-async in dependencies of your Cargo.toml.
 ```toml
-msquic-async = { version = "0.2.0", features = ["tls-schannel"] }
-```
-
-### Linux, MacOS
-Add msquic-async in dependencies of your Cargo.toml.
-```toml
-msquic-async = { version = "0.2.0" }
+msquic-async = { version = "0.3.0" }
 ```
 
 The [examples](https://github.com/masa-koz/msquic-async-rs/tree/main/msquic-async/examples) directory can help get started.
@@ -25,48 +19,95 @@ The [examples](https://github.com/masa-koz/msquic-async-rs/tree/main/msquic-asyn
 ### Server
 
 ```rust
-    let registration = msquic::Registration::new(ptr::null())
-        .map_err(|status| anyhow::anyhow!("Registration::new failed: 0x{:x}", status))?;
+    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default())?;
 
-    let alpn = [msquic::Buffer::from("sample")];
+    let alpn = [msquic::BufferRef::from("sample")];
 
     // create msquic-async listener
-    let configuration = msquic::Configuration::new(
+    let configuration = msquic::Configuration::open(
         &registration,
         &alpn,
-        msquic::Settings::new()
-            .set_idle_timeout_ms(10000)
-            .set_peer_bidi_stream_count(100)
-            .set_peer_unidi_stream_count(100)
-            .set_datagram_receive_enabled(true)
-            .set_stream_multi_receive_enabled(true),
-    )
-    .map_err(|status| anyhow::anyhow!("Configuration::new failed: 0x{:x}", status))?;
+        Some(
+            &msquic::Settings::new()
+                .set_IdleTimeoutMs(10000)
+                .set_PeerBidiStreamCount(100)
+                .set_PeerUnidiStreamCount(100)
+                .set_DatagramReceiveEnabled()
+                .set_StreamMultiReceiveEnabled(),
+        ),
+    )?;
 
-    let certificate_file = msquic::CertificateFile {
-        private_key_file: key_path.as_ptr(),
-        certificate_file: cert_path.as_ptr(),
+    #[cfg(any(not(windows), feature = "quictls"))]
+    {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        let cert = include_bytes!("cert.pem");
+        let key = include_bytes!("key.pem");
+
+        let mut cert_file = NamedTempFile::new()?;
+        cert_file.write_all(cert)?;
+        let cert_path = cert_file.into_temp_path();
+        let cert_path = cert_path.to_string_lossy().into_owned();
+
+        let mut key_file = NamedTempFile::new()?;
+        key_file.write_all(key)?;
+        let key_path = key_file.into_temp_path();
+        let key_path = key_path.to_string_lossy().into_owned();
+
+        let cred_config = msquic::CredentialConfig::new().set_credential(
+            msquic::Credential::CertificateFile(msquic::CertificateFile::new(key_path, cert_path)),
+        );
+
+        configuration.load_credential(&cred_config)?;
+    }
+
+    #[cfg(all(windows, not(feature = "quictls")))]
+    {
+        use schannel::cert_context::{CertContext, KeySpec};
+        use schannel::cert_store::{CertAdd, Memory};
+        use schannel::crypt_prov::{AcquireOptions, ProviderType};
+        use schannel::RawPointer;
+
+        let cert = include_str!("../examples/cert.pem");
+        let key = include_bytes!("../examples/key.pem");
+
+        let mut store = Memory::new().unwrap().into_store();
+
+        let name = String::from("msquic-async-example");
+
+        let cert_ctx = CertContext::from_pem(cert).unwrap();
+
+        let mut options = AcquireOptions::new();
+        options.container(&name);
+
+        let type_ = ProviderType::rsa_full();
+
+        let mut container = match options.acquire(type_) {
+            Ok(container) => container,
+            Err(_) => options.new_keyset(true).acquire(type_).unwrap(),
+        };
+        container.import().import_pkcs8_pem(key).unwrap();
+
+        cert_ctx
+            .set_key_prov_info()
+            .container(&name)
+            .type_(type_)
+            .keep_open(true)
+            .key_spec(KeySpec::key_exchange())
+            .set()
+            .unwrap();
+
+        let context = store.add_cert(&cert_ctx, CertAdd::Always).unwrap();
+
+        let cred_config = msquic::CredentialConfig::new().set_credential(
+            msquic::Credential::CertificateContext(unsafe { context.as_ptr() }),
+        );
+
+        configuration.load_credential(&cred_config)?;
     };
 
-    let cred_config = msquic::CredentialConfig {
-        cred_type: msquic::CREDENTIAL_TYPE_CERTIFICATE_FILE,
-        cred_flags: msquic::CREDENTIAL_FLAG_NONE,
-        certificate: msquic::CertificateUnion {
-            file: &certificate_file,
-        },
-        principle: ptr::null(),
-        reserved: ptr::null(),
-        async_handler: None,
-        allowed_cipher_suites: 0,
-    };
-
-    configuration
-        .load_credential(&cred_config)
-        .map_err(|status| {
-            anyhow::anyhow!("Configuration::load_credential failed: 0x{:x}", status)
-        })?;
-    let listener =
-        msquic_async::Listener::new(msquic::Listener::new(), &registration, configuration);
+    let listener = msquic_async::Listener::new(&registration, configuration)?;
 
     let addr: SocketAddr = "127.0.0.1:4567".parse()?;
     listener.start(&alpn, Some(addr))?;
@@ -89,10 +130,11 @@ The [examples](https://github.com/masa-koz/msquic-async-rs/tree/main/msquic-asyn
                             String::from_utf8_lossy(&buf[0..len])
                         );
                         stream.write_all(&buf[0..len]).await?;
+                        poll_fn(|cx| stream.poll_finish_write(cx)).await?;
                         mem::drop(stream);
                     }
                     Err(err) => {
-                        error!("error on accept {}", err);
+                        error!("error on accept stream: {}", err);
                         break;
                     }
                 }
@@ -107,41 +149,37 @@ You can find a full server example in [`msquic-async/examples/server.rs`](https:
 ### Client
 
 ``` rust
-    let registration = msquic::Registration::new(ptr::null())
-        .map_err(|status| anyhow::anyhow!("Registration::new failed: 0x{:x}", status))?;
+    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default())?;
 
-    let alpn = [msquic::Buffer::from("sample")];
-
-    let configuration = msquic::Configuration::new(
+    let alpn = [msquic::BufferRef::from("sample")];
+    let configuration = msquic::Configuration::open(
         &registration,
         &alpn,
-        msquic::Settings::new()
-            .set_idle_timeout_ms(10000)
-            .set_peer_bidi_stream_count(100)
-            .set_peer_unidi_stream_count(100)
-            .set_datagram_receive_enabled(true)
-            .set_stream_multi_receive_enabled(true),
-    )
-    .map_err(|status| anyhow::anyhow!("Configuration::new failed: 0x{:x}", status))?;
+        Some(
+            &msquic::Settings::new()
+                .set_IdleTimeoutMs(10000)
+                .set_PeerBidiStreamCount(100)
+                .set_PeerUnidiStreamCount(100)
+                .set_DatagramReceiveEnabled()
+                .set_StreamMultiReceiveEnabled(),
+        ),
+    )?;
+    let cred_config = msquic::CredentialConfig::new_client()
+        .set_credential_flags(msquic::CredentialFlags::NO_CERTIFICATE_VALIDATION);
+    configuration.load_credential(&cred_config)?;
 
-    let mut cred_config = msquic::CredentialConfig::new_client();
-    cred_config.cred_flags |= msquic::CREDENTIAL_FLAG_NO_CERTIFICATE_VALIDATION;
-    configuration
-        .load_credential(&cred_config)
-        .map_err(|status| {
-            anyhow::anyhow!("Configuration::load_credential failed: 0x{:x}", status)
-        })?;
-
-    let conn = msquic_async::Connection::new(msquic::Connection::new(), &registration)?;
+    let conn = msquic_async::Connection::new(&registration)?;
     conn.start(&configuration, "127.0.0.1", 4567).await?;
 
     let mut stream = conn
         .open_outbound_stream(msquic_async::StreamType::Bidirectional, false)
         .await?;
     stream.write_all("hello".as_bytes()).await?;
+    poll_fn(|cx| stream.poll_finish_write(cx)).await?;
     let mut buf = [0u8; 1024];
     let len = stream.read(&mut buf).await?;
     info!("received: {}", String::from_utf8_lossy(&buf[0..len]));
+    poll_fn(|cx| conn.poll_shutdown(cx, 0)).await?;
 ```
 
 You can find a full client example in [`msquic-async/examples/client.rs`](https://github.com/masa-koz/msquic-async-rs/tree/main/msquic-async/examples/client.rs)
