@@ -26,6 +26,7 @@ static = ["msquic/static"]
 [dependencies]
 bytes = { workspace = true }
 futures-io = { workspace = true }
+hex = { workspace = true }
 libc = { workspace = true }
 msquic = { workspace = true, features = ["preview-api"] }
 rangemap = { workspace = true }
