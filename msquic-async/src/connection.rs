@@ -2,7 +2,9 @@ use crate::buffer::WriteBuffer;
 use crate::stream::{ReadStream, StartError as StreamStartError, Stream, StreamType};
 
 use std::collections::VecDeque;
+use std::fs::File;
 use std::future::Future;
+use std::io::{Seek, SeekFrom, Write};
 use std::net::SocketAddr;
 use std::ops::Deref;
 use std::pin::Pin;
@@ -11,8 +13,9 @@ use std::task::{Context, Poll, Waker};
 
 use bytes::Bytes;
 use libc::c_void;
+use msquic::ffi::QUIC_TLS_SECRETS__bindgen_ty_1;
 use thiserror::Error;
-use tracing::trace;
+use tracing::{info, trace};
 
 #[derive(Clone)]
 pub struct Connection(Arc<ConnectionInstance>);
@@ -365,6 +368,42 @@ impl Connection {
             .map(|addr| addr.as_socket().expect("socket addr"))
             .map_err(ConnectionError::OtherError)
     }
+
+    /// Set the SSL key log file for the connection.
+    pub fn set_sslkeylog_file(&self, file: File) -> Result<(), ConnectionError> {
+        let mut exclusive = self.0.exclusive.lock().unwrap();
+        if exclusive.sslkeylog_file.is_some() {
+            return Err(ConnectionError::SslKeyLogFileAlreadySet);
+        }
+        if exclusive.tls_secrets.is_none() {
+            exclusive.tls_secrets = Some(Box::new(msquic::ffi::QUIC_TLS_SECRETS {
+                SecretLength: 0,
+                ClientRandom: [0; 32],
+                IsSet: QUIC_TLS_SECRETS__bindgen_ty_1 {
+                    _bitfield_align_1: [0; 0],
+                    _bitfield_1: QUIC_TLS_SECRETS__bindgen_ty_1::new_bitfield_1(
+                        0u8, 0u8, 0u8, 0u8, 0u8, 0u8,
+                    ),
+                },
+                ClientEarlyTrafficSecret: [0; 64],
+                ClientHandshakeTrafficSecret: [0; 64],
+                ServerHandshakeTrafficSecret: [0; 64],
+                ClientTrafficSecret0: [0; 64],
+                ServerTrafficSecret0: [0; 64],
+            }));
+            unsafe {
+                msquic::Api::set_param(
+                    self.0.msquic_conn.as_raw(),
+                    msquic::ffi::QUIC_PARAM_CONN_TLS_SECRETS,
+                    std::mem::size_of::<msquic::ffi::QUIC_TLS_SECRETS>() as u32,
+                    exclusive.tls_secrets.as_ref().unwrap().as_ref() as *const _ as *const _,
+                )
+            }
+            .map_err(ConnectionError::OtherError)?;
+        }
+        exclusive.sslkeylog_file = Some(file);
+        Ok(())
+    }
 }
 
 struct ConnectionInstance {
@@ -404,6 +443,8 @@ struct ConnectionInnerExclusive {
     dgram_send_enabled: bool,
     dgram_max_send_length: u16,
     shutdown_waiters: Vec<Waker>,
+    sslkeylog_file: Option<File>,
+    tls_secrets: Option<Box<msquic::ffi::QUIC_TLS_SECRETS>>,
 }
 
 impl ConnectionInner {
@@ -423,6 +464,8 @@ impl ConnectionInner {
                 dgram_send_enabled: false,
                 dgram_max_send_length: 0,
                 shutdown_waiters: Vec::new(),
+                sslkeylog_file: None,
+                tls_secrets: None,
             }),
         }
     }
@@ -435,6 +478,81 @@ impl ConnectionInner {
         trace!("ConnectionInner({:p}) Connected", self);
 
         let mut exclusive = self.exclusive.lock().unwrap();
+        match (
+            exclusive.tls_secrets.take(),
+            exclusive.sslkeylog_file.take(),
+        ) {
+            (Some(tls_secrets), Some(mut file)) => {
+                info!("ConnectionInner({:p}) Writing TLS secrets to file", self);
+                let client_random = if tls_secrets.IsSet.ClientRandom() != 0 {
+                    hex::encode(tls_secrets.ClientRandom)
+                } else {
+                    String::new()
+                };
+
+                let _ = file.seek(SeekFrom::End(0));
+
+                if tls_secrets.IsSet.ClientEarlyTrafficSecret() != 0 {
+                    let _ = writeln!(
+                        file,
+                        "CLIENT_EARLY_TRAFFIC_SECRET {} {}",
+                        client_random,
+                        hex::encode(
+                            &tls_secrets.ClientEarlyTrafficSecret
+                                [0..tls_secrets.SecretLength as usize]
+                        )
+                    );
+                }
+
+                if tls_secrets.IsSet.ClientHandshakeTrafficSecret() != 0 {
+                    let _ = writeln!(
+                        file,
+                        "CLIENT_HANDSHAKE_TRAFFIC_SECRET {} {}",
+                        client_random,
+                        hex::encode(
+                            &tls_secrets.ClientHandshakeTrafficSecret
+                                [0..tls_secrets.SecretLength as usize]
+                        )
+                    );
+                }
+
+                if tls_secrets.IsSet.ServerHandshakeTrafficSecret() != 0 {
+                    let _ = writeln!(
+                        file,
+                        "SERVER_HANDSHAKE_TRAFFIC_SECRET {} {}",
+                        client_random,
+                        hex::encode(
+                            &tls_secrets.ServerHandshakeTrafficSecret
+                                [0..tls_secrets.SecretLength as usize]
+                        )
+                    );
+                }
+
+                if tls_secrets.IsSet.ClientTrafficSecret0() != 0 {
+                    let _ = writeln!(
+                        file,
+                        "CLIENT_TRAFFIC_SECRET_0 {} {}",
+                        client_random,
+                        hex::encode(
+                            &tls_secrets.ClientTrafficSecret0[0..tls_secrets.SecretLength as usize]
+                        )
+                    );
+                }
+
+                if tls_secrets.IsSet.ServerTrafficSecret0() != 0 {
+                    let _ = writeln!(
+                        file,
+                        "SERVER_TRAFFIC_SECRET_0 {} {}",
+                        client_random,
+                        hex::encode(
+                            &tls_secrets.ServerTrafficSecret0[0..tls_secrets.SecretLength as usize]
+                        )
+                    );
+                }
+                exclusive.tls_secrets = Some(tls_secrets);
+            }
+            _ => { /* do nothing */ }
+        }
         exclusive.state = ConnectionState::Connected;
         exclusive
             .start_waiters
@@ -713,6 +831,8 @@ pub enum ConnectionError {
     ShutdownByLocal,
     #[error("connection closed")]
     ConnectionClosed,
+    #[error("SSL key log file already set")]
+    SslKeyLogFileAlreadySet,
     #[error("other error: status {0:?}")]
     OtherError(msquic::Status),
 }

@@ -1,4 +1,6 @@
 use msquic_async::msquic;
+use std::env;
+use std::fs::OpenOptions;
 use std::future::poll_fn;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::info;
@@ -32,6 +34,10 @@ async fn main() -> anyhow::Result<()> {
     configuration.load_credential(&cred_config)?;
 
     let conn = msquic_async::Connection::new(&registration)?;
+    if let Ok(sslkeylogfile) = env::var("SSLKEYLOGFILE") {
+        info!("SSLKEYLOGFILE is set: {}", sslkeylogfile);
+        conn.set_sslkeylog_file(OpenOptions::new().append(true).open(sslkeylogfile)?)?;
+    }
     conn.start(&configuration, "127.0.0.1", 4567).await?;
 
     let mut stream = conn

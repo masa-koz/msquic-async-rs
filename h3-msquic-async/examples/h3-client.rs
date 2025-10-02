@@ -3,6 +3,8 @@ use futures::future;
 use h3::error::{ConnectionError, StreamError};
 use h3_msquic_async::msquic;
 use h3_msquic_async::msquic_async;
+use std::env;
+use std::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 use tracing::{error, info};
 
@@ -35,6 +37,10 @@ async fn main() -> anyhow::Result<()> {
     configuration.load_credential(&cred_config)?;
 
     let conn = msquic_async::Connection::new(&registration)?;
+    if let Ok(sslkeylogfile) = env::var("SSLKEYLOGFILE") {
+        info!("SSLKEYLOGFILE is set: {}", sslkeylogfile);
+        conn.set_sslkeylog_file(OpenOptions::new().append(true).open(sslkeylogfile)?)?;
+    }
     conn.start(&configuration, "127.0.0.1", 8443).await?;
     let h3_conn = h3_msquic_async::Connection::new(conn);
     let (mut driver, mut send_request) = h3::client::new(h3_conn).await?;
