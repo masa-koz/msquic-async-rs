@@ -6,6 +6,8 @@ use bytes::{Bytes, BytesMut};
 use h3_msquic_async::msquic;
 use h3_msquic_async::msquic_async;
 use http::{Request, StatusCode};
+use std::env;
+use std::fs::OpenOptions;
 use tokio::{fs::File, io::AsyncReadExt};
 use tracing::{error, info};
 
@@ -124,6 +126,15 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let listener = msquic_async::Listener::new(&registration, configuration)?;
+    if let Ok(sslkeylog_file) = env::var("SSLKEYLOGFILE") {
+        info!("SSLKEYLOGFILE is set: {}", sslkeylog_file);
+        listener.set_sslkeylog_file(
+            OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(sslkeylog_file)?,
+        )?;
+    }
 
     let addr: SocketAddr = "127.0.0.1:8443".parse()?;
     listener.start(&[msquic::BufferRef::from("h3")], Some(addr))?;

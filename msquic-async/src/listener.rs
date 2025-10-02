@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 
 use thiserror::Error;
-use tracing::trace;
+use tracing::{error, info, trace};
 
 /// Listener for incoming connections.
 pub struct Listener {
@@ -127,6 +127,16 @@ impl Listener {
             .map(|addr| addr.as_socket().expect("not a socket address"))
             .map_err(|_| ListenError::Failed)
     }
+
+    /// Set the SSL key log file for new connections.
+    pub fn set_sslkeylog_file(&self, file: std::fs::File) -> Result<(), ListenError> {
+        let mut exclusive = self.inner.exclusive.lock().unwrap();
+        if exclusive.sslkeylog_file.is_some() {
+            return Err(ListenError::SslKeyLogFileAlreadySet);
+        }
+        exclusive.sslkeylog_file = Some(file);
+        Ok(())
+    }
 }
 
 impl Drop for Listener {
@@ -145,6 +155,7 @@ struct ListenerInnerExclusive {
     new_connections: VecDeque<Connection>,
     new_connection_waiters: Vec<Waker>,
     shutdown_complete_waiters: Vec<Waker>,
+    sslkeylog_file: Option<std::fs::File>,
 }
 unsafe impl Sync for ListenerInnerExclusive {}
 unsafe impl Send for ListenerInnerExclusive {}
@@ -171,6 +182,7 @@ impl ListenerInner {
                 new_connections: VecDeque::new(),
                 new_connection_waiters: Vec::new(),
                 shutdown_complete_waiters: Vec::new(),
+                sslkeylog_file: None,
             }),
             shared: ListenerInnerShared { configuration },
         }
@@ -183,10 +195,62 @@ impl ListenerInner {
     ) -> Result<(), msquic::Status> {
         trace!("Listener({:p}) New connection", self);
 
-        connection.set_configuration(&self.shared.configuration)?;
-        let new_conn = Connection::from_raw(unsafe { connection.as_raw() });
-
         let mut exclusive = self.exclusive.lock().unwrap();
+
+        let (sslkeylog_file, tls_secrets) = if let Some(file) = exclusive.sslkeylog_file.as_ref() {
+            let sslkeylog_file = match file.try_clone() {
+                Ok(f) => {
+                    info!(
+                        "Listener({:p}) SSL key log file set for new connection",
+                        self
+                    );
+                    Some(f)
+                }
+                Err(e) => {
+                    error!(
+                        "Listener({:p}) Failed to clone SSL key log file: {}",
+                        self, e
+                    );
+                    None
+                }
+            };
+
+            if sslkeylog_file.is_none() {
+                (None, None)
+            } else {
+                // Create a QUIC_TLS_SECRETS structure with zeroed fields
+                let tls_secrets = Box::new(msquic::ffi::QUIC_TLS_SECRETS {
+                    SecretLength: 0,
+                    ClientRandom: [0; 32],
+                    IsSet: msquic::ffi::QUIC_TLS_SECRETS__bindgen_ty_1 {
+                        _bitfield_align_1: [0; 0],
+                        _bitfield_1: msquic::ffi::QUIC_TLS_SECRETS__bindgen_ty_1::new_bitfield_1(
+                            0u8, 0u8, 0u8, 0u8, 0u8, 0u8,
+                        ),
+                    },
+                    ClientEarlyTrafficSecret: [0; 64],
+                    ClientHandshakeTrafficSecret: [0; 64],
+                    ServerHandshakeTrafficSecret: [0; 64],
+                    ClientTrafficSecret0: [0; 64],
+                    ServerTrafficSecret0: [0; 64],
+                });
+                unsafe {
+                    msquic::Api::set_param(
+                        connection.as_raw(),
+                        msquic::ffi::QUIC_PARAM_CONN_TLS_SECRETS,
+                        std::mem::size_of::<msquic::ffi::QUIC_TLS_SECRETS>() as u32,
+                        tls_secrets.as_ref() as *const _ as *const _,
+                    )
+                }?;
+                (sslkeylog_file, Some(tls_secrets))
+            }
+        } else {
+            (None, None)
+        };
+        connection.set_configuration(&self.shared.configuration)?;
+        let new_conn =
+            Connection::from_raw(unsafe { connection.as_raw() }, tls_secrets, sslkeylog_file);
+
         exclusive.new_connections.push_back(new_conn);
         exclusive
             .new_connection_waiters
@@ -268,6 +332,8 @@ pub enum ListenError {
     Finished,
     #[error("failed")]
     Failed,
+    #[error("SSL key log file already set")]
+    SslKeyLogFileAlreadySet,
     #[error("other error: status {0:?}")]
     OtherError(msquic::Status),
 }

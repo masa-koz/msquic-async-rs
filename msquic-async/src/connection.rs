@@ -25,7 +25,7 @@ impl Connection {
     ///
     /// The connection is not started until `start` is called.
     pub fn new(registration: &msquic::Registration) -> Result<Self, ConnectionError> {
-        let inner = Arc::new(ConnectionInner::new(ConnectionState::Open));
+        let inner = Arc::new(ConnectionInner::new(ConnectionState::Open, None, None));
         let inner_in_ev = inner.clone();
         let msquic_conn = msquic::Connection::open(registration, move |conn_ref, ev| {
             inner_in_ev.callback_handler_impl(conn_ref, ev)
@@ -40,9 +40,17 @@ impl Connection {
         Ok(Self(instance))
     }
 
-    pub(crate) fn from_raw(handle: msquic::ffi::HQUIC) -> Self {
+    pub(crate) fn from_raw(
+        handle: msquic::ffi::HQUIC,
+        tls_secrets: Option<Box<msquic::ffi::QUIC_TLS_SECRETS>>,
+        sslkeylog_file: Option<File>,
+    ) -> Self {
         let msquic_conn = unsafe { msquic::Connection::from_raw(handle) };
-        let inner = Arc::new(ConnectionInner::new(ConnectionState::Connected));
+        let inner = Arc::new(ConnectionInner::new(
+            ConnectionState::Connected,
+            tls_secrets,
+            sslkeylog_file,
+        ));
         let inner_in_ev = inner.clone();
         msquic_conn.set_callback_handler(move |conn_ref, ev| {
             inner_in_ev.callback_handler_impl(conn_ref, ev)
@@ -448,7 +456,11 @@ struct ConnectionInnerExclusive {
 }
 
 impl ConnectionInner {
-    fn new(state: ConnectionState) -> Self {
+    fn new(
+        state: ConnectionState,
+        tls_secrets: Option<Box<msquic::ffi::QUIC_TLS_SECRETS>>,
+        sslkeylog_file: Option<File>,
+    ) -> Self {
         Self {
             exclusive: Mutex::new(ConnectionInnerExclusive {
                 state,
@@ -464,8 +476,8 @@ impl ConnectionInner {
                 dgram_send_enabled: false,
                 dgram_max_send_length: 0,
                 shutdown_waiters: Vec::new(),
-                sslkeylog_file: None,
-                tls_secrets: None,
+                sslkeylog_file,
+                tls_secrets,
             }),
         }
     }
