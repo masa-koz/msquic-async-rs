@@ -36,7 +36,12 @@ async fn main() -> anyhow::Result<()> {
     let conn = msquic_async::Connection::new(&registration)?;
     if let Ok(sslkeylogfile) = env::var("SSLKEYLOGFILE") {
         info!("SSLKEYLOGFILE is set: {}", sslkeylogfile);
-        conn.set_sslkeylog_file(OpenOptions::new().append(true).open(sslkeylogfile)?)?;
+        conn.set_sslkeylog_file(
+            OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(sslkeylogfile)?,
+        )?;
     }
     conn.start(&configuration, "127.0.0.1", 4567).await?;
 
