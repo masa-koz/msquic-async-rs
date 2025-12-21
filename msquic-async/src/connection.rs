@@ -41,11 +41,10 @@ impl Connection {
     }
 
     pub(crate) fn from_raw(
-        handle: msquic::ffi::HQUIC,
+        msquic_conn: msquic::Connection,
         tls_secrets: Option<Box<msquic::ffi::QUIC_TLS_SECRETS>>,
         sslkeylog_file: Option<File>,
     ) -> Self {
-        let msquic_conn = unsafe { msquic::Connection::from_raw(handle) };
         let inner = Arc::new(ConnectionInner::new(
             ConnectionState::Connected,
             tls_secrets,

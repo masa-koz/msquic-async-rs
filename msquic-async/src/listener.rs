@@ -191,7 +191,7 @@ impl ListenerInner {
     fn handle_event_new_connection(
         &self,
         _info: msquic::NewConnectionInfo<'_>,
-        connection: msquic::ConnectionRef,
+        connection: msquic::Connection,
     ) -> Result<(), msquic::Status> {
         trace!("Listener({:p}) New connection", self);
 
@@ -248,8 +248,7 @@ impl ListenerInner {
             (None, None)
         };
         connection.set_configuration(&self.shared.configuration)?;
-        let new_conn =
-            Connection::from_raw(unsafe { connection.as_raw() }, tls_secrets, sslkeylog_file);
+        let new_conn = Connection::from_raw(connection, tls_secrets, sslkeylog_file);
 
         exclusive.new_connections.push_back(new_conn);
         exclusive
