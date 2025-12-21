@@ -248,8 +248,7 @@ impl ListenerInner {
             (None, None)
         };
         connection.set_configuration(&self.shared.configuration)?;
-        let new_conn =
-            Connection::from_raw(connection, tls_secrets, sslkeylog_file);
+        let new_conn = Connection::from_raw(connection, tls_secrets, sslkeylog_file);
 
         exclusive.new_connections.push_back(new_conn);
         exclusive
