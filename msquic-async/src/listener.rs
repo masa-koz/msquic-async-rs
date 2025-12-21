@@ -191,7 +191,7 @@ impl ListenerInner {
     fn handle_event_new_connection(
         &self,
         _info: msquic::NewConnectionInfo<'_>,
-        connection: msquic::ConnectionRef,
+        connection: msquic::Connection,
     ) -> Result<(), msquic::Status> {
         trace!("Listener({:p}) New connection", self);
 
