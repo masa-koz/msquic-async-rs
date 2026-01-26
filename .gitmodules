@@ -1,3 +1,6 @@
 [submodule "msquic"]
 	path = msquic
 	url = https://github.com/masa-koz/msquic.git
+[submodule "seera-msquic"]
+	path = seera-msquic
+	url = https://github.com/seera-networks/msquic.git

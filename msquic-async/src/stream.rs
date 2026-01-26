@@ -1,6 +1,13 @@
 use crate::buffer::{StreamRecvBuffer, WriteBuffer};
 use crate::connection::ConnectionError;
 
+#[cfg(feature = "msquic-latest")]
+use msquic;
+#[cfg(feature = "msquic-2-5")]
+use msquic_v2_5 as msquic;
+#[cfg(feature = "seera-msquic")]
+use seera_msquic as msquic;
+
 use std::collections::VecDeque;
 use std::fmt;
 use std::future::Future;

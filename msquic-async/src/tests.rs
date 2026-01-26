@@ -2,6 +2,13 @@ use super::{
     Connection, ConnectionError, ConnectionStartError, ListenError, Listener, StreamRecvBuffer,
 };
 
+#[cfg(feature = "msquic-latest")]
+use msquic;
+#[cfg(feature = "msquic-2-5")]
+use msquic_v2_5 as msquic;
+#[cfg(feature = "seera-msquic")]
+use seera_msquic as msquic;
+
 use std::future::poll_fn;
 use std::mem;
 use std::net::SocketAddr;
