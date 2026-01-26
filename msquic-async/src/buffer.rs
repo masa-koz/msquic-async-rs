@@ -1,5 +1,10 @@
 use crate::stream::StreamInstance;
 
+#[cfg(feature = "msquic-2-5")]
+use msquic_v2_5 as msquic;
+#[cfg(feature = "msquic-seera")]
+use seera_msquic as msquic;
+
 use std::io::IoSlice;
 use std::ops::Range;
 use std::slice;

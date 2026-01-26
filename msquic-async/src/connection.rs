@@ -1,6 +1,11 @@
 use crate::buffer::WriteBuffer;
 use crate::stream::{ReadStream, StartError as StreamStartError, Stream, StreamType};
 
+#[cfg(feature = "msquic-2-5")]
+use msquic_v2_5 as msquic;
+#[cfg(feature = "msquic-seera")]
+use seera_msquic as msquic;
+
 use std::collections::VecDeque;
 use std::fs::File;
 use std::future::Future;
@@ -41,10 +46,13 @@ impl Connection {
     }
 
     pub(crate) fn from_raw(
-        msquic_conn: msquic::Connection,
+        #[cfg(feature = "msquic-2-5")] handle: msquic::ffi::HQUIC,
+        #[cfg(not(feature = "msquic-2-5"))] msquic_conn: msquic::Connection,
         tls_secrets: Option<Box<msquic::ffi::QUIC_TLS_SECRETS>>,
         sslkeylog_file: Option<File>,
     ) -> Self {
+        #[cfg(feature = "msquic-2-5")]
+        let msquic_conn = unsafe { msquic::Connection::from_raw(handle) };
         let inner = Arc::new(ConnectionInner::new(
             ConnectionState::Connected,
             tls_secrets,

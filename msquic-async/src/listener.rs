@@ -1,5 +1,10 @@
 use crate::connection::Connection;
 
+#[cfg(feature = "msquic-2-5")]
+use msquic_v2_5 as msquic;
+#[cfg(feature = "msquic-seera")]
+use seera_msquic as msquic;
+
 use std::collections::VecDeque;
 use std::future::Future;
 use std::net::SocketAddr;
@@ -191,7 +196,8 @@ impl ListenerInner {
     fn handle_event_new_connection(
         &self,
         _info: msquic::NewConnectionInfo<'_>,
-        connection: msquic::Connection,
+        #[cfg(feature = "msquic-2-5")] connection: msquic::ConnectionRef,
+        #[cfg(not(feature = "msquic-2-5"))] connection: msquic::Connection,
     ) -> Result<(), msquic::Status> {
         trace!("Listener({:p}) New connection", self);
 
@@ -248,6 +254,10 @@ impl ListenerInner {
             (None, None)
         };
         connection.set_configuration(&self.shared.configuration)?;
+        #[cfg(feature = "msquic-2-5")]
+        let new_conn =
+            Connection::from_raw(unsafe { connection.as_raw() }, tls_secrets, sslkeylog_file);
+        #[cfg(not(feature = "msquic-2-5"))]
         let new_conn = Connection::from_raw(connection, tls_secrets, sslkeylog_file);
 
         exclusive.new_connections.push_back(new_conn);

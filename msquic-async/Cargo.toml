@@ -19,16 +19,27 @@ include = [
 ]
 
 [features]
-default = ["tokio"]
+default = ["tokio", "msquic-latest"]
+
+msquic-latest = ["msquic"]
+msquic-2-5 = ["msquic-v2-5"]
+msquic-seera = ["seera-msquic"]
+
 quictls = ["msquic/quictls"]
 static = ["msquic/static"]
+msquic-2-5-quictls = ["msquic-v2-5/quictls"]
+msquic-2-5-static = ["msquic-v2-5/static"]
+msquic-seera-quictls = ["seera-msquic/quictls"]
+msquic-seera-static = ["seera-msquic/static"]
 
 [dependencies]
 bytes = { workspace = true }
 futures-io = { workspace = true }
 hex = { workspace = true }
 libc = { workspace = true }
-msquic = { workspace = true, features = ["preview-api"] }
+msquic = { workspace = true, features = ["preview-api"], optional = true }
+msquic-v2-5 = { workspace = true, features = ["preview-api"], optional = true }
+seera-msquic = { workspace = true, features = [], optional = true }
 rangemap = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["io-util"], optional = true }
