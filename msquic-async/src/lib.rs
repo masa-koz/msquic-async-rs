@@ -10,7 +10,7 @@ mod stream;
 pub use msquic;
 #[cfg(feature = "msquic-2-5")]
 pub use msquic_v2_5 as msquic;
-#[cfg(feature = "seera-msquic")]
+#[cfg(feature = "msquic-seera")]
 pub use seera_msquic as msquic;
 
 pub use buffer::StreamRecvBuffer;

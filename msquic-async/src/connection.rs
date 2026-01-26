@@ -1,11 +1,9 @@
 use crate::buffer::WriteBuffer;
 use crate::stream::{ReadStream, StartError as StreamStartError, Stream, StreamType};
 
-#[cfg(feature = "msquic-latest")]
-use msquic;
 #[cfg(feature = "msquic-2-5")]
 use msquic_v2_5 as msquic;
-#[cfg(feature = "seera-msquic")]
+#[cfg(feature = "msquic-seera")]
 use seera_msquic as msquic;
 
 use std::collections::VecDeque;

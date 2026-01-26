@@ -23,15 +23,14 @@ default = ["tokio", "msquic-latest"]
 
 msquic-latest = ["msquic"]
 msquic-2-5 = ["msquic-v2-5"]
-
-msquic-2-5-quictls = ["msquic-v2-5/quictls"]
-msquic-2-5-static = ["msquic-v2-5/static"]
+msquic-seera = ["seera-msquic"]
 
 quictls = ["msquic/quictls"]
 static = ["msquic/static"]
-
-seera-msquic-quictls = ["seera-msquic/quictls"]
-seera-msquic-static = ["seera-msquic/static"]
+msquic-2-5-quictls = ["msquic-v2-5/quictls"]
+msquic-2-5-static = ["msquic-v2-5/static"]
+msquic-seera-quictls = ["seera-msquic/quictls"]
+msquic-seera-static = ["seera-msquic/static"]
 
 [dependencies]
 bytes = { workspace = true }

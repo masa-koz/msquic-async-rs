@@ -40,9 +40,17 @@ jobs:
     name: Check Style
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3
         with:
-          submodules: recursive
+          submodules: true
+      - name: Prepare Machine for msquic
+        run: scripts/prepare-machine.ps1 -Tls quictls -ForBuild
+        shell: pwsh
+        working-directory: msquic
+      - name: Prepare Machine for seera-msquic
+        run: scripts/prepare-machine.ps1 -Tls quictls -ForBuild
+        shell: pwsh
+        working-directory: seera-msquic
       - name: Install Rust ${{ env.toolchain_style }}
         uses: actions-rs/toolchain@v1
         with:
@@ -61,9 +69,17 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3
         with:
-          submodules: recursive
+          submodules: true
+      - name: Prepare Machine for msquic
+        run: scripts/prepare-machine.ps1 -Tls quictls -ForBuild
+        shell: pwsh
+        working-directory: msquic
+      - name: Prepare Machine for seera-msquic
+        run: scripts/prepare-machine.ps1 -Tls quictls -ForBuild
+        shell: pwsh
+        working-directory: seera-msquic
       - name: Install Rust ${{ env.toolchain_lint }}
         uses: actions-rs/toolchain@v1
         with:
@@ -83,9 +99,17 @@ jobs:
     needs: [style]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3
         with:
-          submodules: recursive
+          submodules: true
+      - name: Prepare Machine for msquic
+        run: scripts/prepare-machine.ps1 -Tls quictls -ForBuild
+        shell: pwsh
+        working-directory: msquic
+      - name: Prepare Machine for seera-msquic
+        run: scripts/prepare-machine.ps1 -Tls quictls -ForBuild
+        shell: pwsh
+        working-directory: seera-msquic
       - name: Install Rust ${{ env.toolchain_msrv }}
         uses: actions-rs/toolchain@v1
         with:
@@ -104,9 +128,17 @@ jobs:
     needs: [style]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3
         with:
-          submodules: recursive
+          submodules: true
+      - name: Prepare Machine for msquic
+        run: scripts/prepare-machine.ps1 -Tls quictls -ForBuild
+        shell: pwsh
+        working-directory: msquic
+      - name: Prepare Machine for seera-msquic
+        run: scripts/prepare-machine.ps1 -Tls quictls -ForBuild
+        shell: pwsh
+        working-directory: seera-msquic
       - name: Install Rust ${{ env.toolchain_h3_msquic_msrv }}
         uses: actions-rs/toolchain@v1
         with:
@@ -127,23 +159,36 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        features: ["", "--features static"]
+        vec: [
+          { version: "msquic-latest", tls: "quictls", features: "" },
+          { version: "msquic-latest", tls: "quictls", features: "--features static" },
+          { version: "msquic-latest", tls: "quictls", features: "--features quictls" },
+          { version: "msquic-latest", tls: "quictls", features: "--features quictls,static" },
+          { version: "msquic-2-5", tls: "", features: "" },
+          { version: "msquic-2-5", tls: "", features: "--features msquic-2-5-static" },
+          { version: "msquic-2-5", tls: "", features: "--features msquic-2-5-quictls" },
+          { version: "msquic-2-5", tls: "", features: "--features msquic-2-5-quictls,msquic-2-5-static" },
+          { version: "msquic-seera", tls: "quictls", features: "" },
+          { version: "msquic-seera", tls: "quictls", features: "--features msquic-seera-static" },
+          { version: "msquic-seera", tls: "quictls", features: "--features msquic-seera-quictls" },
+          { version: "msquic-seera", tls: "quictls", features: "--features msquic-seera-quictls,msquic-seera-static" },
+        ]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3
         with:
           submodules: true
-      - name: Prepare Machine for Windows
-        if: runner.os == 'Windows'
-        run: scripts/prepare-machine.ps1 -Tls schannel -ForBuild -InstallTestCertificates
+      - name: Prepare Machine for msquic
+        if: matrix.vec.version == 'msquic-latest'
+        run: scripts/prepare-machine.ps1 -Tls ${{ matrix.vec.tls }} -ForBuild -InstallTestCertificates
         shell: pwsh
         working-directory: msquic
-      - name: Prepare Machine for Linux/MacOS
-        if: runner.os != 'Windows'
-        run: scripts/prepare-machine.ps1 -Tls quictls -ForBuild -InstallTestCertificates
+      - name: Prepare Machine for seera-msquic
+        if: matrix.vec.version == 'msquic-seera'
+        run: scripts/prepare-machine.ps1 -Tls ${{ matrix.vec.tls }} -ForBuild -InstallTestCertificates
         shell: pwsh
-        working-directory: msquic
+        working-directory: seera-msquic
       - name: Install Rust stable
         uses: actions-rs/toolchain@v1
         with:
@@ -163,16 +208,24 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: test
-          args: -p msquic-async ${{ matrix.features }}
+          args: -p msquic-async ${{ matrix.vec.features }}
 
   doc:
     name: Build docs
     needs: [test]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3
         with:
-          submodules: recursive
+          submodules: true
+      - name: Prepare Machine for msquic
+        run: scripts/prepare-machine.ps1 -Tls quictls -ForBuild
+        shell: pwsh
+        working-directory: msquic
+      - name: Prepare Machine for seera-msquic
+        run: scripts/prepare-machine.ps1 -Tls quictls -ForBuild
+        shell: pwsh
+        working-directory: seera-msquic
       - name: Install Rust ${{ env.toolchain_doc }}
         uses: actions-rs/toolchain@v1
         with:
