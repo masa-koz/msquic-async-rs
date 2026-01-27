@@ -1182,9 +1182,7 @@ pub enum ConnectionEvent {
         remote_address: SocketAddr,
     },
     /// A remote address has been removed.
-    NotifyRemoteAddressRemoved {
-        sequence_number: u64,
-    },
+    NotifyRemoteAddressRemoved { sequence_number: u64 },
 }
 
 /// Errors that can occur when managing a connection.
