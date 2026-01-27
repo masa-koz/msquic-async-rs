@@ -6,12 +6,18 @@
 
 ## Getting Started
 
-Note that MsQuic, which is used to implement QUIC, needs to be built and linked. This is done automatically when building h3-msquic-async, but requires the cmake command to be available during the build process.
+Note that MsQuic, which is used to implement QUIC, needs to be built and linked. This is done automatically when building msquic-async, but requires the cmake command to be available during the build process.
 
 ### Windows, Linux, MacOS
 Add msquic-async in dependencies of your Cargo.toml.
 ```toml
-msquic-async = { version = "0.3.0" }
+msquic-async = { version = "0.4.0" }
+```
+
+If you use SEERA MsQuic for the backend, please specify `msquic-seera` feature with
+`default-features = false`.
+```toml
+msquic-async = { version = "0.4.0", default-features = false, features = ["tokio", "msquic-seera"] }
 ```
 
 The [examples](https://github.com/masa-koz/msquic-async-rs/tree/main/msquic-async/examples) directory can help get started.
