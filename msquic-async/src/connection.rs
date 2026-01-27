@@ -552,7 +552,7 @@ impl Connection {
         .map_err(ConnectionError::OtherError)
     }
 
-    /// Poll to recieve events on the connection.
+    /// Poll to receive events on the connection.
     pub fn poll_event(&self, cx: &mut Context<'_>) -> Poll<Result<ConnectionEvent, EventError>> {
         let mut exclusive = self.0.exclusive.lock().unwrap();
         match exclusive.state {
