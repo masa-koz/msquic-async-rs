@@ -384,7 +384,7 @@ impl Connection {
             .map_err(ConnectionError::OtherError)
     }
 
-    // Set whether to share the UDP binding.
+    /// Set whether to share the UDP binding.
     pub fn set_share_binding(&self, share: bool) -> Result<(), ConnectionError> {
         let share: u8 = if share { 1 } else { 0 };
         unsafe {
@@ -398,7 +398,7 @@ impl Connection {
         .map_err(ConnectionError::OtherError)
     }
 
-    // Add a new path to the connection.
+    /// Add a new path to the connection.
     #[cfg(feature = "msquic-seera")]
     pub fn add_path(
         &self,
@@ -419,7 +419,7 @@ impl Connection {
         .map_err(ConnectionError::OtherError)
     }
 
-    // Activate a path for the connection.
+    /// Activate a path for the connection.
     #[cfg(feature = "msquic-seera")]
     pub fn activate_path(
         &self,
@@ -440,7 +440,7 @@ impl Connection {
         .map_err(ConnectionError::OtherError)
     }
 
-    // Remove a path from the connection.
+    /// Remove a path from the connection.
     #[cfg(feature = "msquic-seera")]
     pub fn remove_path(
         &self,
@@ -461,7 +461,7 @@ impl Connection {
         .map_err(ConnectionError::OtherError)
     }
 
-    // Add a bound address to the connection.
+    /// Add a bound address to the connection.
     #[cfg(feature = "msquic-seera")]
     pub fn add_bound_addr(&self, addr: SocketAddr) -> Result<(), ConnectionError> {
         unsafe {
@@ -475,7 +475,7 @@ impl Connection {
         .map_err(ConnectionError::OtherError)
     }
 
-    // Add an observed address to the connection.
+    /// Add an observed address to the connection.
     #[cfg(feature = "msquic-seera")]
     pub fn add_observed_addr(
         &self,
@@ -496,7 +496,7 @@ impl Connection {
         .map_err(ConnectionError::OtherError)
     }
 
-    // Remove a bound address from the connection.
+    /// Remove a bound address from the connection.
     #[cfg(feature = "msquic-seera")]
     pub fn remove_bound_addr(&self, addr: SocketAddr) -> Result<(), ConnectionError> {
         unsafe {
@@ -510,7 +510,7 @@ impl Connection {
         .map_err(ConnectionError::OtherError)
     }
 
-    // Add a candidate address to the connection.
+    /// Add a candidate address to the connection.
     #[cfg(feature = "msquic-seera")]
     pub fn add_candidate_addr(
         &self,
@@ -531,7 +531,7 @@ impl Connection {
         .map_err(ConnectionError::OtherError)
     }
 
-    // Remove a candidate address from the connection.
+    /// Remove a candidate address from the connection.
     #[cfg(feature = "msquic-seera")]
     pub fn remove_candidate_addr(
         &self,
@@ -983,8 +983,8 @@ impl ConnectionInner {
         local_address: &msquic::Addr,
         observed_address: &msquic::Addr,
     ) -> Result<(), msquic::Status> {
-        let local_address = local_address.as_socket().unwrap();
-        let observed_address = observed_address.as_socket().unwrap();
+        let local_address = local_address.as_socket().expect("socket addr");
+        let observed_address = observed_address.as_socket().expect("socket addr");
         trace!(
             "ConnectionInner({:p}) Notify observed address local_address:{} observed_address:{}",
             self,
@@ -1011,7 +1011,7 @@ impl ConnectionInner {
         address: &msquic::Addr,
         sequence_number: u64,
     ) -> Result<(), msquic::Status> {
-        let address = address.as_socket().unwrap();
+        let address = address.as_socket().expect("socket addr");
         trace!(
             "ConnectionInner({:p}) Notify remote address added address:{} sequence_number:{}",
             self,
@@ -1038,8 +1038,8 @@ impl ConnectionInner {
         local_address: &msquic::Addr,
         remote_address: &msquic::Addr,
     ) -> Result<(), msquic::Status> {
-        let local_address = local_address.as_socket().unwrap();
-        let remote_address = remote_address.as_socket().unwrap();
+        let local_address = local_address.as_socket().expect("socket addr");
+        let remote_address = remote_address.as_socket().expect("socket addr");
         trace!(
             "ConnectionInner({:p}) path validated local_address:{} remote_address:{}",
             self,
@@ -1171,17 +1171,17 @@ pub enum ConnectionEvent {
         local_address: SocketAddr,
         observed_address: SocketAddr,
     },
-    // A new remote address has been added.
+    /// A new remote address has been added.
     NotifyRemoteAddressAdded {
         address: SocketAddr,
         sequence_number: u64,
     },
-    // A path has been validated.
+    /// A path has been validated.
     PathValidated {
         local_address: SocketAddr,
         remote_address: SocketAddr,
     },
-    // remote address has been removed.
+    /// A remote address has been removed.
     NotifyRemoteAddressRemoved {
         sequence_number: u64,
     },
