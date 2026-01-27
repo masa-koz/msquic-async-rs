@@ -1925,7 +1925,7 @@ async fn test_poll_event_connection_lost_on_shutdown() {
     });
 }
 
-#[cfg(any(not(windows), feature = "quictls"))]
+#[cfg(not(windows))]
 fn new_server(
     registration: &msquic::Registration,
     settings: &msquic::Settings,
@@ -1958,7 +1958,7 @@ fn new_server(
     Ok(listener)
 }
 
-#[cfg(all(windows, not(feature = "quictls")))]
+#[cfg(windows)]
 fn new_server(
     registration: &msquic::Registration,
     settings: &msquic::Settings,
