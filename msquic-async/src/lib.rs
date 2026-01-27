@@ -17,7 +17,7 @@ pub use buffer::StreamRecvBuffer;
 pub use connection::{
     AcceptInboundStream, AcceptInboundUniStream, Connection, ConnectionError, DgramReceiveError,
     DgramSendError, OpenOutboundStream, ShutdownError as ConnectionShutdownError,
-    StartError as ConnectionStartError,
+    StartError as ConnectionStartError, ConnectionEvent, EventError,
 };
 pub use listener::{ListenError, Listener};
 pub use stream::{
