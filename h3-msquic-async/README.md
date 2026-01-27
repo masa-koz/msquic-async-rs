@@ -10,8 +10,15 @@ requires the cmake command to be available during the build process.
 ### Windows, Linux, MacOS
 Add h3-msquic-async in dependencies of your Cargo.toml.
 ```toml
-h3-msquic-async = { version = "0.2.0" }
+h3-msquic-async = { version = "0.3.0" }
 ```
+
+If you use SEERA MsQuic for the backend, please specify `msquic-seera` feature with
+`default-features = false`.
+```toml
+h3-msquic-async = { version = "0.3.0", default-features = false, features = ["msquic-seera"] }
+```
+
 
 The [examples](./examples/) directory can help get started.
 

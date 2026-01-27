@@ -1,6 +1,6 @@
 [package]
 name = "h3-msquic-async"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["Masahiro Kozuka <masa.koz@outlook.com>"]
 edition = "2021"
 description = "MsQuic-Async based library for using h3"
