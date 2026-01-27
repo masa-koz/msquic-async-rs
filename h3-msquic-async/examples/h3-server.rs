@@ -51,7 +51,7 @@ async fn main() -> anyhow::Result<()> {
         ),
     )?;
 
-    #[cfg(any(not(windows), feature = "quictls"))]
+    #[cfg(not(windows))]
     {
         use std::io::Write;
         use tempfile::NamedTempFile;
@@ -76,7 +76,7 @@ async fn main() -> anyhow::Result<()> {
         configuration.load_credential(&cred_config)?;
     }
 
-    #[cfg(all(windows, not(feature = "quictls")))]
+    #[cfg(windows)]
     {
         use schannel::cert_context::{CertContext, KeySpec};
         use schannel::cert_store::{CertAdd, Memory};
