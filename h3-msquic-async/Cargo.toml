@@ -24,11 +24,8 @@ msquic-latest = ["msquic-async/msquic-latest"]
 msquic-2-5 = ["msquic-async/msquic-2-5"]
 msquic-seera = ["msquic-async/msquic-seera"]
 
-quictls = ["msquic-async/quictls"]
 static = ["msquic-async/static"]
-msquic-2-5-quictls = ["msquic-async/msquic-2-5-quictls"]
 msquic-2-5-static = ["msquic-async/msquic-2-5-static"]
-msquic-seera-quictls = ["msquic-async/msquic-seera-quictls"]
 msquic-seera-static = ["msquic-async/msquic-seera-static"]
 
 tracing = ["dep:tracing"]

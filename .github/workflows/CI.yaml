@@ -161,16 +161,10 @@ jobs:
         vec: [
           { version: "msquic-latest", tls: "quictls", features: "" },
           { version: "msquic-latest", tls: "quictls", features: "--features static" },
-          { version: "msquic-latest", tls: "quictls", features: "--features quictls" },
-          { version: "msquic-latest", tls: "quictls", features: "--features quictls,static" },
           { version: "msquic-2-5", tls: "", features: "--no-default-features --features tokio,msquic-2-5" },
           { version: "msquic-2-5", tls: "", features: "--no-default-features --features tokio,msquic-2-5,msquic-2-5-static" },
-          { version: "msquic-2-5", tls: "", features: "--no-default-features --features tokio,msquic-2-5,msquic-2-5-quictls" },
-          { version: "msquic-2-5", tls: "", features: "--no-default-features --features tokio,msquic-2-5,msquic-2-5-quictls,msquic-2-5-static" },
           { version: "msquic-seera", tls: "quictls", features: "--no-default-features --features tokio,msquic-seera" },
           { version: "msquic-seera", tls: "quictls", features: "--no-default-features --features tokio,msquic-seera,msquic-seera-static" },
-          { version: "msquic-seera", tls: "quictls", features: "--no-default-features --features tokio,msquic-seera,msquic-seera-quictls" },
-          { version: "msquic-seera", tls: "quictls", features: "--no-default-features --features tokio,msquic-seera,msquic-seera-quictls,msquic-seera-static" },
         ]
     runs-on: ${{ matrix.os }}
     steps:

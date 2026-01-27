@@ -37,7 +37,7 @@ The [examples](https://github.com/masa-koz/msquic-async-rs/tree/main/msquic-asyn
         ),
     )?;
 
-    #[cfg(any(not(windows), feature = "quictls"))]
+    #[cfg(not(windows))]
     {
         use std::io::Write;
         use tempfile::NamedTempFile;
@@ -62,7 +62,7 @@ The [examples](https://github.com/masa-koz/msquic-async-rs/tree/main/msquic-asyn
         configuration.load_credential(&cred_config)?;
     }
 
-    #[cfg(all(windows, not(feature = "quictls")))]
+    #[cfg(windows)]
     {
         use schannel::cert_context::{CertContext, KeySpec};
         use schannel::cert_store::{CertAdd, Memory};
