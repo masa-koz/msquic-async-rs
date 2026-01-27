@@ -384,6 +384,201 @@ impl Connection {
             .map_err(ConnectionError::OtherError)
     }
 
+    /// Set whether to share the UDP binding.
+    pub fn set_share_binding(&self, share: bool) -> Result<(), ConnectionError> {
+        let share: u8 = if share { 1 } else { 0 };
+        unsafe {
+            msquic::Api::set_param(
+                self.0.msquic_conn.as_raw(),
+                msquic::ffi::QUIC_PARAM_CONN_SHARE_UDP_BINDING,
+                std::mem::size_of::<u8>() as u32,
+                &share as *const _ as *const _,
+            )
+        }
+        .map_err(ConnectionError::OtherError)
+    }
+
+    /// Add a new path to the connection.
+    #[cfg(feature = "msquic-seera")]
+    pub fn add_path(
+        &self,
+        local_addr: SocketAddr,
+        remote_addr: SocketAddr,
+    ) -> Result<(), ConnectionError> {
+        unsafe {
+            msquic::Api::set_param(
+                self.0.msquic_conn.as_raw(),
+                msquic::ffi::QUIC_PARAM_CONN_ADD_PATH,
+                std::mem::size_of::<msquic::ffi::QUIC_PATH_PARAM>() as u32,
+                &msquic::ffi::QUIC_PATH_PARAM {
+                    LocalAddress: &mut msquic::Addr::from(local_addr) as *mut _ as *mut _,
+                    RemoteAddress: &mut msquic::Addr::from(remote_addr) as *mut _ as *mut _,
+                } as *const _ as *const _,
+            )
+        }
+        .map_err(ConnectionError::OtherError)
+    }
+
+    /// Activate a path for the connection.
+    #[cfg(feature = "msquic-seera")]
+    pub fn activate_path(
+        &self,
+        local_addr: SocketAddr,
+        remote_addr: SocketAddr,
+    ) -> Result<(), ConnectionError> {
+        unsafe {
+            msquic::Api::set_param(
+                self.0.msquic_conn.as_raw(),
+                msquic::ffi::QUIC_PARAM_CONN_ACTIVATE_PATH,
+                std::mem::size_of::<msquic::ffi::QUIC_PATH_PARAM>() as u32,
+                &msquic::ffi::QUIC_PATH_PARAM {
+                    LocalAddress: &mut msquic::Addr::from(local_addr) as *mut _ as *mut _,
+                    RemoteAddress: &mut msquic::Addr::from(remote_addr) as *mut _ as *mut _,
+                } as *const _ as *const _,
+            )
+        }
+        .map_err(ConnectionError::OtherError)
+    }
+
+    /// Remove a path from the connection.
+    #[cfg(feature = "msquic-seera")]
+    pub fn remove_path(
+        &self,
+        local_addr: SocketAddr,
+        remote_addr: SocketAddr,
+    ) -> Result<(), ConnectionError> {
+        unsafe {
+            msquic::Api::set_param(
+                self.0.msquic_conn.as_raw(),
+                msquic::ffi::QUIC_PARAM_CONN_REMOVE_PATH,
+                std::mem::size_of::<msquic::ffi::QUIC_PATH_PARAM>() as u32,
+                &msquic::ffi::QUIC_PATH_PARAM {
+                    LocalAddress: &mut msquic::Addr::from(local_addr) as *mut _ as *mut _,
+                    RemoteAddress: &mut msquic::Addr::from(remote_addr) as *mut _ as *mut _,
+                } as *const _ as *const _,
+            )
+        }
+        .map_err(ConnectionError::OtherError)
+    }
+
+    /// Add a bound address to the connection.
+    #[cfg(feature = "msquic-seera")]
+    pub fn add_bound_addr(&self, addr: SocketAddr) -> Result<(), ConnectionError> {
+        unsafe {
+            msquic::Api::set_param(
+                self.0.msquic_conn.as_raw(),
+                msquic::ffi::QUIC_PARAM_CONN_ADD_BOUND_ADDRESS,
+                std::mem::size_of::<msquic::Addr>() as u32,
+                &msquic::Addr::from(addr) as *const _ as *const _,
+            )
+        }
+        .map_err(ConnectionError::OtherError)
+    }
+
+    /// Add an observed address to the connection.
+    #[cfg(feature = "msquic-seera")]
+    pub fn add_observed_addr(
+        &self,
+        addr: SocketAddr,
+        observed_addr: SocketAddr,
+    ) -> Result<(), ConnectionError> {
+        unsafe {
+            msquic::Api::set_param(
+                self.0.msquic_conn.as_raw(),
+                msquic::ffi::QUIC_PARAM_CONN_ADD_OBSERVED_ADDRESS,
+                std::mem::size_of::<msquic::ffi::QUIC_ADD_OBSERVED_ADDRESS>() as u32,
+                &msquic::ffi::QUIC_ADD_OBSERVED_ADDRESS {
+                    LocalAddress: &mut msquic::Addr::from(addr) as *mut _ as *mut _,
+                    ObservedAddress: &mut msquic::Addr::from(observed_addr) as *mut _ as *mut _,
+                } as *const _ as *const _,
+            )
+        }
+        .map_err(ConnectionError::OtherError)
+    }
+
+    /// Remove a bound address from the connection.
+    #[cfg(feature = "msquic-seera")]
+    pub fn remove_bound_addr(&self, addr: SocketAddr) -> Result<(), ConnectionError> {
+        unsafe {
+            msquic::Api::set_param(
+                self.0.msquic_conn.as_raw(),
+                msquic::ffi::QUIC_PARAM_CONN_REMOVE_BOUND_ADDRESS,
+                std::mem::size_of::<msquic::Addr>() as u32,
+                &msquic::Addr::from(addr) as *const _ as *const _,
+            )
+        }
+        .map_err(ConnectionError::OtherError)
+    }
+
+    /// Add a candidate address to the connection.
+    #[cfg(feature = "msquic-seera")]
+    pub fn add_candidate_addr(
+        &self,
+        host_addr: SocketAddr,
+        observed_addr: SocketAddr,
+    ) -> Result<(), ConnectionError> {
+        unsafe {
+            msquic::Api::set_param(
+                self.0.msquic_conn.as_raw(),
+                msquic::ffi::QUIC_PARAM_CONN_ADD_CANDIDATE_ADDRESS,
+                std::mem::size_of::<msquic::ffi::QUIC_CANDIDATE_ADDRESS>() as u32,
+                &msquic::ffi::QUIC_CANDIDATE_ADDRESS {
+                    HostAddress: &mut msquic::Addr::from(host_addr) as *mut _ as *mut _,
+                    ObservedAddress: &mut msquic::Addr::from(observed_addr) as *mut _ as *mut _,
+                } as *const _ as *const _,
+            )
+        }
+        .map_err(ConnectionError::OtherError)
+    }
+
+    /// Remove a candidate address from the connection.
+    #[cfg(feature = "msquic-seera")]
+    pub fn remove_candidate_addr(
+        &self,
+        host_addr: SocketAddr,
+        observed_addr: SocketAddr,
+    ) -> Result<(), ConnectionError> {
+        unsafe {
+            msquic::Api::set_param(
+                self.0.msquic_conn.as_raw(),
+                msquic::ffi::QUIC_PARAM_CONN_REMOVE_CANDIDATE_ADDRESS,
+                std::mem::size_of::<msquic::ffi::QUIC_CANDIDATE_ADDRESS>() as u32,
+                &msquic::ffi::QUIC_CANDIDATE_ADDRESS {
+                    HostAddress: &mut msquic::Addr::from(host_addr) as *mut _ as *mut _,
+                    ObservedAddress: &mut msquic::Addr::from(observed_addr) as *mut _ as *mut _,
+                } as *const _ as *const _,
+            )
+        }
+        .map_err(ConnectionError::OtherError)
+    }
+
+    /// Poll to receive events on the connection.
+    pub fn poll_event(&self, cx: &mut Context<'_>) -> Poll<Result<ConnectionEvent, EventError>> {
+        let mut exclusive = self.0.exclusive.lock().unwrap();
+        match exclusive.state {
+            ConnectionState::Open => {
+                return Poll::Ready(Err(EventError::ConnectionNotStarted));
+            }
+            ConnectionState::Connecting => {
+                exclusive.start_waiters.push(cx.waker().clone());
+                return Poll::Pending;
+            }
+            ConnectionState::Connected | ConnectionState::Shutdown => {}
+            ConnectionState::ShutdownComplete => {
+                return Poll::Ready(Err(EventError::ConnectionLost(
+                    exclusive.error.as_ref().expect("error").clone(),
+                )));
+            }
+        }
+
+        if exclusive.events.is_empty() {
+            exclusive.event_waiters.push(cx.waker().clone());
+            Poll::Pending
+        } else {
+            Poll::Ready(Ok(exclusive.events.pop_front().unwrap()))
+        }
+    }
+
     /// Set the SSL key log file for the connection.
     pub fn set_sslkeylog_file(&self, file: File) -> Result<(), ConnectionError> {
         let mut exclusive = self.0.exclusive.lock().unwrap();
@@ -458,6 +653,8 @@ struct ConnectionInnerExclusive {
     dgram_send_enabled: bool,
     dgram_max_send_length: u16,
     shutdown_waiters: Vec<Waker>,
+    events: VecDeque<ConnectionEvent>,
+    event_waiters: Vec<Waker>,
     sslkeylog_file: Option<File>,
     tls_secrets: Option<Box<msquic::ffi::QUIC_TLS_SECRETS>>,
 }
@@ -483,6 +680,8 @@ impl ConnectionInner {
                 dgram_send_enabled: false,
                 dgram_max_send_length: 0,
                 shutdown_waiters: Vec::new(),
+                events: VecDeque::new(),
+                event_waiters: Vec::new(),
                 sslkeylog_file,
                 tls_secrets,
             }),
@@ -653,6 +852,10 @@ impl ConnectionInner {
                 .shutdown_waiters
                 .drain(..)
                 .for_each(|waker| waker.wake());
+            exclusive
+                .event_waiters
+                .drain(..)
+                .for_each(|waker| waker.wake());
         }
         Ok(())
     }
@@ -774,6 +977,108 @@ impl ConnectionInner {
         Ok(())
     }
 
+    #[cfg(feature = "msquic-seera")]
+    fn handle_event_notify_observed_address(
+        &self,
+        local_address: &msquic::Addr,
+        observed_address: &msquic::Addr,
+    ) -> Result<(), msquic::Status> {
+        let local_address = local_address.as_socket().expect("socket addr");
+        let observed_address = observed_address.as_socket().expect("socket addr");
+        trace!(
+            "ConnectionInner({:p}) Notify observed address local_address:{} observed_address:{}",
+            self,
+            local_address,
+            observed_address
+        );
+        let mut exclusive = self.exclusive.lock().unwrap();
+        exclusive
+            .events
+            .push_back(ConnectionEvent::NotifyObservedAddress {
+                local_address,
+                observed_address,
+            });
+        exclusive
+            .event_waiters
+            .drain(..)
+            .for_each(|waker| waker.wake());
+        Ok(())
+    }
+
+    #[cfg(feature = "msquic-seera")]
+    fn handle_event_notify_remote_address_added(
+        &self,
+        address: &msquic::Addr,
+        sequence_number: u64,
+    ) -> Result<(), msquic::Status> {
+        let address = address.as_socket().expect("socket addr");
+        trace!(
+            "ConnectionInner({:p}) Notify remote address added address:{} sequence_number:{}",
+            self,
+            address,
+            sequence_number
+        );
+        let mut exclusive = self.exclusive.lock().unwrap();
+        exclusive
+            .events
+            .push_back(ConnectionEvent::NotifyRemoteAddressAdded {
+                address,
+                sequence_number,
+            });
+        exclusive
+            .event_waiters
+            .drain(..)
+            .for_each(|waker| waker.wake());
+        Ok(())
+    }
+
+    #[cfg(feature = "msquic-seera")]
+    fn handle_event_path_validated(
+        &self,
+        local_address: &msquic::Addr,
+        remote_address: &msquic::Addr,
+    ) -> Result<(), msquic::Status> {
+        let local_address = local_address.as_socket().expect("socket addr");
+        let remote_address = remote_address.as_socket().expect("socket addr");
+        trace!(
+            "ConnectionInner({:p}) path validated local_address:{} remote_address:{}",
+            self,
+            local_address,
+            remote_address
+        );
+        let mut exclusive = self.exclusive.lock().unwrap();
+        exclusive.events.push_back(ConnectionEvent::PathValidated {
+            local_address,
+            remote_address,
+        });
+        exclusive
+            .event_waiters
+            .drain(..)
+            .for_each(|waker| waker.wake());
+        Ok(())
+    }
+
+    #[cfg(feature = "msquic-seera")]
+    fn handle_event_notify_remote_address_removed(
+        &self,
+        sequence_number: u64,
+    ) -> Result<(), msquic::Status> {
+        trace!(
+            "ConnectionInner({:p}) Notify remote address removed sequence_number:{}",
+            self,
+            sequence_number
+        );
+        let mut exclusive = self.exclusive.lock().unwrap();
+        exclusive
+            .events
+            .push_back(ConnectionEvent::NotifyRemoteAddressRemoved { sequence_number });
+        exclusive
+            .event_waiters
+            .drain(..)
+            .for_each(|waker| waker.wake());
+        Ok(())
+    }
+
     fn callback_handler_impl(
         &self,
         _connection: msquic::ConnectionRef,
@@ -817,6 +1122,25 @@ impl ConnectionInner {
                 client_context,
                 state,
             } => self.handle_event_datagram_send_state_changed(client_context, state),
+            #[cfg(feature = "msquic-seera")]
+            msquic::ConnectionEvent::NotifyObservedAddress {
+                local_address,
+                observed_address,
+            } => self.handle_event_notify_observed_address(local_address, observed_address),
+            #[cfg(feature = "msquic-seera")]
+            msquic::ConnectionEvent::NotifyRemoteAddressAdded {
+                address,
+                sequence_number,
+            } => self.handle_event_notify_remote_address_added(address, sequence_number),
+            #[cfg(feature = "msquic-seera")]
+            msquic::ConnectionEvent::PathValidated {
+                local_address,
+                remote_address,
+            } => self.handle_event_path_validated(local_address, remote_address),
+            #[cfg(feature = "msquic-seera")]
+            msquic::ConnectionEvent::NotifyRemoteAddressRemoved { sequence_number } => {
+                self.handle_event_notify_remote_address_removed(sequence_number)
+            }
             _ => {
                 trace!("ConnectionInner({:p}) Other callback", self);
                 Ok(())
@@ -837,6 +1161,28 @@ enum ConnectionState {
     Connected,
     Shutdown,
     ShutdownComplete,
+}
+
+/// Events that can occur on a connection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ConnectionEvent {
+    /// A new observed address has been detected.
+    NotifyObservedAddress {
+        local_address: SocketAddr,
+        observed_address: SocketAddr,
+    },
+    /// A new remote address has been added.
+    NotifyRemoteAddressAdded {
+        address: SocketAddr,
+        sequence_number: u64,
+    },
+    /// A path has been validated.
+    PathValidated {
+        local_address: SocketAddr,
+        remote_address: SocketAddr,
+    },
+    /// A remote address has been removed.
+    NotifyRemoteAddressRemoved { sequence_number: u64 },
 }
 
 /// Errors that can occur when managing a connection.
@@ -894,6 +1240,17 @@ pub enum StartError {
 /// Errors that can occur when shutdowning a connection.
 #[derive(Debug, Error, Clone)]
 pub enum ShutdownError {
+    #[error("connection not started yet")]
+    ConnectionNotStarted,
+    #[error("connection lost")]
+    ConnectionLost(#[from] ConnectionError),
+    #[error("other error: status {0:?}")]
+    OtherError(msquic::Status),
+}
+
+/// Errors that can occur when receiving events on a connection.
+#[derive(Debug, Error, Clone)]
+pub enum EventError {
     #[error("connection not started yet")]
     ConnectionNotStarted,
     #[error("connection lost")]

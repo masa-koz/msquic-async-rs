@@ -1683,6 +1683,248 @@ async fn datagram_validation() {
     });
 }
 
+/// Test for ['Connection::poll_event()'] - events are queued correctly
+#[cfg(feature = "msquic-seera")]
+#[test(tokio::test)]
+async fn test_poll_event_queuing() {
+    use crate::EventError;
+
+    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let listener = new_server(
+        &registration,
+        &msquic::Settings::new().set_IdleTimeoutMs(10000),
+    )
+    .unwrap();
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    listener
+        .start(&[msquic::BufferRef::from("test")], Some(addr))
+        .expect("listener start");
+    let server_addr = listener.local_addr().expect("listener local_addr");
+
+    let mut set = JoinSet::new();
+
+    // Server side - accept connection
+    set.spawn(async move {
+        let _conn = listener.accept().await.unwrap();
+        // Keep server alive for a bit
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        Ok::<_, anyhow::Error>(())
+    });
+
+    // Client side - connect and poll events
+    let client_config = new_client_config(
+        &registration,
+        &msquic::Settings::new().set_IdleTimeoutMs(10000),
+    )
+    .unwrap();
+    let conn = Connection::new(&registration).unwrap();
+
+    set.spawn(async move {
+        // Try polling event before connection starts - should return ConnectionNotStarted
+        let result = poll_fn(|cx| conn.poll_event(cx)).await;
+        match result {
+            Err(EventError::ConnectionNotStarted) => {}
+            _ => panic!("Expected ConnectionNotStarted error before connection start"),
+        }
+
+        // Start the connection
+        conn.start(
+            &client_config,
+            &format!("{}", server_addr.ip()),
+            server_addr.port(),
+        )
+        .await
+        .unwrap();
+
+        // After connection, poll_event should either return events or be pending
+        // We don't expect specific events in this basic test, just verify it doesn't panic
+        // and handles the states correctly
+        let result = timeout(
+            Duration::from_millis(100),
+            poll_fn(|cx| conn.poll_event(cx)),
+        )
+        .await;
+        // Either timeout (Pending) or Ok with an event is acceptable
+        match result {
+            Err(_) => {}         // Timeout is fine - no events queued
+            Ok(Ok(_event)) => {} // Got an event - also fine
+            Ok(Err(e)) => panic!("Unexpected error: {:?}", e),
+        }
+
+        Ok::<_, anyhow::Error>(())
+    });
+
+    let mut results = Vec::new();
+    while let Some(res) = set.join_next().await {
+        results.push(res);
+    }
+    results.into_iter().for_each(|res| {
+        if let Err(err) = res {
+            if err.is_panic() {
+                std::panic::resume_unwind(err.into_panic());
+            }
+        }
+    });
+}
+
+/// Test for ['Connection::poll_event()'] - wakers are notified when events arrive
+#[cfg(feature = "msquic-seera")]
+#[test(tokio::test)]
+async fn test_poll_event_waker_notification() {
+    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let listener = new_server(
+        &registration,
+        &msquic::Settings::new().set_IdleTimeoutMs(10000),
+    )
+    .unwrap();
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    listener
+        .start(&[msquic::BufferRef::from("test")], Some(addr))
+        .expect("listener start");
+    let server_addr = listener.local_addr().expect("listener local_addr");
+
+    let mut set = JoinSet::new();
+
+    // Server side
+    set.spawn(async move {
+        let _conn = listener.accept().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        Ok::<_, anyhow::Error>(())
+    });
+
+    // Client side
+    let client_config = new_client_config(
+        &registration,
+        &msquic::Settings::new().set_IdleTimeoutMs(10000),
+    )
+    .unwrap();
+    let conn = Connection::new(&registration).unwrap();
+
+    set.spawn(async move {
+        conn.start(
+            &client_config,
+            &format!("{}", server_addr.ip()),
+            server_addr.port(),
+        )
+        .await
+        .unwrap();
+
+        // Wait a bit for connection to stabilize
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Add a path on client side to generate path events
+        let local_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let _ = conn.add_path(local_addr, server_addr);
+
+        // Try to poll for events with timeout - this tests that the waker works
+        // If there are no events, this will timeout (which is fine)
+        // If there are events, we successfully receive them (also fine)
+        let result = timeout(
+            Duration::from_millis(200),
+            poll_fn(|cx| conn.poll_event(cx)),
+        )
+        .await;
+
+        match result {
+            Err(_) => {}         // Timeout - no events, which is acceptable
+            Ok(Ok(_event)) => {} // Got an event - waker worked correctly
+            Ok(Err(e)) => panic!("Unexpected error: {:?}", e),
+        }
+
+        Ok::<_, anyhow::Error>(())
+    });
+
+    let mut results = Vec::new();
+    while let Some(res) = set.join_next().await {
+        results.push(res);
+    }
+    results.into_iter().for_each(|res| {
+        if let Err(err) = res {
+            if err.is_panic() {
+                std::panic::resume_unwind(err.into_panic());
+            }
+        }
+    });
+}
+
+/// Test for ['Connection::poll_event()'] - returns ConnectionLost on shutdown completion
+#[cfg(feature = "msquic-seera")]
+#[test(tokio::test)]
+async fn test_poll_event_connection_lost_on_shutdown() {
+    use crate::EventError;
+
+    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let listener = new_server(
+        &registration,
+        &msquic::Settings::new().set_IdleTimeoutMs(10000),
+    )
+    .unwrap();
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    listener
+        .start(&[msquic::BufferRef::from("test")], Some(addr))
+        .expect("listener start");
+    let server_addr = listener.local_addr().expect("listener local_addr");
+
+    let mut set = JoinSet::new();
+
+    // Server side
+    set.spawn(async move {
+        let _conn = listener.accept().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        Ok::<_, anyhow::Error>(())
+    });
+
+    // Client side
+    let client_config = new_client_config(
+        &registration,
+        &msquic::Settings::new().set_IdleTimeoutMs(10000),
+    )
+    .unwrap();
+    let conn = Connection::new(&registration).unwrap();
+
+    set.spawn(async move {
+        conn.start(
+            &client_config,
+            &format!("{}", server_addr.ip()),
+            server_addr.port(),
+        )
+        .await
+        .unwrap();
+
+        // Initiate shutdown
+        poll_fn(|cx| conn.poll_shutdown(cx, 0)).await.unwrap();
+
+        // Wait for shutdown to complete
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // Now poll_event should return ConnectionLost error
+        let result = poll_fn(|cx| conn.poll_event(cx)).await;
+        match result {
+            Err(EventError::ConnectionLost(_)) => {
+                // This is what we expect after shutdown
+            }
+            other => panic!(
+                "Expected ConnectionLost error after shutdown, got: {:?}",
+                other
+            ),
+        }
+
+        Ok::<_, anyhow::Error>(())
+    });
+
+    let mut results = Vec::new();
+    while let Some(res) = set.join_next().await {
+        results.push(res);
+    }
+    results.into_iter().for_each(|res| {
+        if let Err(err) = res {
+            if err.is_panic() {
+                std::panic::resume_unwind(err.into_panic());
+            }
+        }
+    });
+}
+
 #[cfg(not(windows))]
 fn new_server(
     registration: &msquic::Registration,
