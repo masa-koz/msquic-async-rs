@@ -1787,12 +1787,7 @@ async fn test_poll_event_waker_notification() {
 
     // Server side
     set.spawn(async move {
-        let conn = listener.accept().await.unwrap();
-        // Trigger path operations to generate events
-        // Add a bound address to potentially generate events
-        let bind_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-        let _ = conn.add_bound_addr(bind_addr);
-
+        let _conn = listener.accept().await.unwrap();
         tokio::time::sleep(Duration::from_millis(500)).await;
         Ok::<_, anyhow::Error>(())
     });
@@ -1814,8 +1809,12 @@ async fn test_poll_event_waker_notification() {
         .await
         .unwrap();
 
-        // Wait a bit for potential events
+        // Wait a bit for connection to stabilize
         tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Add a path on client side to generate path events
+        let local_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let _ = conn.add_path(local_addr, server_addr);
 
         // Try to poll for events with timeout - this tests that the waker works
         // If there are no events, this will timeout (which is fine)
