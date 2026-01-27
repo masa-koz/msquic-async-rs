@@ -1,6 +1,6 @@
 [package]
 name = "h3-msquic-async"
-version = "0.3.0"
+version = "0.3.1"
 authors = ["Masahiro Kozuka <masa.koz@outlook.com>"]
 edition = "2021"
 description = "MsQuic-Async based library for using h3"
@@ -36,7 +36,7 @@ bytes = { workspace = true }
 futures = { workspace = true }
 h3 = { workspace = true }
 h3-datagram = { workspace = true, optional = true }
-msquic-async = { workspace = true }
+msquic-async = { workspace = true, features = ["tokio"] }
 tokio = { workspace = true, features = ["io-util"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true, optional = true }
