@@ -29,9 +29,39 @@ async fn main() -> anyhow::Result<()> {
                 .set_StreamMultiReceiveEnabled(),
         ),
     )?;
-    let cred_config = msquic::CredentialConfig::new_client()
-        .set_credential_flags(msquic::CredentialFlags::NO_CERTIFICATE_VALIDATION);
-    configuration.load_credential(&cred_config)?;
+
+    #[cfg(not(windows))]
+    {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        let cert = include_bytes!("../certs/client.crt");
+        let key = include_bytes!("../certs/client.key");
+        let ca_cert = include_bytes!("../certs/ca.crt");
+
+        let mut cert_file = NamedTempFile::new()?;
+        cert_file.write_all(cert)?;
+        let cert_path = cert_file.into_temp_path();
+        let cert_path = cert_path.to_string_lossy().into_owned();
+
+        let mut key_file = NamedTempFile::new()?;
+        key_file.write_all(key)?;
+        let key_path = key_file.into_temp_path();
+        let key_path = key_path.to_string_lossy().into_owned();
+
+        let mut ca_cert_file = NamedTempFile::new()?;
+        ca_cert_file.write_all(ca_cert)?;
+        let ca_cert_path = ca_cert_file.into_temp_path();
+        let ca_cert_path = ca_cert_path.to_string_lossy().into_owned();
+
+        let cred_config = msquic::CredentialConfig::new_client()
+            .set_credential(msquic::Credential::CertificateFile(
+                msquic::CertificateFile::new(key_path, cert_path),
+            ))
+            .set_ca_certificate_file(ca_cert_path);
+
+        configuration.load_credential(&cred_config)?;
+    }
 
     let conn = msquic_async::Connection::new(&registration)?;
     if let Ok(sslkeylogfile) = env::var("SSLKEYLOGFILE") {

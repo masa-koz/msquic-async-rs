@@ -45,8 +45,9 @@ async fn main() -> anyhow::Result<()> {
         use std::io::Write;
         use tempfile::NamedTempFile;
 
-        let cert = include_bytes!("cert.pem");
-        let key = include_bytes!("key.pem");
+        let cert = include_bytes!("../certs/server.crt");
+        let key = include_bytes!("../certs/server.key");
+        let ca_cert = include_bytes!("../certs/ca.crt");
 
         let mut cert_file = NamedTempFile::new()?;
         cert_file.write_all(cert)?;
@@ -58,9 +59,17 @@ async fn main() -> anyhow::Result<()> {
         let key_path = key_file.into_temp_path();
         let key_path = key_path.to_string_lossy().into_owned();
 
-        let cred_config = msquic::CredentialConfig::new().set_credential(
-            msquic::Credential::CertificateFile(msquic::CertificateFile::new(key_path, cert_path)),
-        );
+        let mut ca_cert_file = NamedTempFile::new()?;
+        ca_cert_file.write_all(ca_cert)?;
+        let ca_cert_path = ca_cert_file.into_temp_path();
+        let ca_cert_path = ca_cert_path.to_string_lossy().into_owned();
+
+        let cred_config = msquic::CredentialConfig::new()
+            .set_credential_flags(msquic::CredentialFlags::REQUIRE_CLIENT_AUTHENTICATION)
+            .set_credential(msquic::Credential::CertificateFile(
+                msquic::CertificateFile::new(key_path, cert_path),
+            ))
+            .set_ca_certificate_file(ca_cert_path);
 
         configuration.load_credential(&cred_config)?;
     }
@@ -72,8 +81,8 @@ async fn main() -> anyhow::Result<()> {
         use schannel::crypt_prov::{AcquireOptions, ProviderType};
         use schannel::RawPointer;
 
-        let cert = include_str!("../examples/cert.pem");
-        let key = include_bytes!("../examples/key.pem");
+        let cert = include_str!("../certs/server.crt");
+        let key = include_bytes!("../certs/server.key");
 
         let mut store = Memory::new().unwrap().into_store();
 
