@@ -65,6 +65,31 @@ impl Listener {
         Ok(())
     }
 
+    /// Start the listener on a specified port.
+    pub fn start_on_port<T: AsRef<[msquic::BufferRef]>>(
+        &self,
+        alpn: &T,
+        local_port: Option<u16>,
+    ) -> Result<(), ListenError> {
+        let mut exclusive = self.inner.exclusive.lock().unwrap();
+        match exclusive.state {
+            ListenerState::Open | ListenerState::ShutdownComplete => {}
+            ListenerState::StartComplete | ListenerState::Shutdown => {
+                return Err(ListenError::AlreadyStarted);
+            }
+        }
+        let local_address: Option<msquic::Addr> = local_port.map(|x| {
+            let mut addr = msquic::Addr::from(SocketAddr::from(([0, 0, 0, 0], x)));
+            addr.ipv4.sin_family = msquic::ffi::QUIC_ADDRESS_FAMILY_UNSPEC as u16;
+            addr
+        });
+        self.msquic_listener
+            .start(alpn.as_ref(), local_address.as_ref())
+            .map_err(ListenError::OtherError)?;
+        exclusive.state = ListenerState::StartComplete;
+        Ok(())
+    }
+
     /// Accept a new connection.
     pub fn accept(&self) -> Accept<'_> {
         Accept(self)
@@ -130,6 +155,14 @@ impl Listener {
         self.msquic_listener
             .get_local_addr()
             .map(|addr| addr.as_socket().expect("not a socket address"))
+            .map_err(|_| ListenError::Failed)
+    }
+
+    /// Get the port the listener is bound to.
+    pub fn local_port(&self) -> Result<u16, ListenError> {
+        self.msquic_listener
+            .get_local_addr()
+            .map(|addr| addr.port())
             .map_err(|_| ListenError::Failed)
     }
 

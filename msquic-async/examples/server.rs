@@ -3,7 +3,7 @@ use msquic_async::msquic;
 use std::env;
 use std::fs::OpenOptions;
 use std::future::poll_fn;
-use std::{mem, net::SocketAddr};
+use std::mem;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::{error, info};
 
@@ -132,11 +132,8 @@ async fn main() -> anyhow::Result<()> {
         )?;
     }
 
-    let addr: SocketAddr = "[::]:4567".parse()?;
-    listener.start(&alpn, Some(addr))?;
-    let server_addr = listener.local_addr()?;
-
-    info!("listening on {}", server_addr);
+    listener.start_on_port(&alpn, Some(4567))?;
+    info!("listening on port {}", listener.local_port()?);
 
     // handle incoming connections and streams
     while let Ok(conn) = listener.accept().await {
