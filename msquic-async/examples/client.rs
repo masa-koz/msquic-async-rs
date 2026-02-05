@@ -63,6 +63,51 @@ async fn main() -> anyhow::Result<()> {
         configuration.load_credential(&cred_config)?;
     }
 
+    #[cfg(windows)]
+    {
+        use schannel::cert_context::{CertContext, KeySpec};
+        use schannel::cert_store::{CertAdd, Memory};
+        use schannel::crypt_prov::{AcquireOptions, ProviderType};
+        use schannel::RawPointer;
+
+        let cert = include_str!("../certs/client.crt");
+        let key = include_bytes!("../certs/client.key");
+
+        let mut store = Memory::new().unwrap().into_store();
+
+        let name = String::from("msquic-async-example-client");
+
+        let cert_ctx = CertContext::from_pem(cert).unwrap();
+
+        let mut options = AcquireOptions::new();
+        options.container(&name);
+
+        let type_ = ProviderType::rsa_full();
+
+        let mut container = match options.acquire(type_) {
+            Ok(container) => container,
+            Err(_) => options.new_keyset(true).acquire(type_).unwrap(),
+        };
+        container.import().import_pkcs8_pem(key).unwrap();
+
+        cert_ctx
+            .set_key_prov_info()
+            .container(&name)
+            .type_(type_)
+            .keep_open(true)
+            .key_spec(KeySpec::key_exchange())
+            .set()
+            .unwrap();
+
+        let context = store.add_cert(&cert_ctx, CertAdd::Always).unwrap();
+
+        let cred_config = msquic::CredentialConfig::new_client().set_credential(
+            msquic::Credential::CertificateContext(unsafe { context.as_ptr() }),
+        );
+
+        configuration.load_credential(&cred_config)?;
+    };
+
     let conn = msquic_async::Connection::new(&registration)?;
     if let Ok(sslkeylogfile) = env::var("SSLKEYLOGFILE") {
         info!("SSLKEYLOGFILE is set: {}", sslkeylogfile);
@@ -73,7 +118,7 @@ async fn main() -> anyhow::Result<()> {
                 .open(sslkeylogfile)?,
         )?;
     }
-    conn.start(&configuration, "127.0.0.1", 4567).await?;
+    conn.start(&configuration, "localhost", 4567).await?;
 
     let mut stream = conn
         .open_outbound_stream(msquic_async::StreamType::Bidirectional, false)

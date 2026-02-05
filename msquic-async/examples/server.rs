@@ -112,9 +112,11 @@ async fn main() -> anyhow::Result<()> {
 
         let context = store.add_cert(&cert_ctx, CertAdd::Always).unwrap();
 
-        let cred_config = msquic::CredentialConfig::new().set_credential(
-            msquic::Credential::CertificateContext(unsafe { context.as_ptr() }),
-        );
+        let cred_config = msquic::CredentialConfig::new()
+            .set_credential_flags(msquic::CredentialFlags::REQUIRE_CLIENT_AUTHENTICATION)
+            .set_credential(msquic::Credential::CertificateContext(unsafe {
+                context.as_ptr()
+            }));
 
         configuration.load_credential(&cred_config)?;
     };
@@ -130,7 +132,7 @@ async fn main() -> anyhow::Result<()> {
         )?;
     }
 
-    let addr: SocketAddr = "127.0.0.1:4567".parse()?;
+    let addr: SocketAddr = "[::]:4567".parse()?;
     listener.start(&alpn, Some(addr))?;
     let server_addr = listener.local_addr()?;
 
