@@ -3,7 +3,7 @@ use msquic_async::msquic;
 use std::env;
 use std::fs::OpenOptions;
 use std::future::poll_fn;
-use std::{mem, net::SocketAddr};
+use std::mem;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::{error, info};
 
@@ -45,8 +45,9 @@ async fn main() -> anyhow::Result<()> {
         use std::io::Write;
         use tempfile::NamedTempFile;
 
-        let cert = include_bytes!("cert.pem");
-        let key = include_bytes!("key.pem");
+        let cert = include_bytes!("../certs/server.crt");
+        let key = include_bytes!("../certs/server.key");
+        let ca_cert = include_bytes!("../certs/ca.crt");
 
         let mut cert_file = NamedTempFile::new()?;
         cert_file.write_all(cert)?;
@@ -58,9 +59,17 @@ async fn main() -> anyhow::Result<()> {
         let key_path = key_file.into_temp_path();
         let key_path = key_path.to_string_lossy().into_owned();
 
-        let cred_config = msquic::CredentialConfig::new().set_credential(
-            msquic::Credential::CertificateFile(msquic::CertificateFile::new(key_path, cert_path)),
-        );
+        let mut ca_cert_file = NamedTempFile::new()?;
+        ca_cert_file.write_all(ca_cert)?;
+        let ca_cert_path = ca_cert_file.into_temp_path();
+        let ca_cert_path = ca_cert_path.to_string_lossy().into_owned();
+
+        let cred_config = msquic::CredentialConfig::new()
+            .set_credential_flags(msquic::CredentialFlags::REQUIRE_CLIENT_AUTHENTICATION)
+            .set_credential(msquic::Credential::CertificateFile(
+                msquic::CertificateFile::new(key_path, cert_path),
+            ))
+            .set_ca_certificate_file(ca_cert_path);
 
         configuration.load_credential(&cred_config)?;
     }
@@ -72,8 +81,8 @@ async fn main() -> anyhow::Result<()> {
         use schannel::crypt_prov::{AcquireOptions, ProviderType};
         use schannel::RawPointer;
 
-        let cert = include_str!("../examples/cert.pem");
-        let key = include_bytes!("../examples/key.pem");
+        let cert = include_str!("../certs/server.crt");
+        let key = include_bytes!("../certs/server.key");
 
         let mut store = Memory::new().unwrap().into_store();
 
@@ -103,9 +112,11 @@ async fn main() -> anyhow::Result<()> {
 
         let context = store.add_cert(&cert_ctx, CertAdd::Always).unwrap();
 
-        let cred_config = msquic::CredentialConfig::new().set_credential(
-            msquic::Credential::CertificateContext(unsafe { context.as_ptr() }),
-        );
+        let cred_config = msquic::CredentialConfig::new()
+            .set_credential_flags(msquic::CredentialFlags::REQUIRE_CLIENT_AUTHENTICATION)
+            .set_credential(msquic::Credential::CertificateContext(unsafe {
+                context.as_ptr()
+            }));
 
         configuration.load_credential(&cred_config)?;
     };
@@ -121,11 +132,8 @@ async fn main() -> anyhow::Result<()> {
         )?;
     }
 
-    let addr: SocketAddr = "127.0.0.1:4567".parse()?;
-    listener.start(&alpn, Some(addr))?;
-    let server_addr = listener.local_addr()?;
-
-    info!("listening on {}", server_addr);
+    listener.start_on_port(&alpn, Some(4567))?;
+    info!("listening on port {}", listener.local_port()?);
 
     // handle incoming connections and streams
     while let Ok(conn) = listener.accept().await {
