@@ -24,6 +24,8 @@ msquic-latest = ["msquic-async/msquic-latest"]
 msquic-2-5 = ["msquic-async/msquic-2-5"]
 msquic-seera = ["msquic-async/msquic-seera"]
 
+msquic-seera-openssl-external = ["msquic-async/msquic-seera-openssl-external"]
+
 static = ["msquic-async/static"]
 msquic-2-5-static = ["msquic-async/msquic-2-5-static"]
 msquic-seera-static = ["msquic-async/msquic-seera-static"]

@@ -25,6 +25,8 @@ msquic-latest = ["msquic"]
 msquic-2-5 = ["msquic-v2-5"]
 msquic-seera = ["seera-msquic"]
 
+msquic-seera-openssl-external = ["seera-msquic/openssl_external"]
+
 static = ["msquic/static"]
 msquic-2-5-static = ["msquic-v2-5/static"]
 msquic-seera-static = ["seera-msquic/static"]
@@ -36,7 +38,7 @@ hex = { workspace = true }
 libc = { workspace = true }
 msquic = { workspace = true, features = ["preview-api"], optional = true }
 msquic-v2-5 = { workspace = true, features = ["preview-api"], optional = true }
-seera-msquic = { workspace = true, features = [], optional = true }
+seera-msquic = { workspace = true, optional = true }
 rangemap = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["io-util"], optional = true }
