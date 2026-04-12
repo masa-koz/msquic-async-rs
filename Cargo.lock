@@ -248,12 +248,12 @@ dependencies = [
 
 [[package]]
 name = "ctor"
-version = "0.6.3"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "424e0138278faeb2b401f174ad17e715c829512d74f3d1e81eb43365c2e0590e"
+checksum = "352d39c2f7bef1d6ad73db6f5160efcaed66d94ef8c6c573a8410c00bf909a98"
 dependencies = [
  "ctor-proc-macro 0.0.7",
- "dtor 0.1.0",
+ "dtor 0.3.0",
 ]
 
 [[package]]
@@ -288,9 +288,9 @@ dependencies = [
 
 [[package]]
 name = "dtor"
-version = "0.1.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e58a0764cddb55ab28955347b45be00ade43d4d6f3ba4bf3dc354e4ec9432934"
+checksum = "f1057d6c64987086ff8ed0fd3fbf377a6b7d205cc7715868cd401705f715cbe4"
 dependencies = [
  "dtor-proc-macro 0.0.6",
 ]
@@ -495,7 +495,7 @@ dependencies = [
 
 [[package]]
 name = "h3-msquic-async"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "argh",
@@ -658,7 +658,7 @@ dependencies = [
  "bitflags",
  "c-types 6.0.0",
  "cmake",
- "ctor 0.6.3",
+ "ctor 0.8.0",
  "libc",
  "socket2 0.6.0",
 ]
@@ -910,13 +910,13 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "seera-msquic"
-version = "2.6.0-beta2"
+version = "2.6.0-beta3"
 dependencies = [
  "bindgen",
  "bitflags",
  "c-types 6.0.0",
  "cmake",
- "ctor 0.6.3",
+ "ctor 0.8.0",
  "libc",
  "socket2 0.6.0",
 ]

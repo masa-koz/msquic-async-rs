@@ -29,6 +29,8 @@ static = ["msquic/static"]
 msquic-2-5-static = ["msquic-v2-5/static"]
 msquic-seera-static = ["seera-msquic/static"]
 
+msquic-seera-openssl-external = ["seera-msquic/openssl_external"]
+
 [dependencies]
 bytes = { workspace = true }
 futures-io = { workspace = true }
