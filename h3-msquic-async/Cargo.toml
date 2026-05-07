@@ -28,6 +28,8 @@ static = ["msquic-async/static"]
 msquic-2-5-static = ["msquic-async/msquic-2-5-static"]
 msquic-seera-static = ["msquic-async/msquic-seera-static"]
 
+msquic-seera-openssl = ["msquic-async/msquic-seera-openssl"]
+
 tracing = ["dep:tracing"]
 datagram = ["dep:h3-datagram"]
 

@@ -26,16 +26,44 @@ impl Listener {
         registration: &msquic::Registration,
         configuration: msquic::Configuration,
     ) -> Result<Self, ListenError> {
+        Self::new_common(registration, configuration, false)
+    }
+
+    /// Create a new QMUX listener.
+    pub fn new_qmux(
+        registration: &msquic::Registration,
+        configuration: msquic::Configuration,
+    ) -> Result<Self, ListenError> {
+        Self::new_common(registration, configuration, true)
+    }
+
+    fn new_common(
+        registration: &msquic::Registration,
+        configuration: msquic::Configuration,
+        is_qmux: bool,
+    ) -> Result<Self, ListenError> {
         let inner = Arc::new(ListenerInner::new(configuration));
         let inner_in_ev = inner.clone();
-        let msquic_listener = msquic::Listener::open(registration, move |_, ev| match ev {
-            msquic::ListenerEvent::NewConnection { info, connection } => {
-                inner_in_ev.handle_event_new_connection(info, connection)
-            }
-            msquic::ListenerEvent::StopComplete {
-                app_close_in_progress,
-            } => inner_in_ev.handle_event_stop_complete(app_close_in_progress),
-        })
+        
+        let msquic_listener = if !is_qmux {
+            msquic::Listener::open(registration, move |_, ev| match ev {
+                msquic::ListenerEvent::NewConnection { info, connection } => {
+                    inner_in_ev.handle_event_new_connection(info, connection)
+                }
+                msquic::ListenerEvent::StopComplete {
+                    app_close_in_progress,
+                } => inner_in_ev.handle_event_stop_complete(app_close_in_progress),
+            })
+        } else {
+            msquic::Listener::open_qmux(registration, move |_, ev| match ev {
+                msquic::ListenerEvent::NewConnection { info, connection } => {
+                    inner_in_ev.handle_event_new_connection(info, connection)
+                }
+                msquic::ListenerEvent::StopComplete {
+                    app_close_in_progress,
+                } => inner_in_ev.handle_event_stop_complete(app_close_in_progress),
+            })
+        }
         .map_err(ListenError::OtherError)?;
         trace!("Listener({:p}) new", inner);
         Ok(Self {

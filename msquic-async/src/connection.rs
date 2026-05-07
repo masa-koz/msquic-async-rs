@@ -30,11 +30,28 @@ impl Connection {
     ///
     /// The connection is not started until `start` is called.
     pub fn new(registration: &msquic::Registration) -> Result<Self, ConnectionError> {
+        Self::new_common(registration, false)
+    }
+
+    /// Create a new QMUX connection.
+    ///
+    /// The connection is not started until `start` is called.
+    pub fn new_qmux(registration: &msquic::Registration) -> Result<Self, ConnectionError> {
+        Self::new_common(registration, true)
+    }
+
+    fn new_common(registration: &msquic::Registration, is_qmux: bool) -> Result<Self, ConnectionError> {
         let inner = Arc::new(ConnectionInner::new(ConnectionState::Open, None, None));
         let inner_in_ev = inner.clone();
-        let msquic_conn = msquic::Connection::open(registration, move |conn_ref, ev| {
-            inner_in_ev.callback_handler_impl(conn_ref, ev)
-        })
+        let msquic_conn = if !is_qmux {
+            msquic::Connection::open(registration, move |conn_ref, ev| {
+                inner_in_ev.callback_handler_impl(conn_ref, ev)
+            })
+        } else {
+            msquic::Connection::open_qmux(registration, move |conn_ref, ev| {
+                inner_in_ev.callback_handler_impl(conn_ref, ev)
+            })
+        }
         .map_err(ConnectionError::OtherError)?;
         let instance = Arc::new(ConnectionInstance { inner, msquic_conn });
         trace!(
