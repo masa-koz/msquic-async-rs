@@ -14,6 +14,9 @@ struct CmdOptions {
     /// bind address
     #[argh(option, default = "String::from(\"[::]:4567\")")]
     bind_addr: String,
+    /// mTLS
+    #[argh(switch)]
+    mtls: bool,
 }
 
 #[tokio::main]
@@ -52,6 +55,14 @@ async fn main() -> anyhow::Result<()> {
         use std::io::Write;
         use tempfile::NamedTempFile;
 
+        let cred_config = msquic::CredentialConfig::new();
+
+        let cred_config = if cmd_opts.mtls {
+            cred_config.set_credential_flags(msquic::CredentialFlags::REQUIRE_CLIENT_AUTHENTICATION)
+        } else {
+            cred_config
+        };
+
         let cert = include_bytes!("../certs/server.crt");
         let key = include_bytes!("../certs/server.key");
         let ca_cert = include_bytes!("../certs/ca.crt");
@@ -71,8 +82,7 @@ async fn main() -> anyhow::Result<()> {
         let ca_cert_path = ca_cert_file.into_temp_path();
         let ca_cert_path = ca_cert_path.to_string_lossy().into_owned();
 
-        let cred_config = msquic::CredentialConfig::new()
-            .set_credential_flags(msquic::CredentialFlags::REQUIRE_CLIENT_AUTHENTICATION)
+        let cred_config = cred_config
             .set_credential(msquic::Credential::CertificateFile(
                 msquic::CertificateFile::new(key_path, cert_path),
             ))
