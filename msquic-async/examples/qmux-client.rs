@@ -1,3 +1,5 @@
+use anyhow::Context;
+use argh::FromArgs;
 use msquic_async::msquic;
 use std::env;
 use std::fs::OpenOptions;
@@ -5,13 +7,25 @@ use std::future::poll_fn;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::info;
 
+#[derive(FromArgs)]
+/// client args
+struct CmdOptions {
+    /// target server address
+    #[argh(option, default = "String::from(\"127.0.0.1:4567\")")]
+    target: String,
+    /// resumption ticket in hex
+    #[argh(option)]
+    ticket: Option<String>,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let cmd_opts: CmdOptions = argh::from_env();
+
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_span_events(tracing_subscriber::fmt::format::FmtSpan::FULL)
-        .with_writer(std::io::stderr)
-        .with_max_level(tracing::Level::INFO)
+        .with_writer(std::io::stdout)
         .init();
 
     let registration = msquic::Registration::new(&msquic::RegistrationConfig::default())?;
@@ -118,7 +132,18 @@ async fn main() -> anyhow::Result<()> {
                 .open(sslkeylogfile)?,
         )?;
     }
-    conn.start(&configuration, "localhost", 4567).await?;
+
+    if let Some(ticket) = cmd_opts.ticket {
+        let ticket = hex::decode(ticket)?;
+        conn.set_resumption_ticket(&ticket).context("failed to set resumption ticket")?;
+    }
+
+    let target = cmd_opts
+        .target
+        .parse::<std::net::SocketAddr>()
+        .context("failed to parse target address")?;
+    conn.start(&configuration, &target.ip().to_string(), target.port())
+        .await?;
     if let Ok(local_addr) = conn.get_local_addr() {
         info!("local address: {}", local_addr);
     }
@@ -126,6 +151,27 @@ async fn main() -> anyhow::Result<()> {
         info!("remote address: {}", remote_addr);
     }
 
+    {
+        let conn = conn.clone();
+        tokio::spawn(async move {
+            loop {
+                if let Ok(event) = poll_fn(|cx| conn.poll_event(cx)).await {
+                    match event {
+                        msquic_async::ConnectionEvent::ResumptionTicketReceived {
+                            resumption_ticket,
+                        } => {
+                            info!("resumption ticket received");
+                            eprint!("{}", hex::encode(resumption_ticket));
+                        }
+                        _ => {}
+                    }
+                } else {
+                    break;
+                }
+            }
+            anyhow::Result::<()>::Ok(())
+        });
+    }
     let mut stream = conn
         .open_outbound_stream(msquic_async::StreamType::Bidirectional, false)
         .await?;

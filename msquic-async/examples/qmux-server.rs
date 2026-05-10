@@ -1,3 +1,4 @@
+use anyhow::Context;
 use argh::FromArgs;
 use msquic_async::msquic;
 use std::env;
@@ -7,17 +8,22 @@ use std::mem;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::{error, info};
 
-#[derive(FromArgs, Clone)]
+#[derive(FromArgs)]
 /// server args
-pub struct CmdOptions {}
+struct CmdOptions {
+    /// bind address
+    #[argh(option, default = "String::from(\"[::]:4567\")")]
+    bind_addr: String,
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let cmd_opts: CmdOptions = argh::from_env();
+
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_span_events(tracing_subscriber::fmt::format::FmtSpan::FULL)
-        .with_writer(std::io::stderr)
-        .with_max_level(tracing::Level::INFO)
+        .with_writer(std::io::stdout)
         .init();
 
     let _cmd_opts: CmdOptions = argh::from_env();
@@ -31,8 +37,9 @@ async fn main() -> anyhow::Result<()> {
         &registration,
         &alpn,
         Some(
-            &msquic::Settings::new()
+            &&msquic::Settings::new()
                 .set_IdleTimeoutMs(10000)
+                .set_ServerResumptionLevel(msquic::ServerResumptionLevel::ResumeAndZerortt)
                 .set_PeerBidiStreamCount(100)
                 .set_PeerUnidiStreamCount(100)
                 .set_DatagramReceiveEnabled()
@@ -132,8 +139,13 @@ async fn main() -> anyhow::Result<()> {
         )?;
     }
 
-    listener.start_on_port(&alpn, Some(4567))?;
-    info!("listening on port {}", listener.local_port()?);
+    let bind_addr = cmd_opts
+        .bind_addr
+        .parse::<std::net::SocketAddr>()
+        .context("failed to parse bind address")?;
+
+    listener.start(&alpn, Some(bind_addr))?;
+    info!("listening on address {}", listener.local_addr()?);
 
     // handle incoming connections and streams
     while let Ok(conn) = listener.accept().await {
@@ -145,6 +157,8 @@ async fn main() -> anyhow::Result<()> {
             info!("remote address: {}", remote_addr);
         }
         tokio::spawn(async move {
+            poll_fn(|cx| conn.poll_wait_start(cx)).await?;
+            conn.send_resumption_ticket(false, None)?;
             loop {
                 match conn.accept_inbound_stream().await {
                     Ok(mut stream) => {

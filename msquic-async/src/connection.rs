@@ -40,7 +40,10 @@ impl Connection {
         Self::new_common(registration, true)
     }
 
-    fn new_common(registration: &msquic::Registration, is_qmux: bool) -> Result<Self, ConnectionError> {
+    fn new_common(
+        registration: &msquic::Registration,
+        is_qmux: bool,
+    ) -> Result<Self, ConnectionError> {
         let inner = Arc::new(ConnectionInner::new(ConnectionState::Open, None, None));
         let inner_in_ev = inner.clone();
         let msquic_conn = if !is_qmux {
@@ -71,7 +74,7 @@ impl Connection {
         #[cfg(feature = "msquic-2-5")]
         let msquic_conn = unsafe { msquic::Connection::from_raw(handle) };
         let inner = Arc::new(ConnectionInner::new(
-            ConnectionState::Connected,
+            ConnectionState::Connecting,
             tls_secrets,
             sslkeylog_file,
         ));
@@ -104,7 +107,7 @@ impl Connection {
     }
 
     /// Poll to start the connection.
-    fn poll_start(
+    pub fn poll_start(
         &self,
         cx: &mut Context<'_>,
         configuration: &msquic::Configuration,
@@ -119,6 +122,25 @@ impl Connection {
                     .start(configuration, host, port)
                     .map_err(StartError::OtherError)?;
                 exclusive.state = ConnectionState::Connecting;
+            }
+            ConnectionState::Connecting => {}
+            ConnectionState::Connected => return Poll::Ready(Ok(())),
+            ConnectionState::Shutdown | ConnectionState::ShutdownComplete => {
+                return Poll::Ready(Err(StartError::ConnectionLost(
+                    exclusive.error.as_ref().expect("error").clone(),
+                )));
+            }
+        }
+        exclusive.start_waiters.push(cx.waker().clone());
+        Poll::Pending
+    }
+
+    /// Poll to wait connection started. Mainly used for connections created by peer.
+    pub fn poll_wait_start(&self, cx: &mut Context<'_>) -> Poll<Result<(), StartError>> {
+        let mut exclusive = self.0.exclusive.lock().unwrap();
+        match exclusive.state {
+            ConnectionState::Open => {
+                return Poll::Ready(Err(StartError::ConnectionNotStarted));
             }
             ConnectionState::Connecting => {}
             ConnectionState::Connected => return Poll::Ready(Ok(())),
@@ -631,6 +653,51 @@ impl Connection {
         exclusive.sslkeylog_file = Some(file);
         Ok(())
     }
+
+    pub fn send_resumption_ticket(
+        &self,
+        is_final: bool,
+        resumption_app_data: Option<&[u8]>,
+    ) -> Result<(), ConnectionError> {
+        let exclusive = self.0.exclusive.lock().unwrap();
+        match exclusive.state {
+            ConnectionState::Open | ConnectionState::Connecting => {
+                return Err(ConnectionError::ConnectionNotStarted);
+            }
+            ConnectionState::Connected => {}
+            ConnectionState::Shutdown | ConnectionState::ShutdownComplete => {
+                return Err(exclusive.error.as_ref().expect("error").clone());
+            }
+        }
+        self.0
+            .msquic_conn
+            .send_resumption_ticket(
+                if is_final {
+                    msquic::ConnectionSendResumptionFlags::FINAL
+                } else {
+                    msquic::ConnectionSendResumptionFlags::NONE
+                },
+                resumption_app_data,
+            )
+            .map_err(ConnectionError::OtherError)
+    }
+
+    /// Set the resumption ticket for the connection.
+    pub fn set_resumption_ticket(
+        &self,
+        resumption_ticket: &[u8],
+    ) -> Result<(), ConnectionError> {
+        unsafe {
+            msquic::Api::set_param(
+                self.0.msquic_conn.as_raw(),
+                msquic::ffi::QUIC_PARAM_CONN_RESUMPTION_TICKET,
+                resumption_ticket.len() as u32,
+                resumption_ticket.as_ptr() as *const _,
+            )
+        }
+        .map_err(ConnectionError::OtherError)
+    }
+
 }
 
 struct ConnectionInstance {
@@ -994,6 +1061,24 @@ impl ConnectionInner {
         Ok(())
     }
 
+    fn handle_event_resumption_ticket_received(
+        &self,
+        _resumption_ticket: &[u8],
+    ) -> Result<(), msquic::Status> {
+        trace!("ConnectionInner({:p}) Resumption ticket received", self);
+        let mut exclusive = self.exclusive.lock().unwrap();
+        exclusive
+            .events
+            .push_back(ConnectionEvent::ResumptionTicketReceived {
+                resumption_ticket: _resumption_ticket.to_vec(),
+            });
+        exclusive
+            .event_waiters
+            .drain(..)
+            .for_each(|waker| waker.wake());
+        Ok(())
+    }
+
     #[cfg(feature = "msquic-seera")]
     fn handle_event_notify_observed_address(
         &self,
@@ -1139,6 +1224,9 @@ impl ConnectionInner {
                 client_context,
                 state,
             } => self.handle_event_datagram_send_state_changed(client_context, state),
+            msquic::ConnectionEvent::ResumptionTicketReceived { resumption_ticket } => {
+                self.handle_event_resumption_ticket_received(resumption_ticket)
+            }
             #[cfg(feature = "msquic-seera")]
             msquic::ConnectionEvent::NotifyObservedAddress {
                 local_address,
@@ -1200,11 +1288,15 @@ pub enum ConnectionEvent {
     },
     /// A remote address has been removed.
     NotifyRemoteAddressRemoved { sequence_number: u64 },
+    /// Resumption ticket has been received from the peer.
+    ResumptionTicketReceived { resumption_ticket: Vec<u8> },
 }
 
 /// Errors that can occur when managing a connection.
 #[derive(Debug, Error, Clone)]
 pub enum ConnectionError {
+    #[error("connection not started yet")]
+    ConnectionNotStarted,
     #[error("connection shutdown by transport: status {0:?}, error 0x{1:x}")]
     ShutdownByTransport(msquic::Status, u64),
     #[error("connection shutdown by peer: error 0x{0:x}")]
@@ -1248,6 +1340,8 @@ pub enum DgramSendError {
 /// Errors that can occur when starting a connection.
 #[derive(Debug, Error, Clone)]
 pub enum StartError {
+    #[error("connection not started yet")]
+    ConnectionNotStarted,
     #[error("connection lost")]
     ConnectionLost(#[from] ConnectionError),
     #[error("other error: status {0:?}")]
