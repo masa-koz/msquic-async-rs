@@ -19,7 +19,7 @@ libc = "0.2.153"
 msquic = { version = "2.6.0-beta", path = "./msquic" }
 msquic-v2-5 = { package = "msquic", version = "2.5.1-beta" }
 seera-msquic = { version = "2.6.0-beta2", path = "./seera-msquic" }
-msquic-async = { version = "0.4.0", path = "./msquic-async", default-features = false }
+msquic-async = { version = "0.4.1", path = "./msquic-async", default-features = false }
 rangemap = "1.5.1"
 schannel = "0.1.27"
 tempfile = "3.10.1"
