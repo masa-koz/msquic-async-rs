@@ -1716,7 +1716,7 @@ async fn recv_datagram_after_peer_shutdown() {
         .await;
         match res {
             Err(_) => panic!("timeout waiting for datagram"),
-            Ok(Err(_)) => {},
+            Ok(Err(_)) => {}
             Ok(Ok(_)) => panic!("unexpected datagram received after shutdown"),
         }
 
@@ -1786,7 +1786,7 @@ async fn recv_datagram_after_local_shutdown() {
         .await;
         match res {
             Err(_) => panic!("timeout waiting for datagram"),
-            Ok(Err(_)) => {},
+            Ok(Err(_)) => {}
             Ok(Ok(_)) => panic!("unexpected datagram received after shutdown"),
         }
         server_tx.send(()).await.expect("send");
