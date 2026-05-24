@@ -99,7 +99,7 @@ impl StreamRecvBuffer {
     }
 
     /// Consumes and returns the buffer as a slice.
-    pub fn get_bytes_upto_size<'a>(&mut self, size: usize) -> Option<&'a [u8]> {
+    pub fn get_bytes_upto_size(&mut self, size: usize) -> Option<&[u8]> {
         if self.buffers.len() <= self.read_cursor {
             return None;
         }
