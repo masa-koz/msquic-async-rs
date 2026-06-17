@@ -370,6 +370,7 @@ impl Connection {
                     .msquic_conn
                     .shutdown(msquic::ConnectionShutdownFlags::NONE, error_code);
                 exclusive.state = ConnectionState::Shutdown;
+                exclusive.error = Some(ConnectionError::ShutdownByLocal);
             }
             ConnectionState::Shutdown => {}
             ConnectionState::ShutdownComplete => {
@@ -399,6 +400,7 @@ impl Connection {
                     .msquic_conn
                     .shutdown(msquic::ConnectionShutdownFlags::NONE, error_code);
                 exclusive.state = ConnectionState::Shutdown;
+                exclusive.error = Some(ConnectionError::ShutdownByLocal);
             }
             _ => {}
         }
@@ -885,6 +887,10 @@ impl ConnectionInner {
             .inbound_stream_waiters
             .drain(..)
             .for_each(|waker| waker.wake());
+        exclusive
+            .recv_waiters
+            .drain(..)
+            .for_each(|waker| waker.wake());
         Ok(())
     }
 
@@ -903,6 +909,10 @@ impl ConnectionInner {
             .for_each(|waker| waker.wake());
         exclusive
             .inbound_stream_waiters
+            .drain(..)
+            .for_each(|waker| waker.wake());
+        exclusive
+            .recv_waiters
             .drain(..)
             .for_each(|waker| waker.wake());
         Ok(())
@@ -930,6 +940,10 @@ impl ConnectionInner {
                 .for_each(|waker| waker.wake());
             exclusive
                 .inbound_stream_waiters
+                .drain(..)
+                .for_each(|waker| waker.wake());
+            exclusive
+                .recv_waiters
                 .drain(..)
                 .for_each(|waker| waker.wake());
             exclusive
