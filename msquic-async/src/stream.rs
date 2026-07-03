@@ -190,6 +190,15 @@ impl Stream {
         self.0.poll_read(cx, buf)
     }
 
+    /// Poll to read from the stream into the provided ReadBuf.
+    pub fn poll_read_buf(
+        &mut self,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<Result<(), ReadError>> {
+        self.0.poll_read_buf(cx, buf)
+    }
+
     /// Poll to read the next segment of data.
     pub fn poll_read_chunk(
         &self,
@@ -294,6 +303,15 @@ impl ReadStream {
         buf: &mut [u8],
     ) -> Poll<Result<usize, ReadError>> {
         self.0.poll_read(cx, buf)
+    }
+
+    /// Poll to read from the stream into the provided ReadBuf.
+    pub fn poll_read_buf(
+        &mut self,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<Result<(), ReadError>> {
+        self.0.poll_read_buf(cx, buf)
     }
 
     /// Poll to read the next segment of data.
@@ -427,8 +445,8 @@ impl StreamInstance {
         buf: &mut [u8],
     ) -> Poll<Result<usize, ReadError>> {
         self.poll_read_generic(cx, |recv_buffers, read_complete_buffers| {
-            let mut read = 0;
             let mut fin = false;
+            let mut read = 0;
             loop {
                 if read == buf.len() {
                     return ReadStatus::Readable(read);
@@ -457,6 +475,47 @@ impl StreamInstance {
             }
         })
         .map(|res| res.map(|x| x.unwrap_or(0)))
+    }
+
+    fn poll_read_buf(
+        self: &Arc<Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<Result<(), ReadError>> {
+        if buf.remaining() == 0 {
+            return Poll::Ready(Ok(()));
+        }
+
+        self.poll_read_generic(cx, |recv_buffers, read_complete_buffers| {
+            let mut fin = false;
+            let mut read = false;
+            loop {
+                if buf.remaining() == 0 {
+                    return ReadStatus::Readable(());
+                }
+
+                match recv_buffers
+                    .front_mut()
+                    .and_then(|x| x.get_bytes_upto_size(buf.remaining()))
+                {
+                    Some(slice) => {
+                        buf.put_slice(slice);
+                        read = true;
+                    }
+                    None => {
+                        if let Some(mut recv_buffer) = recv_buffers.pop_front() {
+                            recv_buffer.set_stream(self.clone());
+                            fin = recv_buffer.fin();
+                            read_complete_buffers.push(recv_buffer);
+                            continue;
+                        } else {
+                            return (if read { Some(()) } else { None }, fin).into();
+                        }
+                    }
+                }
+            }
+        })
+        .map(|res| res.map(|_| ()))
     }
 
     fn poll_read_chunk(
@@ -1364,8 +1423,7 @@ impl tokio::io::AsyncRead for Stream {
         cx: &mut Context<'_>,
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
-        let len = ready!(Self::poll_read(self.get_mut(), cx, buf.initialized_mut()))?;
-        buf.set_filled(len);
+        ready!(Self::poll_read_buf(self.get_mut(), cx, buf))?;
         Poll::Ready(Ok(()))
     }
 }
@@ -1398,8 +1456,7 @@ impl tokio::io::AsyncRead for ReadStream {
         cx: &mut Context<'_>,
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
-        let len = ready!(Self::poll_read(self.get_mut(), cx, buf.initialized_mut()))?;
-        buf.set_filled(len);
+        ready!(Self::poll_read_buf(self.get_mut(), cx, buf))?;
         Poll::Ready(Ok(()))
     }
 }
