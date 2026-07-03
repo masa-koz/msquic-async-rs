@@ -20,6 +20,7 @@ include = [
 
 [features]
 default = ["msquic-latest"]
+
 msquic-latest = ["msquic-async/msquic-latest"]
 msquic-2-5 = ["msquic-async/msquic-2-5"]
 msquic-seera = ["msquic-async/msquic-seera"]
@@ -27,6 +28,9 @@ msquic-seera = ["msquic-async/msquic-seera"]
 static = ["msquic-async/static"]
 msquic-2-5-static = ["msquic-async/msquic-2-5-static"]
 msquic-seera-static = ["msquic-async/msquic-seera-static"]
+
+openssl-external = ["msquic-async/openssl-external"]
+msquic-seera-openssl-external = ["msquic-async/msquic-seera-openssl-external"]
 
 tracing = ["dep:tracing"]
 datagram = ["dep:h3-datagram"]
