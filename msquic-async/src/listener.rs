@@ -108,7 +108,7 @@ impl Listener {
         }
         let local_address: Option<msquic::Addr> = local_port.map(|x| {
             let mut addr = msquic::Addr::from(SocketAddr::from(([0, 0, 0, 0], x)));
-            addr.ipv4.sin_family = msquic::ffi::QUIC_ADDRESS_FAMILY_UNSPEC as u16;
+            addr.ipv4.sin_family = msquic::ffi::QUIC_ADDRESS_FAMILY_UNSPEC as _;
             addr
         });
         self.msquic_listener

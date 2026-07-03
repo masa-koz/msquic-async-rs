@@ -1683,6 +1683,145 @@ async fn datagram_validation() {
     });
 }
 
+#[test(tokio::test)]
+async fn recv_datagram_after_peer_shutdown() {
+    let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
+
+    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+
+    let listener = new_server(
+        &registration,
+        &msquic::Settings::new()
+            .set_IdleTimeoutMs(10000)
+            .set_DatagramReceiveEnabled(),
+    )
+    .unwrap();
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    listener
+        .start(&[msquic::BufferRef::from("test")], Some(addr))
+        .expect("listener start");
+    let server_addr = listener.local_addr().expect("listener local_addr");
+
+    let mut set = JoinSet::new();
+
+    set.spawn(async move {
+        let res = listener.accept().await;
+        assert!(res.is_ok());
+        server_tx.send(()).await.expect("send");
+        let conn = res.expect("accept");
+        let res = timeout(
+            std::time::Duration::from_secs(10),
+            poll_fn(|cx| conn.poll_receive_datagram(cx)),
+        )
+        .await;
+        match res {
+            Err(_) => panic!("timeout waiting for datagram"),
+            Ok(Err(_)) => {}
+            Ok(Ok(_)) => panic!("unexpected datagram received after shutdown"),
+        }
+
+        Ok::<_, anyhow::Error>(())
+    });
+
+    let client_config = new_client_config(
+        &registration,
+        &msquic::Settings::new().set_IdleTimeoutMs(10000),
+    )
+    .unwrap();
+    let conn = Connection::new(&registration).unwrap();
+    let res = conn
+        .start(
+            &client_config,
+            &format!("{}", server_addr.ip()),
+            server_addr.port(),
+        )
+        .await;
+    assert!(res.is_ok());
+    client_rx.recv().await.expect("recv");
+    conn.shutdown(0).unwrap();
+
+    let mut results = Vec::new();
+    while let Some(res) = set.join_next().await {
+        results.push(res);
+    }
+    results.into_iter().for_each(|res| {
+        if let Err(err) = res {
+            if err.is_panic() {
+                std::panic::resume_unwind(err.into_panic());
+            }
+        }
+    });
+}
+
+#[test(tokio::test)]
+async fn recv_datagram_after_local_shutdown() {
+    let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
+
+    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+
+    let listener = new_server(
+        &registration,
+        &msquic::Settings::new()
+            .set_IdleTimeoutMs(10000)
+            .set_DatagramReceiveEnabled(),
+    )
+    .unwrap();
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    listener
+        .start(&[msquic::BufferRef::from("test")], Some(addr))
+        .expect("listener start");
+    let server_addr = listener.local_addr().expect("listener local_addr");
+
+    let mut set = JoinSet::new();
+
+    set.spawn(async move {
+        let res = listener.accept().await;
+        assert!(res.is_ok());
+        let conn = res.expect("accept");
+        conn.shutdown(0).unwrap();
+        let res = timeout(
+            std::time::Duration::from_secs(10),
+            poll_fn(|cx| conn.poll_receive_datagram(cx)),
+        )
+        .await;
+        match res {
+            Err(_) => panic!("timeout waiting for datagram"),
+            Ok(Err(_)) => {}
+            Ok(Ok(_)) => panic!("unexpected datagram received after shutdown"),
+        }
+        server_tx.send(()).await.expect("send");
+
+        Ok::<_, anyhow::Error>(())
+    });
+
+    let client_config = new_client_config(
+        &registration,
+        &msquic::Settings::new().set_IdleTimeoutMs(10000),
+    )
+    .unwrap();
+    let conn = Connection::new(&registration).unwrap();
+    let _res = conn
+        .start(
+            &client_config,
+            &format!("{}", server_addr.ip()),
+            server_addr.port(),
+        )
+        .await;
+    client_rx.recv().await.expect("recv");
+
+    let mut results = Vec::new();
+    while let Some(res) = set.join_next().await {
+        results.push(res);
+    }
+    results.into_iter().for_each(|res| {
+        if let Err(err) = res {
+            if err.is_panic() {
+                std::panic::resume_unwind(err.into_panic());
+            }
+        }
+    });
+}
+
 /// Test for ['Connection::poll_event()'] - events are queued correctly
 #[cfg(feature = "msquic-seera")]
 #[test(tokio::test)]
