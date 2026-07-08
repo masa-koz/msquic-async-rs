@@ -439,6 +439,19 @@ impl Connection {
         .map_err(ConnectionError::OtherError)
     }
 
+    /// Set the local address of the connection.
+    pub fn set_local_addr(&self, addr: SocketAddr) -> Result<(), ConnectionError> {
+        unsafe {
+            msquic::Api::set_param(
+                self.0.msquic_conn.as_raw(),
+                msquic::ffi::QUIC_PARAM_CONN_LOCAL_ADDRESS,
+                std::mem::size_of::<msquic::Addr>() as u32,
+                &msquic::Addr::from(addr) as *const _ as *const _,
+            )
+        }
+        .map_err(ConnectionError::OtherError)
+    }
+
     /// Add a new path to the connection.
     #[cfg(feature = "msquic-seera")]
     pub fn add_path(
@@ -595,6 +608,7 @@ impl Connection {
 
     /// Poll to receive events on the connection.
     pub fn poll_event(&self, cx: &mut Context<'_>) -> Poll<Result<ConnectionEvent, EventError>> {
+        tracing::trace!("poll_event: polling for events");
         let mut exclusive = self.0.exclusive.lock().unwrap();
         match exclusive.state {
             ConnectionState::Open => {
@@ -654,6 +668,16 @@ impl Connection {
         }
         exclusive.sslkeylog_file = Some(file);
         Ok(())
+    }
+
+    pub fn get_stats(&self) -> Result<msquic::ffi::QUIC_STATISTICS, ConnectionError> {
+        unsafe {
+            msquic::Api::get_param_auto::<msquic::ffi::QUIC_STATISTICS>(
+                self.0.msquic_conn.as_raw(),
+                msquic::ffi::QUIC_PARAM_CONN_STATISTICS,
+            )
+        }
+        .map_err(ConnectionError::OtherError)
     }
 
     pub fn send_resumption_ticket(
