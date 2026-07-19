@@ -32,9 +32,35 @@ async fn main() -> anyhow::Result<()> {
                 .set_StreamMultiReceiveEnabled(),
         ),
     )?;
-    let cred_config = msquic::CredentialConfig::new_client()
-        .set_credential_flags(msquic::CredentialFlags::NO_CERTIFICATE_VALIDATION);
-    configuration.load_credential(&cred_config)?;
+    // Validate the server certificate by default. The example server uses a
+    // self-signed certificate (`cert.pem`), so we pin that same certificate as
+    // the trusted CA.
+    //
+    // Setting `H3_CLIENT_INSECURE=1` skips validation via
+    // `NO_CERTIFICATE_VALIDATION`. This is for local testing ONLY: it disables
+    // authentication of the server and defeats TLS, so it must never be used in
+    // production or copied into real client code.
+    if env::var("H3_CLIENT_INSECURE").is_ok() {
+        info!("H3_CLIENT_INSECURE is set: skipping certificate validation (test only)");
+        let cred_config = msquic::CredentialConfig::new_client()
+            .set_credential_flags(msquic::CredentialFlags::NO_CERTIFICATE_VALIDATION);
+        configuration.load_credential(&cred_config)?;
+    } else {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        let ca_cert = include_bytes!("cert.pem");
+        let mut ca_cert_file = NamedTempFile::new()?;
+        ca_cert_file.write_all(ca_cert)?;
+        let ca_cert_path = ca_cert_file.into_temp_path();
+        let ca_cert_path_str = ca_cert_path.to_string_lossy().into_owned();
+
+        let cred_config =
+            msquic::CredentialConfig::new_client().set_ca_certificate_file(ca_cert_path_str);
+        configuration.load_credential(&cred_config)?;
+        // `ca_cert_path` is dropped (and the temp file removed) only here, after
+        // `load_credential` has read it.
+    }
 
     let conn = msquic_async::Connection::new(&registration)?;
     if let Ok(sslkeylogfile) = env::var("SSLKEYLOGFILE") {

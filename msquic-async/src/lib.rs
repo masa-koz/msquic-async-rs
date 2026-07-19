@@ -5,6 +5,7 @@ mod buffer;
 mod connection;
 mod listener;
 mod stream;
+mod sync;
 
 #[cfg(feature = "msquic-latest")]
 pub use msquic;
