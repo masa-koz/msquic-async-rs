@@ -1,5 +1,6 @@
 use crate::buffer::WriteBuffer;
 use crate::stream::{ReadStream, StartError as StreamStartError, Stream, StreamType};
+use crate::sync::LockPoisonTolerant;
 
 #[cfg(feature = "msquic-2-5")]
 use msquic_v2_5 as msquic;
@@ -12,6 +13,7 @@ use std::future::Future;
 use std::io::{Seek, SeekFrom, Write};
 use std::net::SocketAddr;
 use std::ops::Deref;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
@@ -20,7 +22,7 @@ use bytes::Bytes;
 use libc::c_void;
 use msquic::ffi::QUIC_TLS_SECRETS__bindgen_ty_1;
 use thiserror::Error;
-use tracing::{info, trace};
+use tracing::{error, info, trace};
 
 #[derive(Clone)]
 pub struct Connection(Arc<ConnectionInstance>);
@@ -94,7 +96,7 @@ impl Connection {
         host: &str,
         port: u16,
     ) -> Poll<Result<(), StartError>> {
-        let mut exclusive = self.0.exclusive.lock().unwrap();
+        let mut exclusive = self.0.exclusive.lock_poison_tolerant();
         match exclusive.state {
             ConnectionState::Open => {
                 self.0
@@ -139,7 +141,7 @@ impl Connection {
         &self,
         cx: &mut Context<'_>,
     ) -> Poll<Result<Stream, StreamStartError>> {
-        let mut exclusive = self.0.exclusive.lock().unwrap();
+        let mut exclusive = self.0.exclusive.lock_poison_tolerant();
         match exclusive.state {
             ConnectionState::Open => {
                 return Poll::Ready(Err(StreamStartError::ConnectionNotStarted));
@@ -173,7 +175,7 @@ impl Connection {
         &self,
         cx: &mut Context<'_>,
     ) -> Poll<Result<ReadStream, StreamStartError>> {
-        let mut exclusive = self.0.exclusive.lock().unwrap();
+        let mut exclusive = self.0.exclusive.lock_poison_tolerant();
         match exclusive.state {
             ConnectionState::Open => {
                 return Poll::Ready(Err(StreamStartError::ConnectionNotStarted));
@@ -204,7 +206,7 @@ impl Connection {
         &self,
         cx: &mut Context<'_>,
     ) -> Poll<Result<Bytes, DgramReceiveError>> {
-        let mut exclusive = self.0.exclusive.lock().unwrap();
+        let mut exclusive = self.0.exclusive.lock_poison_tolerant();
         match exclusive.state {
             ConnectionState::Open => {
                 return Poll::Ready(Err(DgramReceiveError::ConnectionNotStarted));
@@ -235,7 +237,7 @@ impl Connection {
         cx: &mut Context<'_>,
         buf: &Bytes,
     ) -> Poll<Result<(), DgramSendError>> {
-        let mut exclusive = self.0.exclusive.lock().unwrap();
+        let mut exclusive = self.0.exclusive.lock_poison_tolerant();
         match exclusive.state {
             ConnectionState::Open => {
                 return Poll::Ready(Err(DgramSendError::ConnectionNotStarted));
@@ -252,26 +254,19 @@ impl Connection {
             }
         }
 
-        let mut write_buf = exclusive.write_pool.pop().unwrap_or(WriteBuffer::new());
-        let _ = write_buf.put_zerocopy(buf);
-        let buffers = unsafe {
-            let (data, len) = write_buf.get_buffers();
-            std::slice::from_raw_parts(data, len)
-        };
-        let res = unsafe {
-            self.0.msquic_conn.datagram_send(
-                buffers,
-                msquic::SendFlags::NONE,
-                write_buf.into_raw() as *const _,
-            )
+        if !exclusive.dgram_send_enabled {
+            return Poll::Ready(Err(DgramSendError::Denied));
         }
-        .map_err(DgramSendError::OtherError);
-        Poll::Ready(res)
+        if buf.len() > exclusive.dgram_max_send_length as usize {
+            return Poll::Ready(Err(DgramSendError::TooBig));
+        }
+
+        Poll::Ready(exclusive.send_datagram(&self.0.msquic_conn, buf))
     }
 
     /// Send a datagram.
     pub fn send_datagram(&self, buf: &Bytes) -> Result<(), DgramSendError> {
-        let mut exclusive = self.0.exclusive.lock().unwrap();
+        let mut exclusive = self.0.exclusive.lock_poison_tolerant();
         match exclusive.state {
             ConnectionState::Open => {
                 return Err(DgramSendError::ConnectionNotStarted);
@@ -294,21 +289,7 @@ impl Connection {
             return Err(DgramSendError::TooBig);
         }
 
-        let mut write_buf = exclusive.write_pool.pop().unwrap_or(WriteBuffer::new());
-        let _ = write_buf.put_zerocopy(buf);
-        let buffers = unsafe {
-            let (data, len) = write_buf.get_buffers();
-            std::slice::from_raw_parts(data, len)
-        };
-        unsafe {
-            self.0.msquic_conn.datagram_send(
-                buffers,
-                msquic::SendFlags::NONE,
-                write_buf.into_raw() as *const _,
-            )
-        }
-        .map_err(DgramSendError::OtherError)?;
-        Ok(())
+        exclusive.send_datagram(&self.0.msquic_conn, buf)
     }
 
     /// Poll to shutdown the connection.
@@ -317,7 +298,7 @@ impl Connection {
         cx: &mut Context<'_>,
         error_code: u64,
     ) -> Poll<Result<(), ShutdownError>> {
-        let mut exclusive = self.0.exclusive.lock().unwrap();
+        let mut exclusive = self.0.exclusive.lock_poison_tolerant();
         match exclusive.state {
             ConnectionState::Open => {
                 return Poll::Ready(Err(ShutdownError::ConnectionNotStarted));
@@ -351,7 +332,7 @@ impl Connection {
 
     /// Shutdown the connection.
     pub fn shutdown(&self, error_code: u64) -> Result<(), ShutdownError> {
-        let mut exclusive = self.0.exclusive.lock().unwrap();
+        let mut exclusive = self.0.exclusive.lock_poison_tolerant();
         match exclusive.state {
             ConnectionState::Open | ConnectionState::Connecting => {
                 return Err(ShutdownError::ConnectionNotStarted);
@@ -556,7 +537,7 @@ impl Connection {
 
     /// Poll to receive events on the connection.
     pub fn poll_event(&self, cx: &mut Context<'_>) -> Poll<Result<ConnectionEvent, EventError>> {
-        let mut exclusive = self.0.exclusive.lock().unwrap();
+        let mut exclusive = self.0.exclusive.lock_poison_tolerant();
         match exclusive.state {
             ConnectionState::Open => {
                 return Poll::Ready(Err(EventError::ConnectionNotStarted));
@@ -583,7 +564,7 @@ impl Connection {
 
     /// Set the SSL key log file for the connection.
     pub fn set_sslkeylog_file(&self, file: File) -> Result<(), ConnectionError> {
-        let mut exclusive = self.0.exclusive.lock().unwrap();
+        let mut exclusive = self.0.exclusive.lock_poison_tolerant();
         if exclusive.sslkeylog_file.is_some() {
             return Err(ConnectionError::SslKeyLogFileAlreadySet);
         }
@@ -661,6 +642,43 @@ struct ConnectionInnerExclusive {
     tls_secrets: Option<Box<msquic::ffi::QUIC_TLS_SECRETS>>,
 }
 
+impl ConnectionInnerExclusive {
+    /// Sends `buf` as a datagram, reclaiming the send buffer if MsQuic rejects
+    /// the send.
+    ///
+    /// Ownership of the buffer is handed to MsQuic as a raw pointer and returned
+    /// via the DatagramSendStateChanged callback. On an error MsQuic never took
+    /// it and no callback fires, so it must be reclaimed here to avoid leaking
+    /// the buffer (and the `Bytes` it holds) on every failed send — otherwise a
+    /// peer that forces sends to fail could drive unbounded memory growth.
+    fn send_datagram(
+        &mut self,
+        msquic_conn: &msquic::Connection,
+        buf: &Bytes,
+    ) -> Result<(), DgramSendError> {
+        let mut write_buf = self.write_pool.pop().unwrap_or_else(WriteBuffer::new);
+        let _ = write_buf.put_zerocopy(buf);
+        let buffers = unsafe {
+            let (data, len) = write_buf.get_buffers();
+            std::slice::from_raw_parts(data, len)
+        };
+        let raw = write_buf.into_raw();
+        match unsafe {
+            msquic_conn.datagram_send(buffers, msquic::SendFlags::NONE, raw as *const _)
+        }
+        .map_err(DgramSendError::OtherError)
+        {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                let mut write_buf = unsafe { WriteBuffer::from_raw(raw) };
+                write_buf.reset();
+                self.write_pool.push(write_buf);
+                Err(e)
+            }
+        }
+    }
+}
+
 impl ConnectionInner {
     fn new(
         state: ConnectionState,
@@ -697,7 +715,7 @@ impl ConnectionInner {
     ) -> Result<(), msquic::Status> {
         trace!("ConnectionInner({:p}) Connected", self);
 
-        let mut exclusive = self.exclusive.lock().unwrap();
+        let mut exclusive = self.exclusive.lock_poison_tolerant();
         match (
             exclusive.tls_secrets.take(),
             exclusive.sslkeylog_file.take(),
@@ -710,6 +728,12 @@ impl ConnectionInner {
                     String::new()
                 };
 
+                // `SecretLength` is supplied by MsQuic; clamp it to the actual
+                // array capacity so a bogus value can never cause an
+                // out-of-bounds slice panic.
+                let secret_len = (tls_secrets.SecretLength as usize)
+                    .min(msquic::ffi::QUIC_TLS_SECRETS_MAX_SECRET_LEN as usize);
+
                 let _ = file.seek(SeekFrom::End(0));
 
                 if tls_secrets.IsSet.ClientEarlyTrafficSecret() != 0 {
@@ -717,10 +741,7 @@ impl ConnectionInner {
                         file,
                         "CLIENT_EARLY_TRAFFIC_SECRET {} {}",
                         client_random,
-                        hex::encode(
-                            &tls_secrets.ClientEarlyTrafficSecret
-                                [0..tls_secrets.SecretLength as usize]
-                        )
+                        hex::encode(&tls_secrets.ClientEarlyTrafficSecret[0..secret_len])
                     );
                 }
 
@@ -729,10 +750,7 @@ impl ConnectionInner {
                         file,
                         "CLIENT_HANDSHAKE_TRAFFIC_SECRET {} {}",
                         client_random,
-                        hex::encode(
-                            &tls_secrets.ClientHandshakeTrafficSecret
-                                [0..tls_secrets.SecretLength as usize]
-                        )
+                        hex::encode(&tls_secrets.ClientHandshakeTrafficSecret[0..secret_len])
                     );
                 }
 
@@ -741,10 +759,7 @@ impl ConnectionInner {
                         file,
                         "SERVER_HANDSHAKE_TRAFFIC_SECRET {} {}",
                         client_random,
-                        hex::encode(
-                            &tls_secrets.ServerHandshakeTrafficSecret
-                                [0..tls_secrets.SecretLength as usize]
-                        )
+                        hex::encode(&tls_secrets.ServerHandshakeTrafficSecret[0..secret_len])
                     );
                 }
 
@@ -753,9 +768,7 @@ impl ConnectionInner {
                         file,
                         "CLIENT_TRAFFIC_SECRET_0 {} {}",
                         client_random,
-                        hex::encode(
-                            &tls_secrets.ClientTrafficSecret0[0..tls_secrets.SecretLength as usize]
-                        )
+                        hex::encode(&tls_secrets.ClientTrafficSecret0[0..secret_len])
                     );
                 }
 
@@ -764,9 +777,7 @@ impl ConnectionInner {
                         file,
                         "SERVER_TRAFFIC_SECRET_0 {} {}",
                         client_random,
-                        hex::encode(
-                            &tls_secrets.ServerTrafficSecret0[0..tls_secrets.SecretLength as usize]
-                        )
+                        hex::encode(&tls_secrets.ServerTrafficSecret0[0..secret_len])
                     );
                 }
                 exclusive.tls_secrets = Some(tls_secrets);
@@ -792,7 +803,7 @@ impl ConnectionInner {
             status
         );
 
-        let mut exclusive = self.exclusive.lock().unwrap();
+        let mut exclusive = self.exclusive.lock_poison_tolerant();
         exclusive.state = ConnectionState::Shutdown;
         exclusive.error = Some(ConnectionError::ShutdownByTransport(status, error_code));
         exclusive
@@ -816,7 +827,7 @@ impl ConnectionInner {
     ) -> Result<(), msquic::Status> {
         trace!("ConnectionInner({:p}) App shutdown {}", self, error_code);
 
-        let mut exclusive = self.exclusive.lock().unwrap();
+        let mut exclusive = self.exclusive.lock_poison_tolerant();
         exclusive.state = ConnectionState::Shutdown;
         exclusive.error = Some(ConnectionError::ShutdownByPeer(error_code));
         exclusive
@@ -845,7 +856,7 @@ impl ConnectionInner {
         );
 
         {
-            let mut exclusive = self.exclusive.lock().unwrap();
+            let mut exclusive = self.exclusive.lock_poison_tolerant();
             exclusive.state = ConnectionState::ShutdownComplete;
             if exclusive.error.is_none() {
                 exclusive.error = Some(ConnectionError::ShutdownByLocal);
@@ -897,18 +908,26 @@ impl ConnectionInner {
             == msquic::StreamOpenFlags::UNIDIRECTIONAL
         {
             if let (Some(read_stream), None) = stream.split() {
-                let mut exclusive = self.exclusive.lock().unwrap();
+                let mut exclusive = self.exclusive.lock_poison_tolerant();
                 exclusive.inbound_uni_streams.push_back(read_stream);
                 exclusive
                     .inbound_uni_stream_waiters
                     .drain(..)
                     .for_each(|waker| waker.wake());
             } else {
-                unreachable!();
+                // A unidirectional stream opened by the peer must always split
+                // into exactly a read half. This should be unreachable, but a
+                // callback must never panic across the FFI boundary, so reject
+                // the stream with an error status instead of aborting.
+                error!(
+                    "ConnectionInner({:p}) peer unidirectional stream did not split into a read stream",
+                    self
+                );
+                return Err(msquic::StatusCode::QUIC_STATUS_INTERNAL_ERROR.into());
             }
         } else {
             {
-                let mut exclusive = self.exclusive.lock().unwrap();
+                let mut exclusive = self.exclusive.lock_poison_tolerant();
                 exclusive.inbound_streams.push_back(stream);
                 exclusive
                     .inbound_stream_waiters
@@ -945,7 +964,7 @@ impl ConnectionInner {
             send_enabled,
             max_send_length
         );
-        let mut exclusive = self.exclusive.lock().unwrap();
+        let mut exclusive = self.exclusive.lock_poison_tolerant();
         exclusive.dgram_send_enabled = send_enabled;
         exclusive.dgram_max_send_length = max_send_length;
         Ok(())
@@ -959,7 +978,7 @@ impl ConnectionInner {
         trace!("ConnectionInner({:p}) Datagram received", self);
         let buf = Bytes::copy_from_slice(buffer.as_bytes());
         {
-            let mut exclusive = self.exclusive.lock().unwrap();
+            let mut exclusive = self.exclusive.lock_poison_tolerant();
             exclusive.recv_buffers.push_back(buf);
             exclusive
                 .recv_waiters
@@ -982,7 +1001,7 @@ impl ConnectionInner {
         match state {
             msquic::DatagramSendState::Sent | msquic::DatagramSendState::Canceled => {
                 let mut write_buf = unsafe { WriteBuffer::from_raw(client_context) };
-                let mut exclusive = self.exclusive.lock().unwrap();
+                let mut exclusive = self.exclusive.lock_poison_tolerant();
                 write_buf.reset();
                 exclusive.write_pool.push(write_buf);
             }
@@ -997,15 +1016,22 @@ impl ConnectionInner {
         local_address: &msquic::Addr,
         observed_address: &msquic::Addr,
     ) -> Result<(), msquic::Status> {
-        let local_address = local_address.as_socket().expect("socket addr");
-        let observed_address = observed_address.as_socket().expect("socket addr");
+        let (Some(local_address), Some(observed_address)) =
+            (local_address.as_socket(), observed_address.as_socket())
+        else {
+            error!(
+                "ConnectionInner({:p}) Notify observed address with non-socket address",
+                self
+            );
+            return Ok(());
+        };
         trace!(
             "ConnectionInner({:p}) Notify observed address local_address:{} observed_address:{}",
             self,
             local_address,
             observed_address
         );
-        let mut exclusive = self.exclusive.lock().unwrap();
+        let mut exclusive = self.exclusive.lock_poison_tolerant();
         exclusive
             .events
             .push_back(ConnectionEvent::NotifyObservedAddress {
@@ -1025,14 +1051,20 @@ impl ConnectionInner {
         address: &msquic::Addr,
         sequence_number: u64,
     ) -> Result<(), msquic::Status> {
-        let address = address.as_socket().expect("socket addr");
+        let Some(address) = address.as_socket() else {
+            error!(
+                "ConnectionInner({:p}) Notify remote address added with non-socket address",
+                self
+            );
+            return Ok(());
+        };
         trace!(
             "ConnectionInner({:p}) Notify remote address added address:{} sequence_number:{}",
             self,
             address,
             sequence_number
         );
-        let mut exclusive = self.exclusive.lock().unwrap();
+        let mut exclusive = self.exclusive.lock_poison_tolerant();
         exclusive
             .events
             .push_back(ConnectionEvent::NotifyRemoteAddressAdded {
@@ -1052,15 +1084,22 @@ impl ConnectionInner {
         local_address: &msquic::Addr,
         remote_address: &msquic::Addr,
     ) -> Result<(), msquic::Status> {
-        let local_address = local_address.as_socket().expect("socket addr");
-        let remote_address = remote_address.as_socket().expect("socket addr");
+        let (Some(local_address), Some(remote_address)) =
+            (local_address.as_socket(), remote_address.as_socket())
+        else {
+            error!(
+                "ConnectionInner({:p}) path validated with non-socket address",
+                self
+            );
+            return Ok(());
+        };
         trace!(
             "ConnectionInner({:p}) path validated local_address:{} remote_address:{}",
             self,
             local_address,
             remote_address
         );
-        let mut exclusive = self.exclusive.lock().unwrap();
+        let mut exclusive = self.exclusive.lock_poison_tolerant();
         exclusive.events.push_back(ConnectionEvent::PathValidated {
             local_address,
             remote_address,
@@ -1082,7 +1121,7 @@ impl ConnectionInner {
             self,
             sequence_number
         );
-        let mut exclusive = self.exclusive.lock().unwrap();
+        let mut exclusive = self.exclusive.lock_poison_tolerant();
         exclusive
             .events
             .push_back(ConnectionEvent::NotifyRemoteAddressRemoved { sequence_number });
@@ -1094,6 +1133,22 @@ impl ConnectionInner {
     }
 
     fn callback_handler_impl(
+        &self,
+        connection: msquic::ConnectionRef,
+        ev: msquic::ConnectionEvent,
+    ) -> Result<(), msquic::Status> {
+        // This runs on a MsQuic-owned thread, invoked through an `extern "C"`
+        // trampoline. A panic unwinding across that FFI boundary is undefined
+        // behavior, so contain any panic here and turn it into an error status.
+        catch_unwind(AssertUnwindSafe(|| self.dispatch_event(connection, ev))).unwrap_or_else(
+            |_| {
+                error!("ConnectionInner({:p}) panic in callback handler", self);
+                Err(msquic::StatusCode::QUIC_STATUS_INTERNAL_ERROR.into())
+            },
+        )
+    }
+
+    fn dispatch_event(
         &self,
         _connection: msquic::ConnectionRef,
         ev: msquic::ConnectionEvent,
@@ -1311,7 +1366,7 @@ impl Future for OpenOutboundStream<'_> {
             ..
         } = *this;
 
-        let mut exclusive = conn.inner.exclusive.lock().unwrap();
+        let mut exclusive = conn.inner.exclusive.lock_poison_tolerant();
         match exclusive.state {
             ConnectionState::Open => {
                 return Poll::Ready(Err(StreamStartError::ConnectionNotStarted));

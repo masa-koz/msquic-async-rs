@@ -195,12 +195,17 @@ struct ListenerInnerExclusive {
     shutdown_complete_waiters: Vec<Waker>,
     sslkeylog_file: Option<std::fs::File>,
 }
+// SAFETY: the only non-auto-`Send`/`Sync` members are MsQuic handles, which are
+// documented to be thread-safe, and are always accessed under the enclosing
+// `Mutex`. Sharing this state across threads is therefore sound.
 unsafe impl Sync for ListenerInnerExclusive {}
 unsafe impl Send for ListenerInnerExclusive {}
 
 struct ListenerInnerShared {
     configuration: msquic::Configuration,
 }
+// SAFETY: `Configuration` wraps a MsQuic handle that MsQuic documents as
+// thread-safe, so it is sound to move and share across threads.
 unsafe impl Sync for ListenerInnerShared {}
 unsafe impl Send for ListenerInnerShared {}
 
