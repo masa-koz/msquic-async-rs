@@ -1,5 +1,7 @@
 use crate::buffer::{StreamRecvBuffer, WriteBuffer};
 use crate::connection::ConnectionError;
+use crate::registration::RundownGuard;
+use crate::sync::LockPoisonTolerant;
 
 #[cfg(feature = "msquic-2-5")]
 use msquic_v2_5 as msquic;
@@ -9,6 +11,8 @@ use seera_msquic as msquic;
 use std::collections::VecDeque;
 use std::fmt;
 use std::future::Future;
+use std::ops::Range;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, RwLock};
 use std::task::{ready, Context, Poll, Waker};
@@ -17,7 +21,7 @@ use bytes::Bytes;
 use libc::c_void;
 use rangemap::RangeSet;
 use thiserror::Error;
-use tracing::trace;
+use tracing::{error, trace};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum StreamType {
@@ -33,6 +37,7 @@ impl Stream {
     pub(crate) fn open(
         msquic_conn: &msquic::Connection,
         stream_type: StreamType,
+        guard: RundownGuard,
     ) -> Result<Self, StartError> {
         let flags = if stream_type == StreamType::Unidirectional {
             msquic::StreamOpenFlags::UNIDIRECTIONAL
@@ -54,6 +59,7 @@ impl Stream {
         let instance = Arc::new(StreamInstance {
             inner,
             msquic_stream,
+            _guard: guard,
         });
         trace!(
             "StreamInstance({:p}, Inner: {:p}, HQUIC: {:p}) Open by local",
@@ -65,7 +71,11 @@ impl Stream {
         Ok(Self(instance))
     }
 
-    pub(crate) fn from_raw(handle: msquic::ffi::HQUIC, stream_type: StreamType) -> Self {
+    pub(crate) fn from_raw(
+        handle: msquic::ffi::HQUIC,
+        stream_type: StreamType,
+        guard: RundownGuard,
+    ) -> Self {
         let msquic_stream = unsafe { msquic::Stream::from_raw(handle) };
         let send_state = if stream_type == StreamType::Bidirectional {
             StreamSendState::StartComplete
@@ -86,6 +96,7 @@ impl Stream {
         let stream = Self(Arc::new(StreamInstance {
             inner,
             msquic_stream,
+            _guard: guard,
         }));
         trace!(
             "StreamInstance({:p}, Inner: {:p}, HQUIC: {:p}, id: {:?}) Start by peer",
@@ -102,7 +113,7 @@ impl Stream {
         cx: &mut Context,
         failed_on_block: bool,
     ) -> Poll<Result<(), StartError>> {
-        let mut exclusive = self.0.inner.exclusive.lock().unwrap();
+        let mut exclusive = self.0.inner.exclusive.lock_poison_tolerant();
         trace!(
             "Stream(Inner: {:p}) poll_start state={:?}",
             self.0.inner,
@@ -416,6 +427,18 @@ impl WriteStream {
 pub(crate) struct StreamInstance {
     inner: Arc<StreamInner>,
     msquic_stream: msquic::Stream,
+    // Declared last so `msquic_stream`'s `StreamClose` runs before this guard
+    // decrements.
+    //
+    // Streams do not hold a native registration rundown reference -- the
+    // connection releases its own in `QuicConnUnregister` as soon as
+    // `ConnectionClose` runs, even with streams still open. But `StreamClose`
+    // queues an operation onto the connection's worker, and the worker pool is
+    // owned by the registration and freed by `RegistrationClose`. Tracking
+    // streams here keeps `Registration::wait_idle` pending until every
+    // `StreamClose` has happened, which is what makes dropping the registration
+    // afterwards safe.
+    _guard: RundownGuard,
 }
 
 impl StreamInstance {
@@ -550,7 +573,7 @@ impl StreamInstance {
         let res;
         let mut read_complete_buffers = Vec::new();
         {
-            let mut exclusive = self.inner.exclusive.lock().unwrap();
+            let mut exclusive = self.inner.exclusive.lock_poison_tolerant();
             match exclusive.recv_state {
                 StreamRecvState::Closed => {
                     return Poll::Ready(Err(ReadError::Closed));
@@ -672,7 +695,7 @@ impl StreamInstance {
     where
         T: FnMut(&mut WriteBuffer) -> WriteStatus<U>,
     {
-        let mut exclusive = self.inner.exclusive.lock().unwrap();
+        let mut exclusive = self.inner.exclusive.lock_poison_tolerant();
         match exclusive.send_state {
             StreamSendState::Closed => {
                 return Poll::Ready(Err(WriteError::Closed));
@@ -701,44 +724,41 @@ impl StreamInstance {
             let (data, len) = write_buf.get_buffers();
             std::slice::from_raw_parts(data, len)
         };
-        match status {
+        let (send_flags, val, finish) = match status {
             WriteStatus::Writable(val) | WriteStatus::Blocked(Some(val)) => {
-                match unsafe {
-                    self.msquic_stream.send(
-                        buffers,
-                        msquic::SendFlags::NONE,
-                        write_buf.into_raw() as *const _,
-                    )
-                }
-                .map_err(WriteError::OtherError)
-                {
-                    Ok(()) => Poll::Ready(Ok(Some(val))),
-                    Err(e) => Poll::Ready(Err(e)),
-                }
+                (msquic::SendFlags::NONE, Some(val), false)
             }
             WriteStatus::Blocked(None) => unreachable!(),
-            WriteStatus::Finished(val) => {
-                match unsafe {
-                    self.msquic_stream.send(
-                        buffers,
-                        msquic::SendFlags::FIN,
-                        write_buf.into_raw() as *const _,
-                    )
+            WriteStatus::Finished(val) => (msquic::SendFlags::FIN, val, true),
+        };
+        // Ownership of `write_buf` is handed to MsQuic, which returns it in the
+        // SendComplete callback. On an error MsQuic never took it and no
+        // completion will fire, so we must reclaim it here to avoid leaking the
+        // buffer (and any zerocopy `Bytes` it holds) on every failed send.
+        let raw = write_buf.into_raw();
+        match unsafe {
+            self.msquic_stream
+                .send(buffers, send_flags, raw as *const _)
+        }
+        .map_err(WriteError::OtherError)
+        {
+            Ok(()) => {
+                if finish {
+                    exclusive.send_state = StreamSendState::Shutdown;
                 }
-                .map_err(WriteError::OtherError)
-                {
-                    Ok(()) => {
-                        exclusive.send_state = StreamSendState::Shutdown;
-                        Poll::Ready(Ok(val))
-                    }
-                    Err(e) => Poll::Ready(Err(e)),
-                }
+                Poll::Ready(Ok(val))
+            }
+            Err(e) => {
+                let mut write_buf = unsafe { WriteBuffer::from_raw(raw) };
+                write_buf.reset();
+                exclusive.write_pool.push(write_buf);
+                Poll::Ready(Err(e))
             }
         }
     }
 
     fn poll_finish_write(&self, cx: &mut Context<'_>) -> Poll<Result<(), WriteError>> {
-        let mut exclusive = self.inner.exclusive.lock().unwrap();
+        let mut exclusive = self.inner.exclusive.lock_poison_tolerant();
         match exclusive.send_state {
             StreamSendState::Start => {
                 exclusive.start_waiters.push(cx.waker().clone());
@@ -779,7 +799,7 @@ impl StreamInstance {
         cx: &mut Context<'_>,
         error_code: u64,
     ) -> Poll<Result<(), WriteError>> {
-        let mut exclusive = self.inner.exclusive.lock().unwrap();
+        let mut exclusive = self.inner.exclusive.lock_poison_tolerant();
         match exclusive.send_state {
             StreamSendState::Start => {
                 exclusive.start_waiters.push(cx.waker().clone());
@@ -816,7 +836,7 @@ impl StreamInstance {
     }
 
     fn abort_write(&self, error_code: u64) -> Result<(), WriteError> {
-        let mut exclusive = self.inner.exclusive.lock().unwrap();
+        let mut exclusive = self.inner.exclusive.lock_poison_tolerant();
         match exclusive.send_state {
             StreamSendState::StartComplete => {
                 self.msquic_stream
@@ -834,7 +854,7 @@ impl StreamInstance {
         cx: &mut Context<'_>,
         error_code: u64,
     ) -> Poll<Result<(), ReadError>> {
-        let mut exclusive = self.inner.exclusive.lock().unwrap();
+        let mut exclusive = self.inner.exclusive.lock_poison_tolerant();
         match exclusive.recv_state {
             StreamRecvState::Start => {
                 exclusive.start_waiters.push(cx.waker().clone());
@@ -871,7 +891,7 @@ impl StreamInstance {
     }
 
     fn abort_read(&self, error_code: u64) -> Result<(), ReadError> {
-        let mut exclusive = self.inner.exclusive.lock().unwrap();
+        let mut exclusive = self.inner.exclusive.lock_poison_tolerant();
         match exclusive.recv_state {
             StreamRecvState::StartComplete => {
                 self.msquic_stream
@@ -895,37 +915,13 @@ impl StreamInstance {
             buffer_range.end - buffer_range.start
         );
 
-        let mut exclusive = self.inner.exclusive.lock().unwrap();
-        if !buffer_range.is_empty() {
-            exclusive.read_complete_map.insert(buffer_range);
-        }
-        let complete_len = if let Some(complete_range) = exclusive.read_complete_map.first() {
-            trace!(
-                "StreamInstance({:p}) complete read offset={} len={}",
-                self,
-                complete_range.start,
-                complete_range.end - complete_range.start
-            );
-
-            if complete_range.start == 0 && exclusive.read_complete_cursor < complete_range.end {
-                let complete_len = complete_range.end - exclusive.read_complete_cursor;
-                exclusive.read_complete_cursor = complete_range.end;
-                Some(complete_len)
-            } else if complete_range.start == 0
-                && exclusive.read_complete_cursor == complete_range.end
-                && buffer.offset() == complete_range.end
-                && buffer.is_empty()
-                && buffer.fin()
-            {
-                Some(0)
-            } else {
-                None
-            }
-        } else if buffer.is_empty() && buffer.fin() {
-            Some(0)
-        } else {
-            None
-        };
+        let mut exclusive = self.inner.exclusive.lock_poison_tolerant();
+        let complete_len = exclusive.register_read_complete(
+            buffer_range,
+            buffer.offset(),
+            buffer.is_empty(),
+            buffer.fin(),
+        );
         if let Some(complete_len) = complete_len {
             trace!(
                 "StreamInstance({:p}) call receive_complete len={}",
@@ -940,7 +936,7 @@ impl StreamInstance {
 impl Drop for StreamInstance {
     fn drop(&mut self) {
         trace!("StreamInstance({:p}) dropping", self);
-        let exclusive = self.inner.exclusive.lock().unwrap();
+        let exclusive = self.inner.exclusive.lock_poison_tolerant();
         match exclusive.state {
             StreamState::Start | StreamState::StartComplete => {
                 trace!(
@@ -981,6 +977,51 @@ struct StreamInnerExclusive {
     start_waiters: Vec<Waker>,
     read_waiters: Vec<Waker>,
     write_shutdown_waiters: Vec<Waker>,
+}
+
+impl StreamInnerExclusive {
+    /// Registers a completed buffer range and returns the number of bytes that
+    /// have become contiguously completable from the front of the receive
+    /// stream, if any.
+    ///
+    /// MsQuic reclaims received bytes cumulatively from the front of the stream,
+    /// so a range must never be reported as complete while an earlier range is
+    /// still outstanding (e.g. a chunk the application still holds). Tracking
+    /// completed ranges in `read_complete_map` and only advancing
+    /// `read_complete_cursor` over the contiguous prefix guarantees that, which
+    /// in turn prevents MsQuic from freeing memory the application still
+    /// references (a use-after-free).
+    fn register_read_complete(
+        &mut self,
+        buffer_range: Range<usize>,
+        buffer_offset: usize,
+        buffer_is_empty: bool,
+        buffer_fin: bool,
+    ) -> Option<usize> {
+        if !buffer_range.is_empty() {
+            self.read_complete_map.insert(buffer_range);
+        }
+        if let Some(complete_range) = self.read_complete_map.first() {
+            if complete_range.start == 0 && self.read_complete_cursor < complete_range.end {
+                let complete_len = complete_range.end - self.read_complete_cursor;
+                self.read_complete_cursor = complete_range.end;
+                Some(complete_len)
+            } else if complete_range.start == 0
+                && self.read_complete_cursor == complete_range.end
+                && buffer_offset == complete_range.end
+                && buffer_is_empty
+                && buffer_fin
+            {
+                Some(0)
+            } else {
+                None
+            }
+        } else if buffer_is_empty && buffer_fin {
+            Some(0)
+        } else {
+            None
+        }
+    }
 }
 
 struct StreamInnerShared {
@@ -1065,7 +1106,7 @@ impl StreamInner {
             peer_accepted,
             id,
         );
-        let mut exclusive = self.exclusive.lock().unwrap();
+        let mut exclusive = self.exclusive.lock_poison_tolerant();
         exclusive.start_status = Some(status.clone());
         if status.is_ok() && peer_accepted {
             exclusive.state = StreamState::StartComplete;
@@ -1107,7 +1148,7 @@ impl StreamInner {
             (flags & msquic::ReceiveFlags::FIN) == msquic::ReceiveFlags::FIN,
         );
 
-        let mut exclusive = self.exclusive.lock().unwrap();
+        let mut exclusive = self.exclusive.lock_poison_tolerant();
         exclusive.recv_len += *total_buffer_length as usize;
         exclusive.recv_buffers.push_back(recv_buffer);
         exclusive
@@ -1129,7 +1170,7 @@ impl StreamInner {
         );
 
         let mut write_buf = unsafe { WriteBuffer::from_raw(client_context) };
-        let mut exclusive = self.exclusive.lock().unwrap();
+        let mut exclusive = self.exclusive.lock_poison_tolerant();
         write_buf.reset();
         exclusive.write_pool.push(write_buf);
         Ok(())
@@ -1141,7 +1182,7 @@ impl StreamInner {
             self,
             self.shared.id.read()
         );
-        let mut exclusive = self.exclusive.lock().unwrap();
+        let mut exclusive = self.exclusive.lock_poison_tolerant();
         exclusive.recv_state = StreamRecvState::ShutdownComplete;
         exclusive
             .read_waiters
@@ -1156,7 +1197,7 @@ impl StreamInner {
             self,
             self.shared.id.read()
         );
-        let mut exclusive = self.exclusive.lock().unwrap();
+        let mut exclusive = self.exclusive.lock_poison_tolerant();
         exclusive.recv_state = StreamRecvState::ShutdownComplete;
         exclusive.recv_error_code = Some(error_code);
         exclusive
@@ -1172,7 +1213,7 @@ impl StreamInner {
             self,
             self.shared.id.read()
         );
-        let mut exclusive = self.exclusive.lock().unwrap();
+        let mut exclusive = self.exclusive.lock_poison_tolerant();
         exclusive.send_state = StreamSendState::ShutdownComplete;
         exclusive.send_error_code = Some(error_code);
         exclusive
@@ -1188,7 +1229,7 @@ impl StreamInner {
             self,
             self.shared.id.read()
         );
-        let mut exclusive = self.exclusive.lock().unwrap();
+        let mut exclusive = self.exclusive.lock_poison_tolerant();
         exclusive.send_state = StreamSendState::ShutdownComplete;
         exclusive
             .write_shutdown_waiters
@@ -1214,19 +1255,43 @@ impl StreamInner {
             self.shared.id.read()
         );
         {
-            let mut exclusive = self.exclusive.lock().unwrap();
+            let mut exclusive = self.exclusive.lock_poison_tolerant();
 
+            // Guard against a second ShutdownComplete: the receive-completion
+            // accounting below must run exactly once.
+            if exclusive.state == StreamState::ShutdownComplete {
+                return Ok(());
+            }
+
+            // Complete the receive buffers that were never delivered to the
+            // application. We must NOT blindly complete `recv_len -
+            // read_complete_cursor`: that range also covers chunks the
+            // application has taken but not yet dropped, and completing those
+            // bytes would let MsQuic free memory those chunks still point into
+            // (use-after-free). Feeding each undelivered buffer through the same
+            // contiguous-completion accounting as `read_complete` only completes
+            // bytes that are safe to reclaim now; any bytes still held by the
+            // application are left to complete when their chunk is dropped.
             if !exclusive.recv_buffers.is_empty() {
-                trace!(
-                    "StreamInner({:p}) read complete {}",
-                    self,
-                    exclusive.recv_len - exclusive.read_complete_cursor
-                );
-                exclusive.recv_buffers.clear();
-                if !app_close_in_progress {
-                    msquic_stream.receive_complete(
-                        (exclusive.recv_len - exclusive.read_complete_cursor) as u64,
+                let recv_buffers = std::mem::take(&mut exclusive.recv_buffers);
+                for buffer in &recv_buffers {
+                    let complete_len = exclusive.register_read_complete(
+                        buffer.range(),
+                        buffer.offset(),
+                        buffer.is_empty(),
+                        buffer.fin(),
                     );
+                    if let Some(complete_len) = complete_len {
+                        trace!(
+                            "StreamInner({:p}) shutdown receive_complete len={}",
+                            self,
+                            complete_len
+                        );
+                        // Once the app is tearing down MsQuic must not be called.
+                        if !app_close_in_progress {
+                            msquic_stream.receive_complete(complete_len as u64);
+                        }
+                    }
                 }
             }
 
@@ -1280,7 +1345,7 @@ impl StreamInner {
             self,
             self.shared.id.read()
         );
-        let mut exclusive = self.exclusive.lock().unwrap();
+        let mut exclusive = self.exclusive.lock_poison_tolerant();
         exclusive.state = StreamState::StartComplete;
         if self.shared.stream_type == StreamType::Bidirectional {
             exclusive.recv_state = StreamRecvState::StartComplete;
@@ -1294,6 +1359,22 @@ impl StreamInner {
     }
 
     fn callback_handler_impl(
+        &self,
+        msquic_stream: msquic::StreamRef,
+        ev: msquic::StreamEvent,
+    ) -> Result<(), msquic::Status> {
+        // This runs on a MsQuic-owned thread, invoked through an `extern "C"`
+        // trampoline. A panic unwinding across that FFI boundary is undefined
+        // behavior, so contain any panic here and turn it into an error status.
+        catch_unwind(AssertUnwindSafe(|| self.dispatch_event(msquic_stream, ev))).unwrap_or_else(
+            |_| {
+                error!("StreamInner({:p}) panic in callback handler", self);
+                Err(msquic::StatusCode::QUIC_STATUS_INTERNAL_ERROR.into())
+            },
+        )
+    }
+
+    fn dispatch_event(
         &self,
         msquic_stream: msquic::StreamRef,
         ev: msquic::StreamEvent,

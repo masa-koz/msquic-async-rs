@@ -4,7 +4,9 @@
 mod buffer;
 mod connection;
 mod listener;
+mod registration;
 mod stream;
+mod sync;
 
 #[cfg(feature = "msquic-latest")]
 pub use msquic;
@@ -20,6 +22,7 @@ pub use connection::{
     ShutdownError as ConnectionShutdownError, StartError as ConnectionStartError,
 };
 pub use listener::{ListenError, Listener};
+pub use registration::{Registration, WaitIdle};
 pub use stream::{
     ReadError, ReadStream, StartError as StreamStartError, Stream, StreamType, WriteError,
     WriteStream,

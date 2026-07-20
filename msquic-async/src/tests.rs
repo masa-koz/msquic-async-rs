@@ -27,7 +27,7 @@ async fn test_connection_start() {
     let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
     let listener = new_server(
         &registration,
         &msquic::Settings::new().set_IdleTimeoutMs(10000),
@@ -106,7 +106,7 @@ async fn test_connection_poll_shutdown() {
     let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
     // let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
     let listener = new_server(
         &registration,
         &msquic::Settings::new().set_IdleTimeoutMs(10000),
@@ -170,7 +170,7 @@ async fn test_connection_poll_shutdown() {
 /// Test for ['Listener::accept()']
 #[test(tokio::test)]
 async fn test_listener_accept() {
-    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
     let listener = new_server(
         &registration,
         &msquic::Settings::new().set_IdleTimeoutMs(10000),
@@ -230,7 +230,7 @@ async fn test_listener_accept() {
 async fn test_open_outbound_stream() {
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
 
     let listener = new_server(
         &registration,
@@ -321,7 +321,7 @@ async fn test_open_outbound_stream() {
 async fn test_open_outbound_stream_exceed_limit() -> Result<(), anyhow::Error> {
     let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
 
-    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
 
     let listener = new_server(
         &registration,
@@ -443,7 +443,7 @@ async fn test_open_outbound_stream_exceed_limit_and_accepted() {
     let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
 
     let listener = new_server(
         &registration,
@@ -582,7 +582,7 @@ async fn test_open_outbound_stream_exceed_limit_and_accepted() {
 async fn test_poll_write() {
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
 
     let listener = new_server(
         &registration,
@@ -659,7 +659,7 @@ async fn test_poll_write() {
 async fn test_write_chunk() {
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
 
     let listener = new_server(
         &registration,
@@ -734,7 +734,7 @@ async fn test_write_chunk() {
 async fn test_write_chunks() {
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
 
     let listener = new_server(
         &registration,
@@ -810,7 +810,7 @@ async fn test_poll_finish_write() {
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
     let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
 
-    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
 
     let listener = new_server(
         &registration,
@@ -886,7 +886,7 @@ async fn test_poll_abort_write() {
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
     let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
 
-    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
 
     let listener = new_server(
         &registration,
@@ -961,7 +961,7 @@ async fn test_poll_abort_write() {
 async fn test_poll_read() {
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
 
     let listener = new_server(
         &registration,
@@ -1037,7 +1037,7 @@ async fn test_poll_read() {
 async fn test_read_chunk() {
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
 
     let listener = new_server(
         &registration,
@@ -1141,7 +1141,7 @@ async fn test_read_chunk_empty_fin() {
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
     let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
 
-    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
 
     let listener = new_server(
         &registration,
@@ -1234,7 +1234,7 @@ async fn test_read_chunk_empty_fin() {
 async fn test_read_chunk_multi_recv() {
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
 
     let listener = new_server(
         &registration,
@@ -1337,7 +1337,7 @@ async fn test_poll_abort_read() {
     let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
 
     let listener = new_server(
         &registration,
@@ -1417,7 +1417,7 @@ async fn test_get_local_addr() {
     let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
     let listener = new_server(
         &registration,
         &msquic::Settings::new().set_IdleTimeoutMs(10000),
@@ -1486,7 +1486,7 @@ async fn test_get_remote_addr() {
     let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
     let listener = new_server(
         &registration,
         &msquic::Settings::new().set_IdleTimeoutMs(10000),
@@ -1608,7 +1608,7 @@ async fn datagram_validation() {
     let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
 
     let listener = new_server(
         &registration,
@@ -1687,7 +1687,7 @@ async fn datagram_validation() {
 async fn recv_datagram_after_peer_shutdown() {
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
 
     let listener = new_server(
         &registration,
@@ -1757,7 +1757,7 @@ async fn recv_datagram_after_peer_shutdown() {
 async fn recv_datagram_after_local_shutdown() {
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
-    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
 
     let listener = new_server(
         &registration,
@@ -1828,7 +1828,7 @@ async fn recv_datagram_after_local_shutdown() {
 async fn test_poll_event_queuing() {
     use crate::EventError;
 
-    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
     let listener = new_server(
         &registration,
         &msquic::Settings::new().set_IdleTimeoutMs(10000),
@@ -1910,7 +1910,7 @@ async fn test_poll_event_queuing() {
 #[cfg(feature = "msquic-seera")]
 #[test(tokio::test)]
 async fn test_poll_event_waker_notification() {
-    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
     let listener = new_server(
         &registration,
         &msquic::Settings::new().set_IdleTimeoutMs(10000),
@@ -1992,7 +1992,7 @@ async fn test_poll_event_waker_notification() {
 async fn test_poll_event_connection_lost_on_shutdown() {
     use crate::EventError;
 
-    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
     let listener = new_server(
         &registration,
         &msquic::Settings::new().set_IdleTimeoutMs(10000),
@@ -2064,16 +2064,257 @@ async fn test_poll_event_connection_lost_on_shutdown() {
     });
 }
 
+const WAIT_IDLE_BUSY: Duration = Duration::from_millis(200);
+const WAIT_IDLE_DRAIN: Duration = Duration::from_secs(5);
+
+fn test_settings() -> msquic::Settings {
+    msquic::Settings::new()
+        .set_IdleTimeoutMs(10000)
+        .set_PeerBidiStreamCount(1)
+        .set_PeerUnidiStreamCount(1)
+}
+
+/// Start a listener on an ephemeral loopback port and return it with its address.
+fn started_server(registration: &crate::Registration) -> (Listener, SocketAddr) {
+    let listener = new_server(registration, &test_settings()).unwrap();
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    listener
+        .start(&[msquic::BufferRef::from("test")], Some(addr))
+        .expect("listener start");
+    let server_addr = listener.local_addr().expect("listener local_addr");
+    (listener, server_addr)
+}
+
+async fn assert_busy(registration: &crate::Registration) {
+    assert!(
+        timeout(WAIT_IDLE_BUSY, registration.wait_idle())
+            .await
+            .is_err(),
+        "wait_idle() resolved while a tracked handle was still alive"
+    );
+}
+
+async fn assert_drains(registration: &crate::Registration) {
+    timeout(WAIT_IDLE_DRAIN, registration.wait_idle())
+        .await
+        .expect("wait_idle() did not resolve after all tracked handles were dropped");
+}
+
+/// A registration with nothing derived from it is idle immediately.
+#[test(tokio::test)]
+async fn test_registration_wait_idle_when_empty() {
+    let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    assert_drains(&registration).await;
+}
+
+/// A live `Listener` keeps `wait_idle()` pending; dropping it drains.
+#[test(tokio::test)]
+async fn test_registration_wait_idle_tracks_listener() {
+    let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let (listener, _server_addr) = started_server(&registration);
+
+    assert_busy(&registration).await;
+
+    listener.stop().await.unwrap();
+    // `stop()` completing is not enough: the handle is still open.
+    assert_busy(&registration).await;
+
+    drop(listener);
+    assert_drains(&registration).await;
+}
+
+/// A `Connection` that was never started is still tracked.
+#[test(tokio::test)]
+async fn test_registration_wait_idle_tracks_unstarted_connection() {
+    let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let conn = Connection::new(&registration).unwrap();
+
+    assert_busy(&registration).await;
+
+    drop(conn);
+    assert_drains(&registration).await;
+}
+
+/// The full loop: connect, shut down, drop everything, and confirm the
+/// registration drains. A timeout here is the `RegistrationClose` hang that
+/// `wait_idle()` exists to prevent.
+#[test(tokio::test)]
+async fn test_registration_wait_idle_after_connection_closed() {
+    let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let (listener, server_addr) = started_server(&registration);
+    let client_config = new_client_config(&registration, &test_settings()).unwrap();
+
+    let conn = Connection::new(&registration).unwrap();
+    let (server_conn, start_res) = tokio::join!(listener.accept(), async {
+        conn.start(
+            &client_config,
+            &format!("{}", server_addr.ip()),
+            server_addr.port(),
+        )
+        .await
+    });
+    let server_conn = server_conn.expect("accept");
+    start_res.expect("client start");
+
+    assert_busy(&registration).await;
+
+    registration.shutdown();
+    drop(server_conn);
+    drop(conn);
+    drop(listener);
+
+    assert_drains(&registration).await;
+
+    // Configurations are untracked, so they are dropped after wait_idle().
+    drop(client_config);
+    drop(registration);
+}
+
+/// The guard lives in the shared `ConnectionInstance`, so every clone must go
+/// before the registration drains. This is the case that `h3-msquic-async`
+/// hits, since it clones the connection into several boxed futures.
+#[test(tokio::test)]
+async fn test_registration_wait_idle_tracks_connection_clones() {
+    let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let conn = Connection::new(&registration).unwrap();
+    let clone = conn.clone();
+
+    drop(conn);
+    assert_busy(&registration).await;
+
+    drop(clone);
+    assert_drains(&registration).await;
+}
+
+/// An inbound connection that was accepted by MsQuic but never popped via
+/// `accept()` is queued inside the listener, and must still be tracked.
+#[test(tokio::test)]
+async fn test_registration_wait_idle_tracks_unaccepted_connection() {
+    let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let (listener, server_addr) = started_server(&registration);
+    let client_config = new_client_config(&registration, &test_settings()).unwrap();
+
+    let conn = Connection::new(&registration).unwrap();
+    conn.start(
+        &client_config,
+        &format!("{}", server_addr.ip()),
+        server_addr.port(),
+    )
+    .await
+    .expect("client start");
+
+    // Deliberately never call `listener.accept()`.
+    registration.shutdown();
+    drop(conn);
+    assert_busy(&registration).await;
+
+    // Dropping the listener closes the queued inbound connection too.
+    drop(listener);
+    assert_drains(&registration).await;
+
+    drop(client_config);
+}
+
+/// Connect a client to `listener` and return both ends.
+async fn connected_pair(
+    registration: &crate::Registration,
+    listener: &Listener,
+    server_addr: SocketAddr,
+    client_config: &msquic::Configuration,
+) -> (Connection, Connection) {
+    let conn = Connection::new(registration).unwrap();
+    let (server_conn, start_res) = tokio::join!(listener.accept(), async {
+        conn.start(
+            client_config,
+            &format!("{}", server_addr.ip()),
+            server_addr.port(),
+        )
+        .await
+    });
+    start_res.expect("client start");
+    (conn, server_conn.expect("accept"))
+}
+
+/// A locally opened stream that outlives its connection keeps `wait_idle()`
+/// pending.
+///
+/// Streams hold no native registration rundown reference -- the connection
+/// releases its own as soon as `ConnectionClose` runs -- but `StreamClose`
+/// queues an operation onto the connection's worker, and the worker pool is
+/// freed by `RegistrationClose`. Draining before the stream is closed would
+/// therefore permit a use-after-free.
+#[test(tokio::test)]
+async fn test_registration_wait_idle_tracks_stream_outliving_connection() {
+    let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let (listener, server_addr) = started_server(&registration);
+    let client_config = new_client_config(&registration, &test_settings()).unwrap();
+    let (conn, server_conn) =
+        connected_pair(&registration, &listener, server_addr, &client_config).await;
+
+    let stream = conn
+        .open_outbound_stream(crate::StreamType::Bidirectional, false)
+        .await
+        .expect("open outbound stream");
+
+    registration.shutdown();
+    drop(server_conn);
+    drop(conn);
+    drop(listener);
+
+    assert_busy(&registration).await;
+
+    drop(stream);
+    assert_drains(&registration).await;
+
+    drop(client_config);
+}
+
+/// The same guarantee for a peer-initiated stream, which is constructed in the
+/// connection callback rather than by the application.
+#[test(tokio::test)]
+async fn test_registration_wait_idle_tracks_inbound_stream() {
+    let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let (listener, server_addr) = started_server(&registration);
+    let client_config = new_client_config(&registration, &test_settings()).unwrap();
+    let (conn, server_conn) =
+        connected_pair(&registration, &listener, server_addr, &client_config).await;
+
+    let mut client_stream = conn
+        .open_outbound_stream(crate::StreamType::Bidirectional, false)
+        .await
+        .expect("open outbound stream");
+    let _ = poll_fn(|cx| client_stream.poll_write(cx, b"hello", false))
+        .await
+        .expect("write");
+
+    let server_stream = server_conn
+        .accept_inbound_stream()
+        .await
+        .expect("accept inbound stream");
+
+    registration.shutdown();
+    drop(conn);
+    drop(server_conn);
+    drop(listener);
+    drop(client_stream);
+
+    assert_busy(&registration).await;
+
+    drop(server_stream);
+    assert_drains(&registration).await;
+
+    drop(client_config);
+}
+
 #[cfg(not(windows))]
-fn new_server(
-    registration: &msquic::Registration,
-    settings: &msquic::Settings,
-) -> Result<Listener> {
+fn new_server(registration: &crate::Registration, settings: &msquic::Settings) -> Result<Listener> {
     use std::io::Write;
     use tempfile::NamedTempFile;
 
     let alpn = [msquic::BufferRef::from("test")];
-    let configuration = msquic::Configuration::open(registration, &alpn, Some(settings)).unwrap();
+    let configuration = registration
+        .open_configuration(&alpn, Some(settings))
+        .unwrap();
 
     let cert = include_bytes!("../examples/cert.pem");
     let key = include_bytes!("../examples/key.pem");
@@ -2098,10 +2339,7 @@ fn new_server(
 }
 
 #[cfg(windows)]
-fn new_server(
-    registration: &msquic::Registration,
-    settings: &msquic::Settings,
-) -> Result<Listener> {
+fn new_server(registration: &crate::Registration, settings: &msquic::Settings) -> Result<Listener> {
     use schannel::cert_context::{CertContext, KeySpec};
     use schannel::cert_store::{CertAdd, Memory};
     use schannel::crypt_prov::{AcquireOptions, ProviderType};
@@ -2109,7 +2347,9 @@ fn new_server(
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     let alpn = [msquic::BufferRef::from("test")];
-    let configuration = msquic::Configuration::open(registration, &alpn, Some(settings)).unwrap();
+    let configuration = registration
+        .open_configuration(&alpn, Some(settings))
+        .unwrap();
 
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
     let name = format!(
@@ -2156,11 +2396,13 @@ fn new_server(
 }
 
 fn new_client_config(
-    registration: &msquic::Registration,
+    registration: &crate::Registration,
     settings: &msquic::Settings,
 ) -> Result<msquic::Configuration> {
     let alpn = [msquic::BufferRef::from("test")];
-    let configuration = msquic::Configuration::open(registration, &alpn, Some(settings)).unwrap();
+    let configuration = registration
+        .open_configuration(&alpn, Some(settings))
+        .unwrap();
     let cred_config = msquic::CredentialConfig::new_client()
         .set_credential_flags(msquic::CredentialFlags::NO_CERTIFICATE_VALIDATION);
     configuration.load_credential(&cred_config).unwrap();

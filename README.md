@@ -11,13 +11,13 @@ Note that MsQuic, which is used to implement QUIC, needs to be built and linked.
 ### Windows, Linux, MacOS
 Add msquic-async in dependencies of your Cargo.toml.
 ```toml
-msquic-async = { version = "0.4.0" }
+msquic-async = { version = "0.5.0" }
 ```
 
 If you use SEERA MsQuic for the backend, please specify `msquic-seera` feature with
 `default-features = false`.
 ```toml
-msquic-async = { version = "0.4.0", default-features = false, features = ["tokio", "msquic-seera"] }
+msquic-async = { version = "0.5.0", default-features = false, features = ["tokio", "msquic-seera"] }
 ```
 
 The [examples](https://github.com/masa-koz/msquic-async-rs/tree/main/msquic-async/examples) directory can help get started.
@@ -25,13 +25,12 @@ The [examples](https://github.com/masa-koz/msquic-async-rs/tree/main/msquic-asyn
 ### Server
 
 ```rust
-    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default())?;
+    let registration = msquic_async::Registration::new(&msquic::RegistrationConfig::default())?;
 
     let alpn = [msquic::BufferRef::from("sample")];
 
     // create msquic-async listener
-    let configuration = msquic::Configuration::open(
-        &registration,
+    let configuration = registration.open_configuration(
         &alpn,
         Some(
             &msquic::Settings::new()
@@ -155,11 +154,10 @@ You can find a full server example in [`msquic-async/examples/server.rs`](https:
 ### Client
 
 ``` rust
-    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default())?;
+    let registration = msquic_async::Registration::new(&msquic::RegistrationConfig::default())?;
 
     let alpn = [msquic::BufferRef::from("sample")];
-    let configuration = msquic::Configuration::open(
-        &registration,
+    let configuration = registration.open_configuration(
         &alpn,
         Some(
             &msquic::Settings::new()
@@ -189,6 +187,27 @@ You can find a full server example in [`msquic-async/examples/server.rs`](https:
 ```
 
 You can find a full client example in [`msquic-async/examples/client.rs`](https://github.com/masa-koz/msquic-async-rs/tree/main/msquic-async/examples/client.rs)
+
+### Shutdown
+
+Dropping a registration calls `RegistrationClose`, which **blocks until every
+connection, listener and configuration created from it has been closed**. Since
+neither `shutdown()` nor the shutdown-complete events close a handle, use
+`Registration::wait_idle()` to observe that point:
+
+```rust
+    registration.shutdown();       // queue shutdown on all connections, stop all listeners
+    registration.wait_idle().await; // every Stream/Connection/Listener handle is now closed
+    drop(configuration);           // configurations are not tracked; drop them here
+    drop(registration);            // returns promptly
+```
+
+`wait_idle()` tracks every `msquic_async::Connection` (including clones),
+`Listener` and `Stream`. It does not track `Configuration`s --
+`ConfigurationClose` only drops the application's reference while connections
+hold their own, so a tracked configuration would report idle too early. A
+`Listener` owns the configuration passed to it, so only application-owned client
+configurations need the manual `drop` above.
 
 ## License
 

@@ -1,4 +1,5 @@
 use crate::connection::Connection;
+use crate::registration::{Registration, RundownGuard, RundownState};
 
 #[cfg(feature = "msquic-2-5")]
 use msquic_v2_5 as msquic;
@@ -18,12 +19,18 @@ use tracing::{error, info, trace};
 pub struct Listener {
     inner: Arc<ListenerInner>,
     msquic_listener: msquic::Listener,
+    // Declared last so that, on drop, `msquic_listener`'s `ListenerClose` runs
+    // first. That drops the boxed callback closure, hence the last
+    // `Arc<ListenerInner>`, hence the owned `Configuration` and any accepted
+    // but never-polled `Connection`s -- all before this guard decrements and
+    // wakes `Registration::wait_idle` waiters.
+    _guard: RundownGuard,
 }
 
 impl Listener {
     /// Create a new listener.
     pub fn new(
-        registration: &msquic::Registration,
+        registration: &Registration,
         configuration: msquic::Configuration,
     ) -> Result<Self, ListenError> {
         Self::new_common(registration, configuration, false)
@@ -31,22 +38,28 @@ impl Listener {
 
     /// Create a new QMUX listener.
     pub fn new_qmux(
-        registration: &msquic::Registration,
+        registration: &Registration,
         configuration: msquic::Configuration,
     ) -> Result<Self, ListenError> {
         Self::new_common(registration, configuration, true)
     }
 
     fn new_common(
-        registration: &msquic::Registration,
+        registration: &Registration,
         configuration: msquic::Configuration,
         is_qmux: bool,
     ) -> Result<Self, ListenError> {
-        let inner = Arc::new(ListenerInner::new(configuration));
+        let inner = Arc::new(ListenerInner::new(
+            configuration,
+            registration.state().clone(),
+        ));
         let inner_in_ev = inner.clone();
-        
+        // Reserve before opening: `QuicListenerOpen` acquires the registration
+        // rundown before it returns. If `open` fails, this guard drops and
+        // releases the reservation.
+        let guard = RundownGuard::new(registration.state().clone());
         let msquic_listener = if !is_qmux {
-            msquic::Listener::open(registration, move |_, ev| match ev {
+            msquic::Listener::open(registration.raw(), move |_, ev| match ev {
                 msquic::ListenerEvent::NewConnection { info, connection } => {
                     inner_in_ev.handle_event_new_connection(info, connection)
                 }
@@ -55,7 +68,7 @@ impl Listener {
                 } => inner_in_ev.handle_event_stop_complete(app_close_in_progress),
             })
         } else {
-            msquic::Listener::open_qmux(registration, move |_, ev| match ev {
+            msquic::Listener::open_qmux(registration.raw(), move |_, ev| match ev {
                 msquic::ListenerEvent::NewConnection { info, connection } => {
                     inner_in_ev.handle_event_new_connection(info, connection)
                 }
@@ -69,6 +82,7 @@ impl Listener {
         Ok(Self {
             inner,
             msquic_listener,
+            _guard: guard,
         })
     }
 
@@ -223,12 +237,18 @@ struct ListenerInnerExclusive {
     shutdown_complete_waiters: Vec<Waker>,
     sslkeylog_file: Option<std::fs::File>,
 }
+// SAFETY: the only non-auto-`Send`/`Sync` members are MsQuic handles, which are
+// documented to be thread-safe, and are always accessed under the enclosing
+// `Mutex`. Sharing this state across threads is therefore sound.
 unsafe impl Sync for ListenerInnerExclusive {}
 unsafe impl Send for ListenerInnerExclusive {}
 
 struct ListenerInnerShared {
     configuration: msquic::Configuration,
+    rundown: Arc<RundownState>,
 }
+// SAFETY: `Configuration` wraps a MsQuic handle that MsQuic documents as
+// thread-safe, so it is sound to move and share across threads.
 unsafe impl Sync for ListenerInnerShared {}
 unsafe impl Send for ListenerInnerShared {}
 
@@ -241,7 +261,7 @@ enum ListenerState {
 }
 
 impl ListenerInner {
-    fn new(configuration: msquic::Configuration) -> Self {
+    fn new(configuration: msquic::Configuration, rundown: Arc<RundownState>) -> Self {
         Self {
             exclusive: Mutex::new(ListenerInnerExclusive {
                 state: ListenerState::Open,
@@ -250,7 +270,10 @@ impl ListenerInner {
                 shutdown_complete_waiters: Vec::new(),
                 sslkeylog_file: None,
             }),
-            shared: ListenerInnerShared { configuration },
+            shared: ListenerInnerShared {
+                configuration,
+                rundown,
+            },
         }
     }
 
@@ -315,11 +338,21 @@ impl ListenerInner {
             (None, None)
         };
         connection.set_configuration(&self.shared.configuration)?;
+        // Reserved here, once the connection is about to be handed to a
+        // `Connection` that owns the handle. The earlier `?` paths never reach
+        // this point, so they cannot leak a reservation. There is no untracked
+        // window either: this callback only runs while the `Listener` itself is
+        // alive, and its own guard keeps the count above zero throughout.
+        let guard = RundownGuard::new(self.shared.rundown.clone());
         #[cfg(feature = "msquic-2-5")]
-        let new_conn =
-            Connection::from_raw(unsafe { connection.as_raw() }, tls_secrets, sslkeylog_file);
+        let new_conn = Connection::from_raw(
+            unsafe { connection.as_raw() },
+            tls_secrets,
+            sslkeylog_file,
+            guard,
+        );
         #[cfg(not(feature = "msquic-2-5"))]
-        let new_conn = Connection::from_raw(connection, tls_secrets, sslkeylog_file);
+        let new_conn = Connection::from_raw(connection, tls_secrets, sslkeylog_file, guard);
 
         exclusive.new_connections.push_back(new_conn);
         exclusive

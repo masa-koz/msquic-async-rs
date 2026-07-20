@@ -135,6 +135,10 @@ impl StreamRecvBuffer {
     }
 }
 
+// SAFETY: `StreamRecvBuffer` holds raw pointers into MsQuic-owned receive
+// memory. That memory stays valid until the buffer is completed (which happens
+// on drop, via the `Arc<StreamInstance>` the buffer keeps alive), so the
+// pointers are sound to move and share across threads.
 unsafe impl Sync for StreamRecvBuffer {}
 unsafe impl Send for StreamRecvBuffer {}
 
@@ -205,6 +209,11 @@ struct WriteBufferInner {
     zerocopy: Vec<Bytes>,
     buffers: Vec<msquic::BufferRef>,
 }
+// SAFETY: `WriteBufferInner` only owns `Vec`/`Bytes` data plus `BufferRef`s that
+// point back into that same owned data. Ownership is transferred to MsQuic as a
+// raw pointer for the duration of a send and handed back in the completion
+// callback, so the buffer is only ever accessed from one place at a time and is
+// safe to move and share across threads.
 unsafe impl Sync for WriteBufferInner {}
 unsafe impl Send for WriteBufferInner {}
 
