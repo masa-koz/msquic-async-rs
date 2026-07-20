@@ -34,11 +34,10 @@ async fn main() -> anyhow::Result<()> {
         .with_writer(std::io::stdout)
         .init();
 
-    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default())?;
+    let registration = msquic_async::Registration::new(&msquic::RegistrationConfig::default())?;
 
     let alpn = [msquic::BufferRef::from("sample")];
-    let configuration = msquic::Configuration::open(
-        &registration,
+    let configuration = registration.open_configuration(
         &alpn,
         Some(
             &msquic::Settings::new()
@@ -87,7 +86,7 @@ async fn main() -> anyhow::Result<()> {
         } else {
             cred_config.set_credential_flags(msquic::CredentialFlags::NO_CERTIFICATE_VALIDATION)
         };
-        
+
         configuration.load_credential(&cred_config)?;
     }
 
@@ -149,7 +148,8 @@ async fn main() -> anyhow::Result<()> {
 
     if let Some(ticket) = cmd_opts.ticket {
         let ticket = hex::decode(ticket)?;
-        conn.set_resumption_ticket(&ticket).context("failed to set resumption ticket")?;
+        conn.set_resumption_ticket(&ticket)
+            .context("failed to set resumption ticket")?;
     }
 
     let target = cmd_opts
@@ -174,7 +174,10 @@ async fn main() -> anyhow::Result<()> {
                         msquic_async::ConnectionEvent::ResumptionTicketReceived {
                             resumption_ticket,
                         } => {
-                            info!("Resumption Ticket received, length: {:?}", resumption_ticket.len());
+                            info!(
+                                "Resumption Ticket received, length: {:?}",
+                                resumption_ticket.len()
+                            );
                             eprint!("{}", hex::encode_upper(resumption_ticket));
                         }
                         _ => {}

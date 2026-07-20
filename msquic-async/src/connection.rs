@@ -684,10 +684,7 @@ impl Connection {
     }
 
     /// Set the resumption ticket for the connection.
-    pub fn set_resumption_ticket(
-        &self,
-        resumption_ticket: &[u8],
-    ) -> Result<(), ConnectionError> {
+    pub fn set_resumption_ticket(&self, resumption_ticket: &[u8]) -> Result<(), ConnectionError> {
         unsafe {
             msquic::Api::set_param(
                 self.0.msquic_conn.as_raw(),
@@ -698,7 +695,6 @@ impl Connection {
         }
         .map_err(ConnectionError::OtherError)
     }
-
 }
 
 struct ConnectionInstance {

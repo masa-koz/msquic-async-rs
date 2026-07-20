@@ -4,3 +4,4 @@
 [submodule "seera-msquic"]
 	path = seera-msquic
 	url = https://github.com/seera-networks/msquic.git
+	branch = masa-koz/qmux-01

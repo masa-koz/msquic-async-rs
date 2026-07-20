@@ -31,13 +31,12 @@ async fn main() -> anyhow::Result<()> {
 
     let _cmd_opts: CmdOptions = argh::from_env();
 
-    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default())?;
+    let registration = msquic_async::Registration::new(&msquic::RegistrationConfig::default())?;
 
     let alpn = [msquic::BufferRef::from("sample")];
 
     // create msquic-async listener
-    let configuration = msquic::Configuration::open(
-        &registration,
+    let configuration = registration.open_configuration(
         &alpn,
         Some(
             &&msquic::Settings::new()
