@@ -4,6 +4,12 @@ Status: implemented
 Target crate: `msquic-async` (0.4.1 → 0.5.0, breaking)
 Prior art: [`msquic-h3` commit `b4be2599`](https://github.com/youyuanwu/msquic-h3/commit/b4be2599d1b18710d79dec314817555efaa73668)
 
+Revision history:
+
+- Streams are now tracked. §9 originally claimed a `Stream` outliving its
+  `Connection` was an unrelated, pre-existing hazard; that was wrong on both
+  counts, and it was a hole in the `wait_idle()` guarantee. See §9.
+
 ## 1. Problem
 
 Dropping a `msquic::Registration` blocks — potentially forever — unless every
@@ -58,12 +64,16 @@ application dropped its `Connection`" says nothing about whether
 
 **Goals**
 
-- Provide `Registration::wait_idle()`, an async signal that resolves once no
-  `msquic-async` connection or listener holds the registration rundown.
-- Make it structurally impossible to create an untracked connection or listener,
-  by routing every construction path through the wrapper.
+- Provide `Registration::wait_idle()`, an async signal that resolves once it is
+  safe to drop the `Registration` — i.e. once every `msquic-async` handle that
+  `RegistrationClose` could invalidate has been closed.
+- Make it structurally impossible to create an untracked connection, listener or
+  stream, by routing every construction path through the wrapper.
 - Keep the tracking free of dependencies beyond `std`, usable from any executor,
   and correct under an arbitrary number of concurrent waiters.
+
+Note the goal is deliberately *not* "resolve once the native rundown has
+drained". Those two are not the same, and §9 is exactly where they diverge.
 
 **Non-goals**
 
@@ -72,7 +82,6 @@ application dropped its `Connection`" says nothing about whether
 - Making `Registration::drop` non-blocking, or adopting `RegistrationClose2`.
   The FFI entry exists (`msquic/src/rs/ffi/linux_bindings.rs:6726`) but is
   unused by the binding; wrapping it is a separate change.
-- Fixing the `Stream`-outlives-`Connection` hazard (§9).
 
 ## 3. Design overview
 
@@ -244,6 +253,39 @@ local, and locals drop *before* parameters, so the guard would decrement before
 `ConnectionClose`. Reserving after the last `?` makes every early-return path
 trivially leak-free.
 
+### 5.4 Streams
+
+```rust
+pub(crate) struct StreamInstance {
+    inner: Arc<StreamInner>,
+    msquic_stream: msquic::Stream,
+    _guard: RundownGuard,
+}
+```
+
+`Stream`, `ReadStream` and `WriteStream` all wrap `Arc<StreamInstance>`, so one
+guard covers every alias of a stream. See §9 for why streams are tracked at all.
+
+Streams are created from two places, and neither has a `Registration` in hand:
+
+- `Stream::open` from `OpenOutboundStream::poll` (`connection.rs`), which has
+  `&ConnectionInstance`.
+- `Stream::from_raw` from `handle_event_peer_stream_started`, a method on
+  `ConnectionInner` — the *callback context*, which does not hold the
+  `ConnectionInstance`.
+
+So `Arc<RundownState>` is stored on `ConnectionInner` (not only on
+`ConnectionInstance`), and both sites reserve with
+`RundownGuard::new(rundown.clone())`. `RundownGuard` exposes `state()` so
+`Connection::from_raw`, which receives a guard rather than a `Registration`, can
+seed `ConnectionInner` from it.
+
+No cycle is created: `RundownState` is owned by the `Registration` and refers to
+nothing. This is why the guard is *not* implemented by having `StreamInstance`
+hold an `Arc<ConnectionInstance>` — `ConnectionInnerExclusive.inbound_streams`
+holds `Stream` values, so that would make unaccepted inbound streams into a
+reference cycle and leak the connection.
+
 `Connection::from_raw` gains a `guard: RundownGuard` parameter. It is
 `pub(crate)`, so this is not a public API change.
 
@@ -307,10 +349,14 @@ let config = reg.open_configuration(&alpn, Some(&settings))?;
 // ... use connections ...
 
 reg.shutdown();          // queue shutdown on all connections
-reg.wait_idle().await;   // all ConnectionClose calls have completed
+reg.wait_idle().await;   // every Stream/Connection handle is now closed
 drop(config);            // now safe
 drop(reg);               // RegistrationClose returns promptly
 ```
+
+`wait_idle()` covers streams too, so a `Stream` held past its `Connection` keeps
+it pending rather than letting the registration be dropped out from under a
+pending `StreamClose` (§9).
 
 Server:
 
@@ -325,20 +371,76 @@ drop(reg);
 The order `shutdown()` then `wait_idle()` matters: `wait_idle()` alone will hang
 if nothing has asked the connections to go away.
 
-## 9. Known gaps (pre-existing, documented not fixed)
+## 9. Why streams are tracked
 
 `Stream`, `ReadStream`, and `WriteStream` are `Arc<StreamInstance>` holding a
 `msquic::Stream` handle and **no reference at all** to the connection
 (`stream.rs:33`, `:419-421`; `Stream::open` borrows `&msquic::Connection`,
-`stream.rs:36-37`). A `Stream` can therefore outlive the last `Connection`
-clone, in which case `StreamClose` runs against an already-closed parent.
+`stream.rs:36-37`). A `Stream` can therefore outlive the last `Connection` clone.
 
-This design does not change that, and deliberately does not add a stream-level
-guard: streams do not hold a registration rundown reference, so counting them
-would delay `wait_idle()` past the point the native rundown is already drained.
-The correct fix is to have `StreamInstance` hold an `Arc<ConnectionInstance>`,
-which is a separate change. Until then `wait_idle()` resolving does **not**
-imply all streams are closed.
+An earlier revision of this document called that a hazard and left it out of
+scope. Both halves of that were wrong.
+
+### 9.1 `StreamClose` after `ConnectionClose` is fine
+
+It is an explicitly supported, upstream-tested ordering:
+
+- `QuicStreamInitialize` takes `QUIC_CONN_REF_STREAM` ("A stream depends on the
+  connection", `connection.h:252`) at `stream.c:167`, and `QuicStreamFree`
+  releases it at `stream.c:244`. `MsQuicConnectionClose` only drops
+  `QUIC_CONN_REF_HANDLE_OWNER`, so the `QUIC_CONNECTION` allocation survives
+  until the last stream is freed — it is never a use-after-free.
+- `QuicConnCloseHandle` shuts streams down but frees none of them
+  (`connection.c:477` → `QuicStreamSetShutdown`, `stream_set.c:193`). The
+  application still owns every stream handle and must close each one.
+- No deadlock either. The silent shutdown drives each stream to
+  `ClientCallbackHandler = NULL`, so `MsQuicStreamClose` takes the
+  `AlreadyShutdownComplete` fire-and-forget path (`api.c:898-911`) and never
+  reaches the `CxPlatEventWaitForever` at `api.c:934`.
+- `seera-msquic/src/test/lib/OwnershipTest.cpp:258-269`
+  (`QuicTestConnectionCloseBeforeStreamClose`) closes the connection and then
+  calls `Stream.GetID()` / `Stream.SetPriority()` before the stream's destructor
+  runs `StreamClose`.
+
+### 9.2 The real constraint is `RegistrationClose`, and it is our problem
+
+`QuicConnCloseHandle` calls `QuicConnUnregister` →
+`QuicRegistrationRundownRelease` (`connection.c:494`, `:512`). **The connection
+releases the registration rundown as soon as its handle is closed, even with
+streams still open.** `RegistrationClose` therefore does not wait for them, and
+proceeds to `QuicWorkerPoolUninitialize` → `CXPLAT_FREE(WorkerPool)`
+(`worker.c:1047-1055`); the worker pool is per-registration
+(`registration.c:199-200`).
+
+But `MsQuicStreamClose` calls `QuicConnQueueOper`, which unconditionally
+enqueues onto `Connection->Worker` with no check of `HandleClosed` or
+`ShutdownComplete` (`connection.c:726-754`). So:
+
+```rust
+let stream = conn.open_outbound_stream(..).await?;
+drop(conn);                       // ConnectionClose; rundown released
+registration.wait_idle().await;   // would resolve if streams were untracked
+drop(registration);               // RegistrationClose frees the worker pool
+drop(stream);                     // StreamClose queues onto freed memory
+```
+
+That is a genuine use-after-free. It predates `wait_idle()` — the native rundown
+never protected against it — but `wait_idle()` makes it *worse* by giving callers
+a credible signal that dropping the registration is now safe.
+
+`docs/api/RegistrationClose.md` says only that configurations and connections
+must be closed first; it does not mention streams. So this ordering requirement
+is real but undocumented upstream.
+
+### 9.3 Resolution
+
+Streams get a `RundownGuard` (§5.4). Because the guard is about "may not outlive
+`RegistrationClose`" rather than "holds the native rundown", tracking an object
+that holds no rundown reference is correct rather than contradictory — it is
+precisely the gap the native rundown fails to cover.
+
+Consequence: `wait_idle()` now stays pending until every stream is closed, and
+resolving it means dropping the `Registration` is safe.
 
 ## 10. Memory ordering
 
@@ -404,6 +506,15 @@ Integration tests against real msquic, in `tests.rs`, all shipped:
     accepted by MsQuic but never popped from `new_connections` keeps
     `wait_idle()` pending until the listener is dropped.
 
+13. `test_registration_wait_idle_tracks_stream_outliving_connection` — a locally
+    opened stream held past its connection keeps `wait_idle()` pending (§9).
+14. `test_registration_wait_idle_tracks_inbound_stream` — the same for a
+    peer-initiated stream, which is built in the connection callback.
+
+Tests 13 and 14 were verified to be genuine regressions: with the stream guard
+removed, both fail on the `assert_busy` step with "wait_idle() resolved while a
+tracked handle was still alive".
+
 Not covered: a `set_configuration` failure in the inbound path. Under the final
 placement (§5.3) that path returns before any reservation exists, so there is no
 leak to test.
@@ -425,7 +536,11 @@ leak to test.
 - [x] Add integration tests 7–12.
 - [x] Bump `msquic-async` to 0.5.0 (and `h3-msquic-async` to 0.4.0, which
       depends on the breaking version).
+- [x] Add `_guard` to `StreamInstance` (declared after `msquic_stream`) and
+      `rundown: Arc<RundownState>` to `ConnectionInner`; add the `guard`
+      parameter to `Stream::open` / `Stream::from_raw`; expose
+      `RundownGuard::state()`. Integration tests 13–14.
 
 Verified with `cargo clippy --workspace --all-targets` (clean) and
-`cargo test -p msquic-async` (34 tests + 1 doctest, all passing), plus clippy
+`cargo test -p msquic-async` (36 tests + 1 doctest, all passing), plus clippy
 runs against the `msquic-2-5` and `msquic-seera` backends.

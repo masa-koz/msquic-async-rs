@@ -1,5 +1,6 @@
 use crate::buffer::{StreamRecvBuffer, WriteBuffer};
 use crate::connection::ConnectionError;
+use crate::registration::RundownGuard;
 use crate::sync::LockPoisonTolerant;
 
 #[cfg(feature = "msquic-2-5")]
@@ -36,6 +37,7 @@ impl Stream {
     pub(crate) fn open(
         msquic_conn: &msquic::Connection,
         stream_type: StreamType,
+        guard: RundownGuard,
     ) -> Result<Self, StartError> {
         let flags = if stream_type == StreamType::Unidirectional {
             msquic::StreamOpenFlags::UNIDIRECTIONAL
@@ -57,6 +59,7 @@ impl Stream {
         let instance = Arc::new(StreamInstance {
             inner,
             msquic_stream,
+            _guard: guard,
         });
         trace!(
             "StreamInstance({:p}, Inner: {:p}, HQUIC: {:p}) Open by local",
@@ -68,7 +71,11 @@ impl Stream {
         Ok(Self(instance))
     }
 
-    pub(crate) fn from_raw(handle: msquic::ffi::HQUIC, stream_type: StreamType) -> Self {
+    pub(crate) fn from_raw(
+        handle: msquic::ffi::HQUIC,
+        stream_type: StreamType,
+        guard: RundownGuard,
+    ) -> Self {
         let msquic_stream = unsafe { msquic::Stream::from_raw(handle) };
         let send_state = if stream_type == StreamType::Bidirectional {
             StreamSendState::StartComplete
@@ -89,6 +96,7 @@ impl Stream {
         let stream = Self(Arc::new(StreamInstance {
             inner,
             msquic_stream,
+            _guard: guard,
         }));
         trace!(
             "StreamInstance({:p}, Inner: {:p}, HQUIC: {:p}, id: {:?}) Start by peer",
@@ -419,6 +427,18 @@ impl WriteStream {
 pub(crate) struct StreamInstance {
     inner: Arc<StreamInner>,
     msquic_stream: msquic::Stream,
+    // Declared last so `msquic_stream`'s `StreamClose` runs before this guard
+    // decrements.
+    //
+    // Streams do not hold a native registration rundown reference -- the
+    // connection releases its own in `QuicConnUnregister` as soon as
+    // `ConnectionClose` runs, even with streams still open. But `StreamClose`
+    // queues an operation onto the connection's worker, and the worker pool is
+    // owned by the registration and freed by `RegistrationClose`. Tracking
+    // streams here keeps `Registration::wait_idle` pending until every
+    // `StreamClose` has happened, which is what makes dropping the registration
+    // afterwards safe.
+    _guard: RundownGuard,
 }
 
 impl StreamInstance {

@@ -1,5 +1,5 @@
 use crate::buffer::WriteBuffer;
-use crate::registration::{Registration, RundownGuard};
+use crate::registration::{Registration, RundownGuard, RundownState};
 use crate::stream::{ReadStream, StartError as StreamStartError, Stream, StreamType};
 use crate::sync::LockPoisonTolerant;
 
@@ -33,7 +33,12 @@ impl Connection {
     ///
     /// The connection is not started until `start` is called.
     pub fn new(registration: &Registration) -> Result<Self, ConnectionError> {
-        let inner = Arc::new(ConnectionInner::new(ConnectionState::Open, None, None));
+        let inner = Arc::new(ConnectionInner::new(
+            ConnectionState::Open,
+            None,
+            None,
+            registration.state().clone(),
+        ));
         let inner_in_ev = inner.clone();
         // Reserve before opening: `QuicConnRegister` acquires the registration
         // rundown during `ConnectionOpen`, so reserving first leaves no window
@@ -70,6 +75,7 @@ impl Connection {
             ConnectionState::Connected,
             tls_secrets,
             sslkeylog_file,
+            guard.state().clone(),
         ));
         let inner_in_ev = inner.clone();
         msquic_conn.set_callback_handler(move |conn_ref, ev| {
@@ -642,6 +648,9 @@ impl Drop for ConnectionInstance {
 
 struct ConnectionInner {
     exclusive: Mutex<ConnectionInnerExclusive>,
+    /// Kept here, rather than only on `ConnectionInstance`, so the callback
+    /// context can reserve for peer-initiated streams.
+    rundown: Arc<RundownState>,
 }
 
 struct ConnectionInnerExclusive {
@@ -706,8 +715,10 @@ impl ConnectionInner {
         state: ConnectionState,
         tls_secrets: Option<Box<msquic::ffi::QUIC_TLS_SECRETS>>,
         sslkeylog_file: Option<File>,
+        rundown: Arc<RundownState>,
     ) -> Self {
         Self {
+            rundown,
             exclusive: Mutex::new(ConnectionInnerExclusive {
                 state,
                 error: None,
@@ -925,7 +936,11 @@ impl ConnectionInner {
             stream_type
         );
 
-        let stream = Stream::from_raw(unsafe { stream.as_raw() }, stream_type);
+        let stream = Stream::from_raw(
+            unsafe { stream.as_raw() },
+            stream_type,
+            RundownGuard::new(self.rundown.clone()),
+        );
         if (flags & msquic::StreamOpenFlags::UNIDIRECTIONAL)
             == msquic::StreamOpenFlags::UNIDIRECTIONAL
         {
@@ -1405,7 +1420,11 @@ impl Future for OpenOutboundStream<'_> {
             }
         }
         if stream.is_none() {
-            match Stream::open(&conn.msquic_conn, stream_type.take().unwrap()) {
+            match Stream::open(
+                &conn.msquic_conn,
+                stream_type.take().unwrap(),
+                RundownGuard::new(conn.rundown.clone()),
+            ) {
                 Ok(new_stream) => {
                     *stream = Some(new_stream);
                 }

@@ -197,17 +197,17 @@ neither `shutdown()` nor the shutdown-complete events close a handle, use
 
 ```rust
     registration.shutdown();       // queue shutdown on all connections, stop all listeners
-    registration.wait_idle().await; // every Connection/Listener handle is now closed
+    registration.wait_idle().await; // every Stream/Connection/Listener handle is now closed
     drop(configuration);           // configurations are not tracked; drop them here
     drop(registration);            // returns promptly
 ```
 
-`wait_idle()` tracks every `msquic_async::Connection` (including clones) and
-`Listener`. It does not track `Configuration`s -- `ConfigurationClose` only
-drops the application's reference while connections hold their own, so a tracked
-configuration would report idle too early. A `Listener` owns the configuration
-passed to it, so only application-owned client configurations need the manual
-`drop` above. Streams are not tracked either; see the crate docs for details.
+`wait_idle()` tracks every `msquic_async::Connection` (including clones),
+`Listener` and `Stream`. It does not track `Configuration`s --
+`ConfigurationClose` only drops the application's reference while connections
+hold their own, so a tracked configuration would report idle too early. A
+`Listener` owns the configuration passed to it, so only application-owned client
+configurations need the manual `drop` above.
 
 ## License
 
