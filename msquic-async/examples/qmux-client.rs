@@ -168,22 +168,16 @@ async fn main() -> anyhow::Result<()> {
     {
         let conn = conn.clone();
         tokio::spawn(async move {
-            loop {
-                if let Ok(event) = poll_fn(|cx| conn.poll_event(cx)).await {
-                    match event {
-                        msquic_async::ConnectionEvent::ResumptionTicketReceived {
-                            resumption_ticket,
-                        } => {
-                            info!(
-                                "Resumption Ticket received, length: {:?}",
-                                resumption_ticket.len()
-                            );
-                            eprint!("{}", hex::encode_upper(resumption_ticket));
-                        }
-                        _ => {}
-                    }
-                } else {
-                    break;
+            while let Ok(event) = poll_fn(|cx| conn.poll_event(cx)).await {
+                if let msquic_async::ConnectionEvent::ResumptionTicketReceived {
+                    resumption_ticket,
+                } = event
+                {
+                    info!(
+                        "Resumption Ticket received, length: {:?}",
+                        resumption_ticket.len()
+                    );
+                    eprint!("{}", hex::encode_upper(resumption_ticket));
                 }
             }
             anyhow::Result::<()>::Ok(())
