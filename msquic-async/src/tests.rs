@@ -2068,7 +2068,10 @@ const WAIT_IDLE_BUSY: Duration = Duration::from_millis(200);
 const WAIT_IDLE_DRAIN: Duration = Duration::from_secs(5);
 
 fn test_settings() -> msquic::Settings {
-    msquic::Settings::new().set_IdleTimeoutMs(10000)
+    msquic::Settings::new()
+        .set_IdleTimeoutMs(10000)
+        .set_PeerBidiStreamCount(1)
+        .set_PeerUnidiStreamCount(1)
 }
 
 /// Start a listener on an ephemeral loopback port and return it with its address.
@@ -2207,6 +2210,97 @@ async fn test_registration_wait_idle_tracks_unaccepted_connection() {
 
     // Dropping the listener closes the queued inbound connection too.
     drop(listener);
+    assert_drains(&registration).await;
+
+    drop(client_config);
+}
+
+/// Connect a client to `listener` and return both ends.
+async fn connected_pair(
+    registration: &crate::Registration,
+    listener: &Listener,
+    server_addr: SocketAddr,
+    client_config: &msquic::Configuration,
+) -> (Connection, Connection) {
+    let conn = Connection::new(registration).unwrap();
+    let (server_conn, start_res) = tokio::join!(listener.accept(), async {
+        conn.start(
+            client_config,
+            &format!("{}", server_addr.ip()),
+            server_addr.port(),
+        )
+        .await
+    });
+    start_res.expect("client start");
+    (conn, server_conn.expect("accept"))
+}
+
+/// A locally opened stream that outlives its connection keeps `wait_idle()`
+/// pending.
+///
+/// Streams hold no native registration rundown reference -- the connection
+/// releases its own as soon as `ConnectionClose` runs -- but `StreamClose`
+/// queues an operation onto the connection's worker, and the worker pool is
+/// freed by `RegistrationClose`. Draining before the stream is closed would
+/// therefore permit a use-after-free.
+#[test(tokio::test)]
+async fn test_registration_wait_idle_tracks_stream_outliving_connection() {
+    let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let (listener, server_addr) = started_server(&registration);
+    let client_config = new_client_config(&registration, &test_settings()).unwrap();
+    let (conn, server_conn) =
+        connected_pair(&registration, &listener, server_addr, &client_config).await;
+
+    let stream = conn
+        .open_outbound_stream(crate::StreamType::Bidirectional, false)
+        .await
+        .expect("open outbound stream");
+
+    registration.shutdown();
+    drop(server_conn);
+    drop(conn);
+    drop(listener);
+
+    assert_busy(&registration).await;
+
+    drop(stream);
+    assert_drains(&registration).await;
+
+    drop(client_config);
+}
+
+/// The same guarantee for a peer-initiated stream, which is constructed in the
+/// connection callback rather than by the application.
+#[test(tokio::test)]
+async fn test_registration_wait_idle_tracks_inbound_stream() {
+    let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let (listener, server_addr) = started_server(&registration);
+    let client_config = new_client_config(&registration, &test_settings()).unwrap();
+    let (conn, server_conn) =
+        connected_pair(&registration, &listener, server_addr, &client_config).await;
+
+    let mut client_stream = conn
+        .open_outbound_stream(crate::StreamType::Bidirectional, false)
+        .await
+        .expect("open outbound stream");
+    let _ = poll_fn(|cx| client_stream.poll_write(cx, b"hello", false))
+        .await
+        .expect("write");
+
+    let server_stream = server_conn
+        .accept_inbound_stream()
+        .await
+        .expect("accept inbound stream");
+
+    registration.shutdown();
+    drop(conn);
+    drop(server_conn);
+    drop(listener);
+    drop(client_stream);
+
+    assert_busy(&registration).await;
+
+    drop(server_stream);
     assert_drains(&registration).await;
 
     drop(client_config);

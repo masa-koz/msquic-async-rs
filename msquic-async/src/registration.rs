@@ -13,21 +13,20 @@ use std::task::{Context, Poll, Waker};
 use tracing::{trace, warn};
 
 /// Wakers for all outstanding [`WaitIdle`] futures.
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct Waiters {
     next: u64,
     map: HashMap<u64, Waker>,
 }
 
 /// Shared rundown-tracking state, owned by a [`Registration`] and cloned into
-/// every tracked handle (connections and listeners).
-#[derive(Default)]
+/// every tracked handle (connections, listeners and streams).
+#[derive(Debug, Default)]
 pub(crate) struct RundownState {
-    /// Outstanding reservations for live tracked handles (connections +
-    /// listeners). Reserved before the handle is opened and released after it
-    /// is closed, so it conservatively over-counts relative to the native
-    /// `Registration->Rundown`: `active == 0` implies the native rundown holds
-    /// no msquic-async object, never the reverse.
+    /// Outstanding reservations for live tracked handles (connections,
+    /// listeners and streams). Reserved before the handle is opened and
+    /// released after it is closed, so `active == 0` implies every handle that
+    /// must outlive `RegistrationClose` has been closed.
     active: AtomicUsize,
     /// Wakers for all outstanding `wait_idle` futures. Drained and woken when
     /// `active` transitions to 0. Supports any number of concurrent waiters.
@@ -37,8 +36,9 @@ pub(crate) struct RundownState {
 /// RAII guard that holds one unit of a [`RundownState`]'s `active` count.
 ///
 /// Store it as the field declared *after* the MsQuic handle it guards so that,
-/// on drop, the handle's Close (which releases the native registration rundown
-/// reference) runs before this guard decrements and wakes waiters.
+/// on drop, the handle's Close runs before this guard decrements and wakes
+/// waiters.
+#[derive(Debug)]
 pub(crate) struct RundownGuard {
     state: Arc<RundownState>,
 }
@@ -47,6 +47,12 @@ impl RundownGuard {
     pub(crate) fn new(state: Arc<RundownState>) -> Self {
         state.active.fetch_add(1, Ordering::Relaxed);
         Self { state }
+    }
+
+    /// The state this guard belongs to, so a tracked handle can reserve for the
+    /// children it creates.
+    pub(crate) fn state(&self) -> &Arc<RundownState> {
+        &self.state
     }
 }
 
@@ -69,16 +75,16 @@ impl Drop for RundownGuard {
     }
 }
 
-/// MsQuic `Registration` wrapper that tracks live connections and listeners, so
-/// teardown can wait for the rundown to drain before the blocking
+/// MsQuic `Registration` wrapper that tracks live connections, listeners and
+/// streams, so teardown can wait for them before the blocking
 /// `RegistrationClose`.
 ///
 /// Dropping a raw [`msquic::Registration`] blocks until every child handle has
 /// been closed. Neither `shutdown()` nor the `SHUTDOWN_COMPLETE` /
 /// `STOP_COMPLETE` events close a handle, so there is no way to observe that
-/// point from the outside. This wrapper counts every [`crate::Connection`] and
-/// [`crate::Listener`] created from it and exposes [`Registration::wait_idle`],
-/// which resolves once they are all closed.
+/// point from the outside. This wrapper counts every [`crate::Connection`],
+/// [`crate::Listener`] and [`crate::Stream`] created from it and exposes
+/// [`Registration::wait_idle`], which resolves once they are all closed.
 ///
 /// The raw handle is intentionally not public: every rundown-holding handle
 /// must be created through a controlled entry point ([`crate::Connection::new`],
@@ -143,15 +149,17 @@ impl Registration {
         msquic::Configuration::open(&self.inner, alpn, settings)
     }
 
-    /// Resolves once no [`crate::Connection`] or [`crate::Listener`] created
-    /// from this registration holds its rundown.
+    /// Resolves once every [`crate::Connection`], [`crate::Listener`] and
+    /// [`crate::Stream`] created from this registration has been closed, i.e.
+    /// once it is safe to drop the `Registration`.
     ///
     /// Call it after [`Registration::shutdown`] (and after dropping any
     /// `Listener`); on its own it will simply stay pending, because nothing has
     /// asked the connections to go away.
     ///
-    /// Note that streams are not tracked: a resolved `wait_idle()` does not
-    /// imply every [`crate::Stream`] has been closed.
+    /// Streams are included even though they hold no native registration
+    /// rundown reference: `StreamClose` queues work onto the connection's
+    /// worker, and that worker pool is freed by `RegistrationClose`.
     pub fn wait_idle(&self) -> WaitIdle {
         WaitIdle {
             state: self.state.clone(),
