@@ -11,8 +11,8 @@ argh = "0.1.10"
 bytes = "1.5.0"
 futures = "0.3.30"
 futures-io = "0.3.30"
-h3 = "0.0.8"
-h3-datagram = "0.0.2"
+h3 = { git = "https://github.com/hyperium/h3", rev = "385da3ad93407ec8eed15172f63561f6fb2bca40" }
+h3-datagram = { git = "https://github.com/hyperium/h3", rev = "385da3ad93407ec8eed15172f63561f6fb2bca40" }
 hex = "0.4"
 http = "1"
 libc = "0.2.153"
