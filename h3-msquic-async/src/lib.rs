@@ -77,7 +77,8 @@ fn convert_connection_error(e: msquic_async::ConnectionError) -> ConnectionError
             }
         }
 
-        error @ msquic_async::ConnectionError::ShutdownByLocal
+        error @ msquic_async::ConnectionError::ConnectionNotStarted
+        | error @ msquic_async::ConnectionError::ShutdownByLocal
         | error @ msquic_async::ConnectionError::ConnectionClosed
         | error @ msquic_async::ConnectionError::SslKeyLogFileAlreadySet
         | error @ msquic_async::ConnectionError::OtherError(_) => {

@@ -54,3 +54,12 @@ tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["fmt", "ansi", "env-filter", "time", "tracing-log"] }
+
+# QMUX is only exposed by the seera backend.
+[[example]]
+name = "h3-qmux-client"
+required-features = ["msquic-seera"]
+
+[[example]]
+name = "h3-qmux-server"
+required-features = ["msquic-seera"]

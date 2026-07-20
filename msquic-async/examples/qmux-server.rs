@@ -39,7 +39,7 @@ async fn main() -> anyhow::Result<()> {
     let configuration = registration.open_configuration(
         &alpn,
         Some(
-            &&msquic::Settings::new()
+            &msquic::Settings::new()
                 .set_IdleTimeoutMs(10000)
                 .set_ServerResumptionLevel(msquic::ServerResumptionLevel::ResumeAndZerortt)
                 .set_PeerBidiStreamCount(100)

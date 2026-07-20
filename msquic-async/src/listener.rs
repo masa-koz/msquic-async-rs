@@ -37,6 +37,10 @@ impl Listener {
     }
 
     /// Create a new QMUX listener.
+    ///
+    /// Only available with the `msquic-seera` backend, which is the only one
+    /// that exposes `ListenerOpenQmux`.
+    #[cfg(feature = "msquic-seera")]
     pub fn new_qmux(
         registration: &Registration,
         configuration: msquic::Configuration,
@@ -47,7 +51,7 @@ impl Listener {
     fn new_common(
         registration: &Registration,
         configuration: msquic::Configuration,
-        is_qmux: bool,
+        #[cfg_attr(not(feature = "msquic-seera"), allow(unused_variables))] is_qmux: bool,
     ) -> Result<Self, ListenError> {
         let inner = Arc::new(ListenerInner::new(
             configuration,
@@ -58,16 +62,10 @@ impl Listener {
         // rundown before it returns. If `open` fails, this guard drops and
         // releases the reservation.
         let guard = RundownGuard::new(registration.state().clone());
-        let msquic_listener = if !is_qmux {
-            msquic::Listener::open(registration.raw(), move |_, ev| match ev {
-                msquic::ListenerEvent::NewConnection { info, connection } => {
-                    inner_in_ev.handle_event_new_connection(info, connection)
-                }
-                msquic::ListenerEvent::StopComplete {
-                    app_close_in_progress,
-                } => inner_in_ev.handle_event_stop_complete(app_close_in_progress),
-            })
-        } else {
+        // `is_qmux` can only be true on the seera backend: `new_qmux` is gated
+        // on it, so the other backends never reach the QMUX branch.
+        #[cfg(feature = "msquic-seera")]
+        let open_result = if is_qmux {
             msquic::Listener::open_qmux(registration.raw(), move |_, ev| match ev {
                 msquic::ListenerEvent::NewConnection { info, connection } => {
                     inner_in_ev.handle_event_new_connection(info, connection)
@@ -76,8 +74,26 @@ impl Listener {
                     app_close_in_progress,
                 } => inner_in_ev.handle_event_stop_complete(app_close_in_progress),
             })
-        }
-        .map_err(ListenError::OtherError)?;
+        } else {
+            msquic::Listener::open(registration.raw(), move |_, ev| match ev {
+                msquic::ListenerEvent::NewConnection { info, connection } => {
+                    inner_in_ev.handle_event_new_connection(info, connection)
+                }
+                msquic::ListenerEvent::StopComplete {
+                    app_close_in_progress,
+                } => inner_in_ev.handle_event_stop_complete(app_close_in_progress),
+            })
+        };
+        #[cfg(not(feature = "msquic-seera"))]
+        let open_result = msquic::Listener::open(registration.raw(), move |_, ev| match ev {
+            msquic::ListenerEvent::NewConnection { info, connection } => {
+                inner_in_ev.handle_event_new_connection(info, connection)
+            }
+            msquic::ListenerEvent::StopComplete {
+                app_close_in_progress,
+            } => inner_in_ev.handle_event_stop_complete(app_close_in_progress),
+        });
+        let msquic_listener = open_result.map_err(ListenError::OtherError)?;
         trace!("Listener({:p}) new", inner);
         Ok(Self {
             inner,

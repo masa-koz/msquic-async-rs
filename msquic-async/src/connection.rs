@@ -39,11 +39,18 @@ impl Connection {
     /// Create a new QMUX connection.
     ///
     /// The connection is not started until `start` is called.
+    ///
+    /// Only available with the `msquic-seera` backend, which is the only one
+    /// that exposes `ConnectionOpenQmux`.
+    #[cfg(feature = "msquic-seera")]
     pub fn new_qmux(registration: &Registration) -> Result<Self, ConnectionError> {
         Self::new_common(registration, true)
     }
 
-    fn new_common(registration: &Registration, is_qmux: bool) -> Result<Self, ConnectionError> {
+    fn new_common(
+        registration: &Registration,
+        #[cfg_attr(not(feature = "msquic-seera"), allow(unused_variables))] is_qmux: bool,
+    ) -> Result<Self, ConnectionError> {
         let inner = Arc::new(ConnectionInner::new(
             ConnectionState::Open,
             None,
@@ -56,16 +63,23 @@ impl Connection {
         // in which a live native handle is untracked. If `open` fails, this
         // guard drops and releases the reservation.
         let guard = RundownGuard::new(registration.state().clone());
-        let msquic_conn = if !is_qmux {
-            msquic::Connection::open(registration.raw(), move |conn_ref, ev| {
-                inner_in_ev.callback_handler_impl(conn_ref, ev)
-            })
-        } else {
+        // `is_qmux` can only be true on the seera backend: `new_qmux` is gated
+        // on it, so the other backends never reach the QMUX branch.
+        #[cfg(feature = "msquic-seera")]
+        let open_result = if is_qmux {
             msquic::Connection::open_qmux(registration.raw(), move |conn_ref, ev| {
                 inner_in_ev.callback_handler_impl(conn_ref, ev)
             })
-        }
-        .map_err(ConnectionError::OtherError)?;
+        } else {
+            msquic::Connection::open(registration.raw(), move |conn_ref, ev| {
+                inner_in_ev.callback_handler_impl(conn_ref, ev)
+            })
+        };
+        #[cfg(not(feature = "msquic-seera"))]
+        let open_result = msquic::Connection::open(registration.raw(), move |conn_ref, ev| {
+            inner_in_ev.callback_handler_impl(conn_ref, ev)
+        });
+        let msquic_conn = open_result.map_err(ConnectionError::OtherError)?;
         let instance = Arc::new(ConnectionInstance {
             inner,
             msquic_conn,
@@ -655,6 +669,11 @@ impl Connection {
         Ok(())
     }
 
+    /// Send a TLS resumption ticket to the peer.
+    ///
+    /// Only available with the `msquic-seera` backend, which is the only one
+    /// that exposes `ConnectionSendResumptionTicket`.
+    #[cfg(feature = "msquic-seera")]
     pub fn send_resumption_ticket(
         &self,
         is_final: bool,

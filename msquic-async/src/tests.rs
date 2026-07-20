@@ -1778,6 +1778,12 @@ async fn recv_datagram_after_local_shutdown() {
         let res = listener.accept().await;
         assert!(res.is_ok());
         let conn = res.expect("accept");
+        // An accepted connection starts in `Connecting`, so wait for the
+        // handshake to complete before shutting it down -- `shutdown()` rejects
+        // a connection that has not started yet.
+        poll_fn(|cx| conn.poll_wait_start(cx))
+            .await
+            .expect("wait start");
         conn.shutdown(0).unwrap();
         let res = timeout(
             std::time::Duration::from_secs(10),
