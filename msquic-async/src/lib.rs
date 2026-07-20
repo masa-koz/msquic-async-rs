@@ -4,6 +4,7 @@
 mod buffer;
 mod connection;
 mod listener;
+mod registration;
 mod stream;
 mod sync;
 
@@ -21,6 +22,7 @@ pub use connection::{
     ShutdownError as ConnectionShutdownError, StartError as ConnectionStartError,
 };
 pub use listener::{ListenError, Listener};
+pub use registration::{Registration, WaitIdle};
 pub use stream::{
     ReadError, ReadStream, StartError as StreamStartError, Stream, StreamType, WriteError,
     WriteStream,

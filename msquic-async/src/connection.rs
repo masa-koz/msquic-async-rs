@@ -1,4 +1,5 @@
 use crate::buffer::WriteBuffer;
+use crate::registration::{Registration, RundownGuard};
 use crate::stream::{ReadStream, StartError as StreamStartError, Stream, StreamType};
 use crate::sync::LockPoisonTolerant;
 
@@ -31,14 +32,23 @@ impl Connection {
     /// Create a new connection.
     ///
     /// The connection is not started until `start` is called.
-    pub fn new(registration: &msquic::Registration) -> Result<Self, ConnectionError> {
+    pub fn new(registration: &Registration) -> Result<Self, ConnectionError> {
         let inner = Arc::new(ConnectionInner::new(ConnectionState::Open, None, None));
         let inner_in_ev = inner.clone();
-        let msquic_conn = msquic::Connection::open(registration, move |conn_ref, ev| {
+        // Reserve before opening: `QuicConnRegister` acquires the registration
+        // rundown during `ConnectionOpen`, so reserving first leaves no window
+        // in which a live native handle is untracked. If `open` fails, this
+        // guard drops and releases the reservation.
+        let guard = RundownGuard::new(registration.state().clone());
+        let msquic_conn = msquic::Connection::open(registration.raw(), move |conn_ref, ev| {
             inner_in_ev.callback_handler_impl(conn_ref, ev)
         })
         .map_err(ConnectionError::OtherError)?;
-        let instance = Arc::new(ConnectionInstance { inner, msquic_conn });
+        let instance = Arc::new(ConnectionInstance {
+            inner,
+            msquic_conn,
+            _guard: guard,
+        });
         trace!(
             "ConnectionInstance({:p}, Inner: {:p}) Open by local",
             instance,
@@ -52,6 +62,7 @@ impl Connection {
         #[cfg(not(feature = "msquic-2-5"))] msquic_conn: msquic::Connection,
         tls_secrets: Option<Box<msquic::ffi::QUIC_TLS_SECRETS>>,
         sslkeylog_file: Option<File>,
+        guard: RundownGuard,
     ) -> Self {
         #[cfg(feature = "msquic-2-5")]
         let msquic_conn = unsafe { msquic::Connection::from_raw(handle) };
@@ -64,7 +75,11 @@ impl Connection {
         msquic_conn.set_callback_handler(move |conn_ref, ev| {
             inner_in_ev.callback_handler_impl(conn_ref, ev)
         });
-        let instance = Arc::new(ConnectionInstance { inner, msquic_conn });
+        let instance = Arc::new(ConnectionInstance {
+            inner,
+            msquic_conn,
+            _guard: guard,
+        });
         trace!(
             "ConnectionInstance({:p}, Inner: {:p}) Open by peer",
             instance,
@@ -602,6 +617,13 @@ impl Connection {
 struct ConnectionInstance {
     inner: Arc<ConnectionInner>,
     msquic_conn: msquic::Connection,
+    // Declared last so that, on drop, `msquic_conn`'s `ConnectionClose` (which
+    // releases the native registration rundown reference) runs before this
+    // guard decrements and wakes `Registration::wait_idle` waiters.
+    //
+    // The guard lives here rather than on `Connection` because `Connection` is
+    // `Clone`: only the last `Arc<ConnectionInstance>` closes the handle.
+    _guard: RundownGuard,
 }
 
 impl Deref for ConnectionInstance {

@@ -429,7 +429,7 @@ dependencies = [
 
 [[package]]
 name = "h3-msquic-async"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "argh",
@@ -594,7 +594,7 @@ dependencies = [
 
 [[package]]
 name = "msquic-async"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "argh",
