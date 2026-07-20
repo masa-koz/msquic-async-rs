@@ -17,11 +17,10 @@ async fn main() -> anyhow::Result<()> {
         .with_max_level(tracing::Level::INFO)
         .init();
 
-    let registration = msquic::Registration::new(&msquic::RegistrationConfig::default())?;
+    let registration = msquic_async::Registration::new(&msquic::RegistrationConfig::default())?;
 
     let alpn = [msquic::BufferRef::from("h3")];
-    let configuration = msquic::Configuration::open(
-        &registration,
+    let configuration = registration.open_configuration(
         &alpn,
         Some(
             &msquic::Settings::new()
