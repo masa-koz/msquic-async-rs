@@ -438,6 +438,14 @@ impl Connection {
             .map_err(ConnectionError::OtherError)
     }
 
+    /// Get connection statistics (RTT, byte counters, loss, etc.).
+    pub fn get_stats(&self) -> Result<msquic::ffi::QUIC_STATISTICS, ConnectionError> {
+        self.0
+            .msquic_conn
+            .get_stats()
+            .map_err(ConnectionError::OtherError)
+    }
+
     /// Set whether to share the UDP binding.
     pub fn set_share_binding(&self, share: bool) -> Result<(), ConnectionError> {
         let share: u8 = if share { 1 } else { 0 };
