@@ -515,6 +515,18 @@ impl Connection {
     }
 
     /// Add a bound address to the connection.
+    ///
+    /// A UDP socket is bound to `addr` as given, and the address is advertised to the
+    /// peer in an ADD_ADDRESS frame. Passing port 0 requests an ephemeral port, which
+    /// is read back off the binding and recorded as the advertised address. Note that
+    /// the address is bound as specified rather than on a dual-stack wildcard socket,
+    /// so an IPv4 address yields an IPv4-only socket.
+    ///
+    /// Requires server migration to have been negotiated on a client, and not to have
+    /// been negotiated on a server; on a locally closed connection, an address already
+    /// bound on this connection, or more than 128 bound addresses, this fails with
+    /// `QUIC_STATUS_INVALID_STATE`, `QUIC_STATUS_ADDRESS_IN_USE` or
+    /// `QUIC_STATUS_OUT_OF_MEMORY` respectively.
     #[cfg(feature = "msquic-seera")]
     pub fn add_bound_addr(&self, addr: SocketAddr) -> Result<(), ConnectionError> {
         unsafe {
