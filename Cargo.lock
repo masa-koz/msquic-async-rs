@@ -405,8 +405,7 @@ checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 [[package]]
 name = "h3"
 version = "0.0.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "10872b55cfb02a821b69dc7cf8dc6a71d6af25eb9a79662bec4a9d016056b3be"
+source = "git+https://github.com/hyperium/h3?rev=385da3ad93407ec8eed15172f63561f6fb2bca40#385da3ad93407ec8eed15172f63561f6fb2bca40"
 dependencies = [
  "bytes",
  "fastrand",
@@ -419,12 +418,10 @@ dependencies = [
 [[package]]
 name = "h3-datagram"
 version = "0.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9d2c9f77921668673721ae40f17c729fc48b9e38a663858097cea547484fdf0f"
+source = "git+https://github.com/hyperium/h3?rev=385da3ad93407ec8eed15172f63561f6fb2bca40#385da3ad93407ec8eed15172f63561f6fb2bca40"
 dependencies = [
  "bytes",
  "h3",
- "pin-project-lite",
 ]
 
 [[package]]
