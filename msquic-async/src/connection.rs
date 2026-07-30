@@ -438,6 +438,33 @@ impl Connection {
             .map_err(ConnectionError::OtherError)
     }
 
+    /// Set the local address of the connection.
+    ///
+    /// Only valid on a client connection. Before [`Connection::start()`] this just
+    /// records the address to bind to; afterwards it migrates the connection, which
+    /// requires the handshake to be confirmed. Calling it on a server, on a locally
+    /// closed connection, or after start but before handshake confirmation fails with
+    /// `QUIC_STATUS_INVALID_STATE`.
+    pub fn set_local_addr(&self, addr: SocketAddr) -> Result<(), ConnectionError> {
+        unsafe {
+            msquic::Api::set_param(
+                self.0.msquic_conn.as_raw(),
+                msquic::ffi::QUIC_PARAM_CONN_LOCAL_ADDRESS,
+                std::mem::size_of::<msquic::Addr>() as u32,
+                &msquic::Addr::from(addr) as *const _ as *const _,
+            )
+        }
+        .map_err(ConnectionError::OtherError)
+    }
+
+    /// Get connection statistics (RTT, byte counters, loss, etc.).
+    pub fn get_stats(&self) -> Result<msquic::ffi::QUIC_STATISTICS, ConnectionError> {
+        self.0
+            .msquic_conn
+            .get_stats()
+            .map_err(ConnectionError::OtherError)
+    }
+
     /// Set whether to share the UDP binding.
     pub fn set_share_binding(&self, share: bool) -> Result<(), ConnectionError> {
         let share: u8 = if share { 1 } else { 0 };
@@ -447,6 +474,28 @@ impl Connection {
                 msquic::ffi::QUIC_PARAM_CONN_SHARE_UDP_BINDING,
                 std::mem::size_of::<u8>() as u32,
                 &share as *const _ as *const _,
+            )
+        }
+        .map_err(ConnectionError::OtherError)
+    }
+
+    /// Set whether to use the unconnected UDP socket.
+    ///
+    /// Must be called on a client connection before [`Connection::start()`], and only
+    /// after [`Connection::set_share_binding(true)`](Connection::set_share_binding):
+    /// an unconnected socket receives datagrams from any remote address, so the
+    /// connection has to be identifiable by its connection ID alone, which requires a
+    /// non-zero length source connection ID that only a shared binding gives it.
+    /// Otherwise this fails with `QUIC_STATUS_INVALID_STATE`.
+    #[cfg(feature = "msquic-seera")]
+    pub fn set_unconnected_socket(&self, unconnected: bool) -> Result<(), ConnectionError> {
+        let unconnected: u8 = if unconnected { 1 } else { 0 };
+        unsafe {
+            msquic::Api::set_param(
+                self.0.msquic_conn.as_raw(),
+                msquic::ffi::QUIC_PARAM_CONN_UNCONNECTED_UDP_SOCKET,
+                std::mem::size_of::<u8>() as u32,
+                &unconnected as *const _ as *const _,
             )
         }
         .map_err(ConnectionError::OtherError)
@@ -516,6 +565,18 @@ impl Connection {
     }
 
     /// Add a bound address to the connection.
+    ///
+    /// A UDP socket is bound to `addr` as given, and the address is advertised to the
+    /// peer in an ADD_ADDRESS frame. Passing port 0 requests an ephemeral port, which
+    /// is read back off the binding and recorded as the advertised address. Note that
+    /// the address is bound as specified rather than on a dual-stack wildcard socket,
+    /// so an IPv4 address yields an IPv4-only socket.
+    ///
+    /// Requires server migration to have been negotiated on a client, and not to have
+    /// been negotiated on a server; on a locally closed connection, an address already
+    /// bound on this connection, or more than 128 bound addresses, this fails with
+    /// `QUIC_STATUS_INVALID_STATE`, `QUIC_STATUS_ADDRESS_IN_USE` or
+    /// `QUIC_STATUS_OUT_OF_MEMORY` respectively.
     #[cfg(feature = "msquic-seera")]
     pub fn add_bound_addr(&self, addr: SocketAddr) -> Result<(), ConnectionError> {
         unsafe {
