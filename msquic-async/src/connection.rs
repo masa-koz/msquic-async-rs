@@ -437,6 +437,16 @@ impl Connection {
     /// connection has to be identifiable by its connection ID alone, which requires a
     /// non-zero length source connection ID that only a shared binding gives it.
     /// Otherwise this fails with `QUIC_STATUS_INVALID_STATE`.
+    ///
+    /// It also requires a specific local address, set with
+    /// [`Connection::set_local_addr()`](Connection::set_local_addr). A connected socket
+    /// takes its source address from the kernel when it is connected; an unconnected one
+    /// does not, and the connection's first packet goes out before anything has been
+    /// learned from the peer, so the address to send from has to be named. Starting a
+    /// connection with no local address, or a wildcard one (`0.0.0.0` / `::`), fails with
+    /// `QUIC_STATUS_INVALID_PARAMETER`; the port may be left as 0 to let the stack choose
+    /// one. The same requirement applies to every path added with
+    /// [`Connection::add_path()`](Connection::add_path).
     #[cfg(feature = "msquic-seera")]
     pub fn set_unconnected_socket(&self, unconnected: bool) -> Result<(), ConnectionError> {
         let unconnected: u8 = if unconnected { 1 } else { 0 };
@@ -452,6 +462,21 @@ impl Connection {
     }
 
     /// Add a new path to the connection.
+    ///
+    /// When the connection was configured with
+    /// [`Connection::set_unconnected_socket(true)`](Connection::set_unconnected_socket),
+    /// `local_addr` has to name a specific address for the same reason the connection's
+    /// own local address does: an unconnected socket has no source address of its own,
+    /// and the path's first packet goes out before anything has been learned from the
+    /// peer. A wildcard address (`0.0.0.0` / `::`) fails with
+    /// `QUIC_STATUS_INVALID_PARAMETER`; the port may be left as 0 to let the stack choose
+    /// one. Given a specific address, the path shares the connection's binding — and so
+    /// its local port — rather than opening one of its own.
+    ///
+    /// The address is checked when the path's UDP binding is opened, which happens here
+    /// once the handshake has completed, and otherwise on handshake completion. A path
+    /// added before [`Connection::start()`] becomes the connection's first path, whose
+    /// address `start()` itself checks.
     #[cfg(feature = "msquic-seera")]
     pub fn add_path(
         &self,
