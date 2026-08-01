@@ -405,6 +405,29 @@ impl Connection {
         .map_err(ConnectionError::OtherError)
     }
 
+    /// Set the remote address of the connection.
+    ///
+    /// Only valid on a client connection, before [`Connection::start()`]. Setting it
+    /// makes `start`'s host argument a *name* only: msquic skips resolving it and
+    /// still uses it for SNI and certificate validation. That matters because msquic
+    /// resolves the name with a blocking `getaddrinfo` on the connection's worker
+    /// thread, which stalls every other connection on that worker for as long as the
+    /// resolver takes — so a caller that already knows the address should say so.
+    ///
+    /// A wildcard address, a server connection, or a call after start fails with
+    /// `QUIC_STATUS_INVALID_PARAMETER` / `QUIC_STATUS_INVALID_STATE`.
+    pub fn set_remote_addr(&self, addr: SocketAddr) -> Result<(), ConnectionError> {
+        unsafe {
+            msquic::Api::set_param(
+                self.0.msquic_conn.as_raw(),
+                msquic::ffi::QUIC_PARAM_CONN_REMOTE_ADDRESS,
+                std::mem::size_of::<msquic::Addr>() as u32,
+                &msquic::Addr::from(addr) as *const _ as *const _,
+            )
+        }
+        .map_err(ConnectionError::OtherError)
+    }
+
     /// Get connection statistics (RTT, byte counters, loss, etc.).
     pub fn get_stats(&self) -> Result<msquic::ffi::QUIC_STATISTICS, ConnectionError> {
         self.0
