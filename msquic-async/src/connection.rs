@@ -184,7 +184,7 @@ impl Connection {
                 )));
             }
         }
-        exclusive.start_waiters.push(cx.waker().clone());
+        register_waker(&mut exclusive.start_waiters, cx);
         Poll::Pending
     }
 
