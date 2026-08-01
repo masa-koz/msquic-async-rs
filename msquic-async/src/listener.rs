@@ -1,5 +1,6 @@
 use crate::connection::Connection;
 use crate::registration::{Registration, RundownGuard, RundownState};
+use crate::sync::register_waker;
 
 #[cfg(feature = "msquic-2-5")]
 use msquic_v2_5 as msquic;
@@ -171,7 +172,7 @@ impl Listener {
                 return Poll::Ready(Err(ListenError::Finished));
             }
         }
-        exclusive.new_connection_waiters.push(cx.waker().clone());
+        register_waker(&mut exclusive.new_connection_waiters, cx);
         Poll::Pending
     }
 
@@ -200,7 +201,7 @@ impl Listener {
                     return Poll::Ready(Ok(()));
                 }
             }
-            exclusive.shutdown_complete_waiters.push(cx.waker().clone());
+            register_waker(&mut exclusive.shutdown_complete_waiters, cx);
         }
         if call_stop {
             self.msquic_listener.stop();
@@ -222,6 +223,16 @@ impl Listener {
             .get_local_addr()
             .map(|addr| addr.port())
             .map_err(|_| ListenError::Failed)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_connection_waiter_count(&self) -> usize {
+        self.inner
+            .exclusive
+            .lock()
+            .unwrap()
+            .new_connection_waiters
+            .len()
     }
 
     /// Set the SSL key log file for new connections.

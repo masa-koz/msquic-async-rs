@@ -225,6 +225,42 @@ async fn test_listener_accept() {
     });
 }
 
+/// Test for ['Listener::accept()'] not accumulating wakers.
+///
+/// A `select!` loop drops and rebuilds the `Accept` future on every iteration,
+/// so a registration that is only ever removed by a wake-up would grow the
+/// waiter list without bound while no connection arrives.
+#[test(tokio::test)]
+async fn test_listener_accept_waker_not_accumulated() {
+    let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let listener = new_server(
+        &registration,
+        &msquic::Settings::new().set_IdleTimeoutMs(10000),
+    )
+    .unwrap();
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    listener
+        .start(&[msquic::BufferRef::from("test")], Some(addr))
+        .expect("listener start");
+
+    // No client ever connects, so `accept()` stays pending and the other branch
+    // wins every time - the shape a `select!` loop takes while it is also
+    // serving something else.
+    for _ in 0..64 {
+        tokio::select! {
+            biased;
+            _ = listener.accept() => panic!("no connection was made"),
+            _ = tokio::time::sleep(Duration::from_millis(1)) => {}
+        }
+    }
+
+    assert_eq!(
+        listener.new_connection_waiter_count(),
+        1,
+        "one waiting task should hold one registration"
+    );
+}
+
 /// Test for ['Connection::open_outbound_stream()']
 #[test(tokio::test)]
 async fn test_open_outbound_stream() {
