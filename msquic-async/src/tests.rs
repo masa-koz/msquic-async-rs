@@ -225,6 +225,63 @@ async fn test_listener_accept() {
     });
 }
 
+/// Test for ['Connection::set_remote_addr()'].
+///
+/// The host handed to `start()` is a name that cannot resolve, so the connection
+/// can only be made if msquic skipped resolution and dialed the address that was
+/// named instead. The same start is attempted first without the address, to show
+/// that the name really is unresolvable here rather than the test passing
+/// vacuously.
+#[test(tokio::test)]
+async fn test_connection_set_remote_addr() {
+    // RFC 6761 reserves `.invalid` precisely so that it never resolves.
+    const UNRESOLVABLE: &str = "unresolvable.invalid";
+
+    let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let listener = new_server(
+        &registration,
+        &msquic::Settings::new().set_IdleTimeoutMs(10000),
+    )
+    .unwrap();
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    listener
+        .start(&[msquic::BufferRef::from("test")], Some(addr))
+        .expect("listener start");
+    let server_addr = listener.local_addr().expect("listener local_addr");
+
+    let client_config = new_client_config(
+        &registration,
+        &msquic::Settings::new().set_IdleTimeoutMs(10000),
+    )
+    .unwrap();
+
+    let unresolved = Connection::new(&registration).unwrap();
+    let res = unresolved
+        .start(&client_config, UNRESOLVABLE, server_addr.port())
+        .await;
+    assert!(
+        res.is_err(),
+        "{UNRESOLVABLE} has to be unresolvable for this test to mean anything"
+    );
+
+    // Accept alongside the start: the listener and the connection it hands back
+    // have to stay alive for the handshake the client is waiting on. The timeout
+    // is what a regression trips over — a client that never gets past resolution
+    // leaves `accept()` waiting for a peer that will never arrive.
+    let conn = Connection::new(&registration).unwrap();
+    conn.set_remote_addr(server_addr).expect("set_remote_addr");
+    let (started, accepted) = timeout(Duration::from_secs(10), async {
+        tokio::join!(
+            conn.start(&client_config, UNRESOLVABLE, server_addr.port()),
+            listener.accept(),
+        )
+    })
+    .await
+    .expect("no connection was made before the timeout");
+    started.expect("start with the remote address already named");
+    accepted.expect("accept");
+}
+
 /// Test for ['Listener::accept()'] not accumulating wakers.
 ///
 /// A `select!` loop drops and rebuilds the `Accept` future on every iteration,
