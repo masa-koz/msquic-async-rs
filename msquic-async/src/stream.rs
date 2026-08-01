@@ -1,7 +1,7 @@
 use crate::buffer::{StreamRecvBuffer, WriteBuffer};
 use crate::connection::ConnectionError;
 use crate::registration::RundownGuard;
-use crate::sync::LockPoisonTolerant;
+use crate::sync::{register_waker, LockPoisonTolerant};
 
 #[cfg(feature = "msquic-2-5")]
 use msquic_v2_5 as msquic;
@@ -169,7 +169,7 @@ impl Stream {
                 }
             }
         }
-        exclusive.start_waiters.push(cx.waker().clone());
+        register_waker(&mut exclusive.start_waiters, cx);
         Poll::Pending
     }
 
@@ -579,7 +579,7 @@ impl StreamInstance {
                     return Poll::Ready(Err(ReadError::Closed));
                 }
                 StreamRecvState::Start => {
-                    exclusive.start_waiters.push(cx.waker().clone());
+                    register_waker(&mut exclusive.start_waiters, cx);
                     return Poll::Pending;
                 }
                 StreamRecvState::StartComplete => {}
@@ -608,7 +608,7 @@ impl StreamInstance {
                     Poll::Ready(Ok(read))
                 }
                 ReadStatus::Blocked(None) => {
-                    exclusive.read_waiters.push(cx.waker().clone());
+                    register_waker(&mut exclusive.read_waiters, cx);
                     Poll::Pending
                 }
             };
@@ -761,7 +761,7 @@ impl StreamInstance {
         let mut exclusive = self.inner.exclusive.lock_poison_tolerant();
         match exclusive.send_state {
             StreamSendState::Start => {
-                exclusive.start_waiters.push(cx.waker().clone());
+                register_waker(&mut exclusive.start_waiters, cx);
                 return Poll::Pending;
             }
             StreamSendState::StartComplete => {
@@ -790,7 +790,7 @@ impl StreamInstance {
                 return Poll::Ready(Err(WriteError::Closed));
             }
         }
-        exclusive.write_shutdown_waiters.push(cx.waker().clone());
+        register_waker(&mut exclusive.write_shutdown_waiters, cx);
         Poll::Pending
     }
 
@@ -802,7 +802,7 @@ impl StreamInstance {
         let mut exclusive = self.inner.exclusive.lock_poison_tolerant();
         match exclusive.send_state {
             StreamSendState::Start => {
-                exclusive.start_waiters.push(cx.waker().clone());
+                register_waker(&mut exclusive.start_waiters, cx);
                 return Poll::Pending;
             }
             StreamSendState::StartComplete => {
@@ -831,7 +831,7 @@ impl StreamInstance {
                 return Poll::Ready(Err(WriteError::Closed));
             }
         }
-        exclusive.write_shutdown_waiters.push(cx.waker().clone());
+        register_waker(&mut exclusive.write_shutdown_waiters, cx);
         Poll::Pending
     }
 
@@ -857,7 +857,7 @@ impl StreamInstance {
         let mut exclusive = self.inner.exclusive.lock_poison_tolerant();
         match exclusive.recv_state {
             StreamRecvState::Start => {
-                exclusive.start_waiters.push(cx.waker().clone());
+                register_waker(&mut exclusive.start_waiters, cx);
                 Poll::Pending
             }
             StreamRecvState::StartComplete => {

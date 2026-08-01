@@ -1,7 +1,7 @@
 use crate::buffer::WriteBuffer;
 use crate::registration::{Registration, RundownGuard, RundownState};
 use crate::stream::{ReadStream, StartError as StreamStartError, Stream, StreamType};
-use crate::sync::LockPoisonTolerant;
+use crate::sync::{register_waker, LockPoisonTolerant};
 
 #[cfg(feature = "msquic-2-5")]
 use msquic_v2_5 as msquic;
@@ -165,7 +165,7 @@ impl Connection {
                 )));
             }
         }
-        exclusive.start_waiters.push(cx.waker().clone());
+        register_waker(&mut exclusive.start_waiters, cx);
         Poll::Pending
     }
 
@@ -184,7 +184,7 @@ impl Connection {
                 )));
             }
         }
-        exclusive.start_waiters.push(cx.waker().clone());
+        register_waker(&mut exclusive.start_waiters, cx);
         Poll::Pending
     }
 
@@ -218,7 +218,7 @@ impl Connection {
                 return Poll::Ready(Err(StreamStartError::ConnectionNotStarted));
             }
             ConnectionState::Connecting => {
-                exclusive.start_waiters.push(cx.waker().clone());
+                register_waker(&mut exclusive.start_waiters, cx);
                 return Poll::Pending;
             }
             ConnectionState::Connected => {}
@@ -232,7 +232,7 @@ impl Connection {
         if !exclusive.inbound_streams.is_empty() {
             return Poll::Ready(Ok(exclusive.inbound_streams.pop_front().unwrap()));
         }
-        exclusive.inbound_stream_waiters.push(cx.waker().clone());
+        register_waker(&mut exclusive.inbound_stream_waiters, cx);
         Poll::Pending
     }
 
@@ -252,7 +252,7 @@ impl Connection {
                 return Poll::Ready(Err(StreamStartError::ConnectionNotStarted));
             }
             ConnectionState::Connecting => {
-                exclusive.start_waiters.push(cx.waker().clone());
+                register_waker(&mut exclusive.start_waiters, cx);
                 return Poll::Pending;
             }
             ConnectionState::Connected => {}
@@ -266,9 +266,7 @@ impl Connection {
         if !exclusive.inbound_uni_streams.is_empty() {
             return Poll::Ready(Ok(exclusive.inbound_uni_streams.pop_front().unwrap()));
         }
-        exclusive
-            .inbound_uni_stream_waiters
-            .push(cx.waker().clone());
+        register_waker(&mut exclusive.inbound_uni_stream_waiters, cx);
         Poll::Pending
     }
 
@@ -283,7 +281,7 @@ impl Connection {
                 return Poll::Ready(Err(DgramReceiveError::ConnectionNotStarted));
             }
             ConnectionState::Connecting => {
-                exclusive.start_waiters.push(cx.waker().clone());
+                register_waker(&mut exclusive.start_waiters, cx);
                 return Poll::Pending;
             }
             ConnectionState::Connected => {}
@@ -297,7 +295,7 @@ impl Connection {
         if let Some(buf) = exclusive.recv_buffers.pop_front() {
             Poll::Ready(Ok(buf))
         } else {
-            exclusive.recv_waiters.push(cx.waker().clone());
+            register_waker(&mut exclusive.recv_waiters, cx);
             Poll::Pending
         }
     }
@@ -314,7 +312,7 @@ impl Connection {
                 return Poll::Ready(Err(DgramSendError::ConnectionNotStarted));
             }
             ConnectionState::Connecting => {
-                exclusive.start_waiters.push(cx.waker().clone());
+                register_waker(&mut exclusive.start_waiters, cx);
                 return Poll::Pending;
             }
             ConnectionState::Connected => {}
@@ -375,7 +373,7 @@ impl Connection {
                 return Poll::Ready(Err(ShutdownError::ConnectionNotStarted));
             }
             ConnectionState::Connecting => {
-                exclusive.start_waiters.push(cx.waker().clone());
+                register_waker(&mut exclusive.start_waiters, cx);
                 return Poll::Pending;
             }
             ConnectionState::Connected => {
@@ -397,7 +395,7 @@ impl Connection {
             }
         }
 
-        exclusive.shutdown_waiters.push(cx.waker().clone());
+        register_waker(&mut exclusive.shutdown_waiters, cx);
         Poll::Pending
     }
 
@@ -723,7 +721,7 @@ impl Connection {
                 return Poll::Ready(Err(EventError::ConnectionNotStarted));
             }
             ConnectionState::Connecting => {
-                exclusive.start_waiters.push(cx.waker().clone());
+                register_waker(&mut exclusive.start_waiters, cx);
                 return Poll::Pending;
             }
             ConnectionState::Connected | ConnectionState::Shutdown => {}
@@ -735,7 +733,7 @@ impl Connection {
         }
 
         if exclusive.events.is_empty() {
-            exclusive.event_waiters.push(cx.waker().clone());
+            register_waker(&mut exclusive.event_waiters, cx);
             Poll::Pending
         } else {
             Poll::Ready(Ok(exclusive.events.pop_front().unwrap()))
@@ -1641,7 +1639,7 @@ impl Future for OpenOutboundStream<'_> {
                 return Poll::Ready(Err(StreamStartError::ConnectionNotStarted));
             }
             ConnectionState::Connecting => {
-                exclusive.start_waiters.push(cx.waker().clone());
+                register_waker(&mut exclusive.start_waiters, cx);
                 return Poll::Pending;
             }
             ConnectionState::Connected => {}
