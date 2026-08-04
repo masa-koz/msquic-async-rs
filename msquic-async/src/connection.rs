@@ -1573,7 +1573,9 @@ pub enum ConnectionEvent {
     ///
     /// This reports the peer's view: it follows a PATH_AVAILABLE or PATH_BACKUP
     /// frame arriving. Setting the status locally with
-    /// [`Connection::set_path_status()`] does not raise it.
+    /// `Connection::set_path_status()` does not raise it. That method is not linked
+    /// here because it only exists on the `msquic-seera` backend, while this variant,
+    /// like the other backend-specific ones, is always present.
     PathStatusChanged {
         local_address: SocketAddr,
         peer_address: SocketAddr,
