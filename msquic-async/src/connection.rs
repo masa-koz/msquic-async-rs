@@ -560,6 +560,36 @@ impl Connection {
         .map_err(ConnectionError::OtherError)
     }
 
+    /// Declare a path available or backup to the peer.
+    ///
+    /// `path_id` is the one carried by [`ConnectionEvent::PathAdded`]. Marking a path
+    /// active sends a PATH_AVAILABLE frame, marking it inactive a PATH_BACKUP one; a
+    /// call that does not change the status sends nothing.
+    ///
+    /// Requires multipath to have been negotiated, and fails with
+    /// `QUIC_STATUS_INVALID_STATE` otherwise. An unknown `path_id` — one never seen, or
+    /// belonging to a path since removed — fails with `QUIC_STATUS_INVALID_PARAMETER`.
+    ///
+    /// There is no counterpart for reading the status back: `QUIC_PARAM_CONN_PATH_STATUS`
+    /// is set-only in the core, which answers a get with `QUIC_STATUS_INVALID_PARAMETER`.
+    /// Track it from what this call sets and from [`ConnectionEvent::PathStatusChanged`],
+    /// which reports the peer's declarations about a path.
+    #[cfg(feature = "msquic-seera")]
+    pub fn set_path_status(&self, path_id: u32, active: bool) -> Result<(), ConnectionError> {
+        unsafe {
+            msquic::Api::set_param(
+                self.0.msquic_conn.as_raw(),
+                msquic::ffi::QUIC_PARAM_CONN_PATH_STATUS,
+                std::mem::size_of::<msquic::ffi::QUIC_PATH_STATUS>() as u32,
+                &msquic::ffi::QUIC_PATH_STATUS {
+                    PathId: path_id,
+                    Active: if active { 1 } else { 0 },
+                } as *const _ as *const _,
+            )
+        }
+        .map_err(ConnectionError::OtherError)
+    }
+
     /// Add a bound address to the connection.
     ///
     /// A UDP socket is bound to `addr` as given, and the address is advertised to the
@@ -1276,6 +1306,107 @@ impl ConnectionInner {
         Ok(())
     }
 
+    /// Queue one of the three multipath path events, which carry the same
+    /// addresses and differ only in what they say about the path.
+    #[cfg(feature = "msquic-seera")]
+    fn handle_event_path(
+        &self,
+        name: &str,
+        local_address: &msquic::Addr,
+        peer_address: &msquic::Addr,
+        path_id: u32,
+        make_event: impl FnOnce(SocketAddr, SocketAddr) -> ConnectionEvent,
+    ) -> Result<(), msquic::Status> {
+        let (Some(local_address), Some(peer_address)) =
+            (local_address.as_socket(), peer_address.as_socket())
+        else {
+            error!(
+                "ConnectionInner({:p}) {} with non-socket address",
+                self, name
+            );
+            return Ok(());
+        };
+        trace!(
+            "ConnectionInner({:p}) {} path_id:{} local_address:{} peer_address:{}",
+            self,
+            name,
+            path_id,
+            local_address,
+            peer_address
+        );
+        let mut exclusive = self.exclusive.lock_poison_tolerant();
+        exclusive
+            .events
+            .push_back(make_event(local_address, peer_address));
+        exclusive
+            .event_waiters
+            .drain(..)
+            .for_each(|waker| waker.wake());
+        Ok(())
+    }
+
+    #[cfg(feature = "msquic-seera")]
+    fn handle_event_path_added(
+        &self,
+        local_address: &msquic::Addr,
+        peer_address: &msquic::Addr,
+        path_id: u32,
+    ) -> Result<(), msquic::Status> {
+        self.handle_event_path(
+            "path added",
+            local_address,
+            peer_address,
+            path_id,
+            |local_address, peer_address| ConnectionEvent::PathAdded {
+                local_address,
+                peer_address,
+                path_id,
+            },
+        )
+    }
+
+    #[cfg(feature = "msquic-seera")]
+    fn handle_event_path_removed(
+        &self,
+        local_address: &msquic::Addr,
+        peer_address: &msquic::Addr,
+        path_id: u32,
+    ) -> Result<(), msquic::Status> {
+        self.handle_event_path(
+            "path removed",
+            local_address,
+            peer_address,
+            path_id,
+            |local_address, peer_address| ConnectionEvent::PathRemoved {
+                local_address,
+                peer_address,
+                path_id,
+            },
+        )
+    }
+
+    #[cfg(feature = "msquic-seera")]
+    fn handle_event_path_status_changed(
+        &self,
+        local_address: &msquic::Addr,
+        peer_address: &msquic::Addr,
+        path_id: u32,
+        is_active: bool,
+    ) -> Result<(), msquic::Status> {
+        self.handle_event_path(
+            "path status changed",
+            local_address,
+            peer_address,
+            path_id,
+            |local_address, peer_address| ConnectionEvent::PathStatusChanged {
+                local_address,
+                peer_address,
+                path_id,
+                is_active,
+            },
+        )
+    }
+
     fn callback_handler_impl(
         &self,
         connection: msquic::ConnectionRef,
@@ -1354,6 +1485,30 @@ impl ConnectionInner {
             msquic::ConnectionEvent::NotifyRemoteAddressRemoved { sequence_number } => {
                 self.handle_event_notify_remote_address_removed(sequence_number)
             }
+            #[cfg(feature = "msquic-seera")]
+            msquic::ConnectionEvent::PathAdded {
+                peer_address,
+                local_address,
+                path_id,
+            } => self.handle_event_path_added(local_address, peer_address, path_id),
+            #[cfg(feature = "msquic-seera")]
+            msquic::ConnectionEvent::PathRemoved {
+                peer_address,
+                local_address,
+                path_id,
+            } => self.handle_event_path_removed(local_address, peer_address, path_id),
+            #[cfg(feature = "msquic-seera")]
+            msquic::ConnectionEvent::PathStatusChanged {
+                peer_address,
+                local_address,
+                path_id,
+                is_active,
+            } => self.handle_event_path_status_changed(
+                local_address,
+                peer_address,
+                path_id,
+                is_active,
+            ),
             _ => {
                 trace!("ConnectionInner({:p}) Other callback", self);
                 Ok(())
@@ -1396,6 +1551,35 @@ pub enum ConnectionEvent {
     },
     /// A remote address has been removed.
     NotifyRemoteAddressRemoved { sequence_number: u64 },
+    /// A path has been added to the connection.
+    ///
+    /// Indicated when a path completes validation while multipath is
+    /// negotiated; the path is active at that point.
+    PathAdded {
+        local_address: SocketAddr,
+        peer_address: SocketAddr,
+        path_id: u32,
+    },
+    /// A path has been removed from the connection.
+    ///
+    /// Indicated when the peer abandons the path, and when a path validation
+    /// times out.
+    PathRemoved {
+        local_address: SocketAddr,
+        peer_address: SocketAddr,
+        path_id: u32,
+    },
+    /// The peer has declared a path available or backup.
+    ///
+    /// This reports the peer's view: it follows a PATH_AVAILABLE or PATH_BACKUP
+    /// frame arriving. Setting the status locally with
+    /// [`Connection::set_path_status()`] does not raise it.
+    PathStatusChanged {
+        local_address: SocketAddr,
+        peer_address: SocketAddr,
+        path_id: u32,
+        is_active: bool,
+    },
 }
 
 /// Errors that can occur when managing a connection.

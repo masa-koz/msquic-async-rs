@@ -2079,6 +2079,101 @@ async fn test_poll_event_waker_notification() {
     });
 }
 
+/// Test for the multipath path events and ['Connection::set_path_status()'].
+///
+/// Drives the whole round trip: the client adds a second path, both ends see it
+/// validated as [`ConnectionEvent::PathAdded`], the client then declares it backup,
+/// and the server observes that as [`ConnectionEvent::PathStatusChanged`] — which is
+/// the only way the status can be read back, the parameter being set-only.
+#[cfg(feature = "msquic-seera")]
+#[test(tokio::test)]
+async fn test_path_events_and_set_path_status() {
+    use crate::ConnectionEvent;
+
+    /// Poll events until one matches, so an unrelated event in between does not
+    /// decide the test.
+    async fn next_event_matching(
+        conn: &Connection,
+        pred: impl Fn(&ConnectionEvent) -> bool,
+    ) -> ConnectionEvent {
+        timeout(Duration::from_secs(10), async {
+            loop {
+                let event = poll_fn(|cx| conn.poll_event(cx)).await.expect("poll_event");
+                if pred(&event) {
+                    return event;
+                }
+            }
+        })
+        .await
+        .expect("expected event did not arrive")
+    }
+
+    let multipath = || {
+        msquic::Settings::new()
+            .set_IdleTimeoutMs(10000)
+            .set_MultipathEnabled()
+    };
+
+    let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let listener = new_server(&registration, &multipath()).unwrap();
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    listener
+        .start(&[msquic::BufferRef::from("test")], Some(addr))
+        .expect("listener start");
+    let server_addr = listener.local_addr().expect("listener local_addr");
+
+    let client_config = new_client_config(&registration, &multipath()).unwrap();
+    let conn = Connection::new(&registration).unwrap();
+
+    // Multipath identifies a connection by its source connection ID, which only a
+    // shared binding gives a non-zero length; without this the handshake is refused.
+    conn.set_share_binding(true).expect("set_share_binding");
+
+    let host = format!("{}", server_addr.ip());
+    let (started, accepted) = timeout(Duration::from_secs(10), async {
+        tokio::join!(
+            conn.start(&client_config, &host, server_addr.port()),
+            listener.accept(),
+        )
+    })
+    .await
+    .expect("connection was not established before the timeout");
+    started.expect("connection start");
+    let server_conn = accepted.expect("accept");
+
+    // A second path from another local port to the same server.
+    let local_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    conn.add_path(local_addr, server_addr).expect("add_path");
+
+    let (client_added, server_added) = tokio::join!(
+        next_event_matching(&conn, |e| matches!(e, ConnectionEvent::PathAdded { .. })),
+        next_event_matching(&server_conn, |e| matches!(
+            e,
+            ConnectionEvent::PathAdded { .. }
+        )),
+    );
+    let ConnectionEvent::PathAdded { path_id, .. } = client_added else {
+        unreachable!("filtered above");
+    };
+    assert!(
+        matches!(server_added, ConnectionEvent::PathAdded { .. }),
+        "the server sees the path too"
+    );
+
+    // Declaring the path backup sends PATH_BACKUP, which the server reports.
+    conn.set_path_status(path_id, false)
+        .expect("set_path_status");
+
+    let changed = next_event_matching(&server_conn, |e| {
+        matches!(e, ConnectionEvent::PathStatusChanged { .. })
+    })
+    .await;
+    let ConnectionEvent::PathStatusChanged { is_active, .. } = changed else {
+        unreachable!("filtered above");
+    };
+    assert!(!is_active, "the path was declared backup");
+}
+
 /// Test for ['Connection::poll_event()'] - returns ConnectionLost on shutdown completion
 #[cfg(feature = "msquic-seera")]
 #[test(tokio::test)]
