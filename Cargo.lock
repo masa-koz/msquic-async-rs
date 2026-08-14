@@ -405,7 +405,7 @@ checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 [[package]]
 name = "h3"
 version = "0.0.8"
-source = "git+https://github.com/hyperium/h3?rev=385da3ad93407ec8eed15172f63561f6fb2bca40#385da3ad93407ec8eed15172f63561f6fb2bca40"
+source = "git+https://github.com/hyperium/h3?rev=c916ed5af1c6818c74fb86cc05a18e51ecc1fcb1#c916ed5af1c6818c74fb86cc05a18e51ecc1fcb1"
 dependencies = [
  "bytes",
  "fastrand",
@@ -418,7 +418,7 @@ dependencies = [
 [[package]]
 name = "h3-datagram"
 version = "0.0.2"
-source = "git+https://github.com/hyperium/h3?rev=385da3ad93407ec8eed15172f63561f6fb2bca40#385da3ad93407ec8eed15172f63561f6fb2bca40"
+source = "git+https://github.com/hyperium/h3?rev=c916ed5af1c6818c74fb86cc05a18e51ecc1fcb1#c916ed5af1c6818c74fb86cc05a18e51ecc1fcb1"
 dependencies = [
  "bytes",
  "h3",
