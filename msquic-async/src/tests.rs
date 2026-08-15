@@ -138,36 +138,50 @@ async fn test_connection_custom_cert_validation_success() {
     )
     .unwrap();
     let conn = Connection::new(&registration).unwrap();
-    let expected_cn = "localhost".to_string();
+
+    // The handler reports what it saw instead of asserting in place. A panic inside it
+    // would be swallowed by the `catch_unwind` in the connection callback and surface
+    // only as a failed `start()`, and a handler that never ran would leave the test
+    // asserting nothing at all. Both show up as a missing or unexpected message here.
+    let (cert_tx, mut cert_rx) = mpsc::channel::<Result<String, String>>(1);
     conn.set_peer_certificate_received_callback(
         move |certificate, _deferred_error_flags, _deferred_status, _chain| {
             // USE_PORTABLE_CERTIFICATES is set on the configuration, so `certificate`
             // is a `QUIC_BUFFER*` holding the DER encoding. It belongs to MsQuic and
-            // lives only for this call, which is fine — the parse and the check both
-            // happen here.
-            let cert = unsafe {
+            // lives only for this call, so the common name is copied out.
+            let common_name = (|| {
+                let der = unsafe {
+                    let buffer = (certificate as *const msquic::ffi::QUIC_BUFFER)
+                        .as_ref()
+                        .ok_or("no certificate was presented")?;
+                    msquic::BufferRef::from_ffi_ref(buffer).as_bytes()
+                };
                 use x509_parser::prelude::*;
-                let (_, cert) = X509Certificate::from_der(
-                    msquic::BufferRef::from_ffi_ref(
-                        (certificate as *const msquic::ffi::QUIC_BUFFER)
-                            .as_ref()
-                            .unwrap(),
-                    )
-                    .as_bytes(),
-                )
-                .unwrap();
-                cert
-            };
-            let cn = cert
-                .subject()
-                .iter_common_name()
-                .next()
-                .and_then(|cn| cn.as_str().ok())
-                .unwrap();
-            assert_eq!(cn, expected_cn);
-            // Accepting here is what lets the handshake complete, which is what the
-            // client task below asserts.
-            Ok(())
+                let (_, cert) =
+                    X509Certificate::from_der(der).map_err(|err| format!("bad DER: {err}"))?;
+                let common_name = cert
+                    .subject()
+                    .iter_common_name()
+                    .next()
+                    .and_then(|cn| cn.as_str().ok())
+                    .map(|cn| cn.to_string())
+                    .ok_or_else(|| "no common name".to_string());
+                common_name
+            })();
+
+            let accepted = common_name.is_ok();
+            cert_tx
+                .try_send(common_name)
+                .expect("test receiver is waiting");
+            if accepted {
+                // Accepting is what lets the handshake complete, which the client task
+                // below asserts.
+                Ok(())
+            } else {
+                Err(msquic::Status::from(
+                    msquic::ffi::QUIC_STATUS_BAD_CERTIFICATE,
+                ))
+            }
         },
     );
 
@@ -185,6 +199,11 @@ async fn test_connection_custom_cert_validation_success() {
         client_rx.recv().await.unwrap();
     });
 
+    // Collected here, but asserted at the end. Panicking while the tasks below are
+    // still in flight leaves the connection half torn down and the test hanging on
+    // shutdown instead of reporting the failure.
+    let reported = timeout(Duration::from_secs(10), cert_rx.recv()).await;
+
     let mut results = Vec::new();
     while let Some(res) = set.join_next().await {
         results.push(res);
@@ -196,6 +215,12 @@ async fn test_connection_custom_cert_validation_success() {
             }
         }
     });
+
+    // The handler ran, and saw the certificate the server was configured with.
+    let common_name = reported
+        .expect("the certificate handler was never called")
+        .expect("the certificate handler dropped its sender");
+    assert_eq!(common_name.as_deref(), Ok("localhost"));
 }
 
 /// Test for ['Connection::set_peer_certificate_received_callback()'] - rejecting.

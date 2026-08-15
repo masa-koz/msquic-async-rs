@@ -440,45 +440,87 @@ impl Connection {
     ///
     /// The handler runs during the handshake, from the MsQuic thread, before the
     /// connection is established — so it has to be set before [`Connection::start()`].
-    /// Returning `Ok(())` accepts the certificate; returning `Err(status)` rejects it,
-    /// and the handshake fails with that status. Without a handler every certificate
-    /// that reaches this event is accepted.
+    /// Without a handler every certificate that reaches this event is accepted.
     ///
     /// MsQuic only raises the event when the configuration's credentials carry
     /// `CredentialFlags::INDICATE_CERTIFICATE_RECEIVED`. Pair it with
     /// `NO_CERTIFICATE_VALIDATION` to replace MsQuic's own checks, or with
     /// `DEFER_CERTIFICATE_VALIDATION` to let them run first and report their verdict
-    /// through the two `deferred_*` arguments.
+    /// through the `deferred_*` arguments.
+    ///
+    /// # Verdict
+    ///
+    /// `Ok(())` accepts. `Err(status)` rejects **only if `status` is one MsQuic
+    /// classifies as a failure** — the status is passed through untouched, so
+    /// `Err(Status(QUIC_STATUS_SUCCESS))` accepts just as `Ok(())` does, and
+    /// `Err(Status(QUIC_STATUS_PENDING))` leaves validation outstanding until the
+    /// connection times out, because the completion call that would answer it is not
+    /// exposed. Reject with something like `QUIC_STATUS_BAD_CERTIFICATE`.
+    ///
+    /// Asynchronous validation — returning `QUIC_STATUS_PENDING` and answering later
+    /// through MsQuic's `certificate_validation_complete()` — is not wired up here; the
+    /// handler has to reach its verdict before it returns.
+    ///
+    /// # Arguments
     ///
     /// The four arguments are the event's fields, passed through as MsQuic gives them:
     ///
-    /// - `certificate`, the peer's certificate. Its type is platform specific: a
-    ///   `QUIC_BUFFER*` holding the DER encoding when the credentials carry
-    ///   `USE_PORTABLE_CERTIFICATES`, and otherwise the platform's own handle — an
-    ///   OpenSSL `X509*`, a Schannel `PCCERT_CONTEXT`. Passing that flag is what makes
-    ///   the certificate parseable without platform-specific code.
+    /// - `certificate`, the peer's certificate, **which may be null**. Its type is
+    ///   platform specific: a `QUIC_BUFFER*` holding the DER encoding when the
+    ///   credentials carry `USE_PORTABLE_CERTIFICATES`, and otherwise the platform's own
+    ///   handle — an OpenSSL `X509*`, a Schannel `PCCERT_CONTEXT`. Passing that flag is
+    ///   what makes the certificate parseable without platform-specific code.
     /// - `deferred_error_flags`, a bitmask of the errors MsQuic's own validation found.
-    ///   Only meaningful with `DEFER_CERTIFICATE_VALIDATION`, and only on Schannel;
-    ///   zero everywhere else.
-    /// - `deferred_status`, the most severe of those errors, under the same condition.
-    /// - `chain`, the certificate chain, platform specific in the same way.
+    ///   Schannel only; zero on every other platform, whatever the credential flags.
+    /// - `deferred_status`, the most severe of those errors. Unlike the flags this is
+    ///   filled on OpenSSL too, whenever `DEFER_CERTIFICATE_VALIDATION` or
+    ///   `REQUIRE_CLIENT_AUTHENTICATION` is set, and is then the only field carrying
+    ///   MsQuic's verdict.
+    /// - `chain`, the certificate chain, **which may also be null** — including when
+    ///   `certificate` is not. It is not the same shape as `certificate`: with
+    ///   `USE_PORTABLE_CERTIFICATES` it is a `QUIC_BUFFER*` holding a **PKCS#7** blob
+    ///   rather than a bare certificate, and without the flag an OpenSSL
+    ///   `X509_STORE_CTX*` or a Schannel `HCERTSTORE`.
     ///
-    /// Both pointers are owned by MsQuic and valid only for the duration of the call,
-    /// so anything needed afterwards has to be copied out. The handler is called with
-    /// this connection's lock held, so it must not call back into the same
-    /// `Connection`.
+    /// A peer that sent no certificate reaches the handler with nulls rather than being
+    /// rejected first, since the check that would have rejected it is the validation
+    /// `NO_CERTIFICATE_VALIDATION` turns off. Check before dereferencing.
     ///
-    /// Asynchronous validation — returning `QUIC_STATUS_PENDING` and answering later
-    /// through `certificate_validation_complete()` — is not wired up here; the handler
-    /// has to reach its verdict before it returns.
+    /// Both pointers are owned by MsQuic and valid only for the duration of the call, so
+    /// anything needed afterwards has to be copied out.
+    ///
+    /// # What the handler must not do
+    ///
+    /// It must not capture this [`Connection`], or any clone of it. The handler is
+    /// stored inside the connection, so capturing one makes a reference cycle: the
+    /// connection is never dropped, `ConnectionClose` is never called, and the
+    /// registration's rundown never completes — failing at shutdown, far from the cause.
+    /// Capture what it needs (a channel, a root store) instead.
+    ///
+    /// It must not call [`Connection::set_peer_certificate_received_callback()`] on this
+    /// same connection, which would deadlock on the handler's own lock. Other methods
+    /// are fine: the handler is kept under a lock of its own, not the one the rest of
+    /// the connection uses. It should still return promptly — it runs on a MsQuic worker
+    /// thread, and blocking there on network I/O (OCSP, CRL) stalls that worker.
+    ///
+    /// # Server side
+    ///
+    /// Effectively client-only today. On a connection from [`crate::Listener::accept()`]
+    /// the handshake is already under way by the time the application receives it, so
+    /// with `REQUIRE_CLIENT_AUTHENTICATION` the event can be raised before a handler
+    /// can be installed — and an event with no handler accepts. Handing the handler in
+    /// through the listener, so it is in place before the connection is indicated, is
+    /// left to a later change.
     pub fn set_peer_certificate_received_callback<F>(&self, handler: F)
     where
         F: FnMut(*mut c_void, u32, msquic::Status, *mut c_void) -> Result<(), msquic::Status>
             + 'static
             + Send,
     {
-        let mut exclusive = self.0.exclusive.lock_poison_tolerant();
-        exclusive.peer_certificate_received_callback = Some(Box::new(handler));
+        *self
+            .0
+            .peer_certificate_received_callback
+            .lock_poison_tolerant() = Some(Box::new(handler));
     }
 
     /// Set whether to share the UDP binding.
@@ -840,6 +882,11 @@ struct ConnectionInner {
     /// Kept here, rather than only on `ConnectionInstance`, so the callback
     /// context can reserve for peer-initiated streams.
     rundown: Arc<RundownState>,
+    /// Deliberately its own lock rather than a field of `exclusive`. The handler
+    /// is arbitrary application code called while this is held, so putting it in
+    /// `exclusive` would mean every `Connection` method it touched deadlocked the
+    /// MsQuic thread inside the TLS callback.
+    peer_certificate_received_callback: Mutex<Option<Box<PeerCertificateReceivedCallback>>>,
 }
 
 struct ConnectionInnerExclusive {
@@ -860,7 +907,6 @@ struct ConnectionInnerExclusive {
     event_waiters: Vec<Waker>,
     sslkeylog_file: Option<File>,
     tls_secrets: Option<Box<msquic::ffi::QUIC_TLS_SECRETS>>,
-    peer_certificate_received_callback: Option<Box<PeerCertificateReceivedCallback>>,
 }
 
 impl ConnectionInnerExclusive {
@@ -909,6 +955,7 @@ impl ConnectionInner {
     ) -> Self {
         Self {
             rundown,
+            peer_certificate_received_callback: Mutex::new(None),
             exclusive: Mutex::new(ConnectionInnerExclusive {
                 state,
                 error: None,
@@ -927,7 +974,6 @@ impl ConnectionInner {
                 event_waiters: Vec::new(),
                 sslkeylog_file,
                 tls_secrets,
-                peer_certificate_received_callback: None,
             }),
         }
     }
@@ -939,9 +985,10 @@ impl ConnectionInner {
     /// no handler installed the event succeeds, leaving whatever validation the
     /// credentials asked for as the only check.
     ///
-    /// The lock is held across the call. That is what makes the `&mut` borrow of the
-    /// handler sound — MsQuic can raise this on any of its threads — and it is why the
-    /// handler must not call back into this `Connection`.
+    /// The handler's own lock is held across the call, which is what makes the `&mut`
+    /// borrow sound — MsQuic can raise this on any of its threads. That lock guards
+    /// nothing else, so a handler is free to use the rest of this `Connection`; only
+    /// installing another handler from inside one would deadlock.
     fn handle_event_peer_certificate_received(
         &self,
         certificate: *mut c_void,
@@ -950,10 +997,9 @@ impl ConnectionInner {
         chain: *mut c_void,
     ) -> Result<(), msquic::Status> {
         trace!("ConnectionInner({:p}) PeerCertificateReceived", self);
-        if let Some(callback) = &mut self
-            .exclusive
-            .lock_poison_tolerant()
+        if let Some(callback) = &mut *self
             .peer_certificate_received_callback
+            .lock_poison_tolerant()
         {
             callback(certificate, deferred_error_flags, deferred_status, chain)
         } else {
