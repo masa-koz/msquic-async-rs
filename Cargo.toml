@@ -29,3 +29,4 @@ tokio = "1.42.0"
 tokio-util = "0.7.9"
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3", default-features = false }
+x509-parser = "0.18"

@@ -100,6 +100,177 @@ async fn test_connection_start() {
     });
 }
 
+/// Test for ['Connection::set_peer_certificate_received_callback()'] - accepting.
+///
+/// The client turns MsQuic's own validation off, so the handler is the only thing
+/// standing between the handshake and completion. It parses the certificate the
+/// server presented and checks its common name, which is what a real caller
+/// replacing the built-in validation would do.
+#[test(tokio::test)]
+async fn test_connection_custom_cert_validation_success() {
+    let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
+    let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
+
+    let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let listener = new_server(
+        &registration,
+        &msquic::Settings::new().set_IdleTimeoutMs(10000),
+    )
+    .unwrap();
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    listener
+        .start(&[msquic::BufferRef::from("test")], Some(addr))
+        .expect("listener start");
+    let server_addr = listener.local_addr().expect("listener local_addr");
+    let mut set = JoinSet::new();
+
+    set.spawn(async move {
+        let _conn = listener.accept().await.unwrap();
+        server_rx.recv().await.unwrap();
+
+        server_tx.send(()).await.unwrap();
+        drop(listener);
+    });
+
+    let client_config = new_client_config_with_custom_cert_validation(
+        &registration,
+        &msquic::Settings::new().set_IdleTimeoutMs(10000),
+    )
+    .unwrap();
+    let conn = Connection::new(&registration).unwrap();
+    let expected_cn = "localhost".to_string();
+    conn.set_peer_certificate_received_callback(
+        move |certificate, _deferred_error_flags, _deferred_status, _chain| {
+            // USE_PORTABLE_CERTIFICATES is set on the configuration, so `certificate`
+            // is a `QUIC_BUFFER*` holding the DER encoding. It belongs to MsQuic and
+            // lives only for this call, which is fine — the parse and the check both
+            // happen here.
+            let cert = unsafe {
+                use x509_parser::prelude::*;
+                let (_, cert) = X509Certificate::from_der(
+                    msquic::BufferRef::from_ffi_ref(
+                        (certificate as *const msquic::ffi::QUIC_BUFFER)
+                            .as_ref()
+                            .unwrap(),
+                    )
+                    .as_bytes(),
+                )
+                .unwrap();
+                cert
+            };
+            let cn = cert
+                .subject()
+                .iter_common_name()
+                .next()
+                .and_then(|cn| cn.as_str().ok())
+                .unwrap();
+            assert_eq!(cn, expected_cn);
+            // Accepting here is what lets the handshake complete, which is what the
+            // client task below asserts.
+            Ok(())
+        },
+    );
+
+    set.spawn(async move {
+        let res = conn
+            .start(
+                &client_config,
+                &format!("{}", server_addr.ip()),
+                server_addr.port(),
+            )
+            .await;
+        assert!(res.is_ok());
+        client_tx.send(()).await.unwrap();
+
+        client_rx.recv().await.unwrap();
+    });
+
+    let mut results = Vec::new();
+    while let Some(res) = set.join_next().await {
+        results.push(res);
+    }
+    results.into_iter().for_each(|res| {
+        if let Err(err) = res {
+            if err.is_panic() {
+                std::panic::resume_unwind(err.into_panic());
+            }
+        }
+    });
+}
+
+/// Test for ['Connection::set_peer_certificate_received_callback()'] - rejecting.
+///
+/// The mirror of the test above: the handler refuses every certificate, and the
+/// client's `start()` has to fail as a result. Since MsQuic's own validation is off,
+/// a handler whose verdict was ignored would let this connection through, so the
+/// assertion is on the handler being what decides.
+#[test(tokio::test)]
+async fn test_connection_custom_cert_validation_fail() {
+    let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
+    let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
+
+    let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let listener = new_server(
+        &registration,
+        &msquic::Settings::new().set_IdleTimeoutMs(10000),
+    )
+    .unwrap();
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    listener
+        .start(&[msquic::BufferRef::from("test")], Some(addr))
+        .expect("listener start");
+    let server_addr = listener.local_addr().expect("listener local_addr");
+    let mut set = JoinSet::new();
+
+    set.spawn(async move {
+        let _conn = listener.accept().await.unwrap();
+        server_rx.recv().await.unwrap();
+
+        server_tx.send(()).await.unwrap();
+        drop(listener);
+    });
+
+    let client_config = new_client_config_with_custom_cert_validation(
+        &registration,
+        &msquic::Settings::new().set_IdleTimeoutMs(10000),
+    )
+    .unwrap();
+    let conn = Connection::new(&registration).unwrap();
+    conn.set_peer_certificate_received_callback(
+        |_certificate, _deferred_error_flags, _deferred_status, _chain| {
+            Err(msquic::Status::from(
+                msquic::ffi::QUIC_STATUS_BAD_CERTIFICATE,
+            ))
+        },
+    );
+
+    set.spawn(async move {
+        let res = conn
+            .start(
+                &client_config,
+                &format!("{}", server_addr.ip()),
+                server_addr.port(),
+            )
+            .await;
+        assert!(res.is_err());
+        client_tx.send(()).await.unwrap();
+
+        client_rx.recv().await.unwrap();
+    });
+
+    let mut results = Vec::new();
+    while let Some(res) = set.join_next().await {
+        results.push(res);
+    }
+    results.into_iter().for_each(|res| {
+        if let Err(err) = res {
+            if err.is_panic() {
+                std::panic::resume_unwind(err.into_panic());
+            }
+        }
+    });
+}
+
 /// Test for ['Connection::shutdown()']
 #[test(tokio::test)]
 async fn test_connection_poll_shutdown() {
@@ -2593,6 +2764,30 @@ fn new_client_config(
         .unwrap();
     let cred_config = msquic::CredentialConfig::new_client()
         .set_credential_flags(msquic::CredentialFlags::NO_CERTIFICATE_VALIDATION);
+    configuration.load_credential(&cred_config).unwrap();
+    Ok(configuration)
+}
+
+/// A client configuration that hands certificate validation to the application.
+///
+/// The three flags are additive — `set_credential_flags` ORs each call into the set —
+/// and each does one job: `NO_CERTIFICATE_VALIDATION` stops MsQuic checking the
+/// certificate itself, `INDICATE_CERTIFICATE_RECEIVED` is what makes it raise the
+/// event at all, and `USE_PORTABLE_CERTIFICATES` makes the certificate arrive as a
+/// `QUIC_BUFFER` of DER rather than an OpenSSL or Schannel handle, which is what lets
+/// the tests below parse it with x509-parser on any platform.
+fn new_client_config_with_custom_cert_validation(
+    registration: &crate::Registration,
+    settings: &msquic::Settings,
+) -> Result<msquic::Configuration> {
+    let alpn = [msquic::BufferRef::from("test")];
+    let configuration = registration
+        .open_configuration(&alpn, Some(settings))
+        .unwrap();
+    let cred_config = msquic::CredentialConfig::new_client()
+        .set_credential_flags(msquic::CredentialFlags::NO_CERTIFICATE_VALIDATION)
+        .set_credential_flags(msquic::CredentialFlags::INDICATE_CERTIFICATE_RECEIVED)
+        .set_credential_flags(msquic::CredentialFlags::USE_PORTABLE_CERTIFICATES);
     configuration.load_credential(&cred_config).unwrap();
     Ok(configuration)
 }
