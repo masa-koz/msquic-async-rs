@@ -54,6 +54,7 @@ tempfile = { workspace = true }
 test-log = { workspace = true, features = ["trace"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "time", "macros", "sync"] }
 tracing-subscriber = { workspace = true, features = ["fmt", "ansi", "env-filter", "time", "tracing-log"] }
+x509-parser = { workspace = true }
 
 # QMUX is only exposed by the seera backend.
 [[example]]
