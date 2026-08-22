@@ -428,6 +428,19 @@ impl Connection {
         .map_err(ConnectionError::OtherError)
     }
 
+    /// How many events of this kind are waiting to be polled. Lets a test assert on
+    /// what the queue holds without draining it, which is how coalescing is checked.
+    #[cfg(test)]
+    pub(crate) fn queued_event_count(&self, matching: impl Fn(&ConnectionEvent) -> bool) -> usize {
+        self.0
+            .exclusive
+            .lock_poison_tolerant()
+            .events
+            .iter()
+            .filter(|event| matching(event))
+            .count()
+    }
+
     /// Get connection statistics (RTT, byte counters, loss, etc.).
     pub fn get_stats(&self) -> Result<msquic::ffi::QUIC_STATISTICS, ConnectionError> {
         self.0
@@ -1370,12 +1383,32 @@ impl ConnectionInner {
         // Queued as well as recorded: send_datagram() reads the state, but a sender
         // that wants to size its datagrams to the limit, or to know when sending
         // became possible at all, has no way to see it change otherwise.
-        exclusive
-            .events
-            .push_back(ConnectionEvent::DatagramStateChanged {
+        //
+        // Coalesced onto whichever entry is still waiting, rather than appended.
+        // Only the newest state means anything — an older entry describes a limit
+        // that no longer applies — and every connection reaches here, on every
+        // backend, several times as MTU discovery probes upwards. Appending would
+        // grow the queue for the whole life of a connection whose application never
+        // calls poll_event(), which is what h3-msquic-async does.
+        let queued = exclusive.events.iter_mut().find_map(|event| match event {
+            ConnectionEvent::DatagramStateChanged {
                 send_enabled,
                 max_send_length,
-            });
+            } => Some((send_enabled, max_send_length)),
+            _ => None,
+        });
+        match queued {
+            Some((queued_enabled, queued_length)) => {
+                *queued_enabled = send_enabled;
+                *queued_length = max_send_length;
+            }
+            None => exclusive
+                .events
+                .push_back(ConnectionEvent::DatagramStateChanged {
+                    send_enabled,
+                    max_send_length,
+                }),
+        }
         exclusive
             .event_waiters
             .drain(..)
@@ -1782,7 +1815,11 @@ enum ConnectionState {
 }
 
 /// Events that can occur on a connection.
+///
+/// Marked `#[non_exhaustive]`: MsQuic gains events, and this enum follows it, so a
+/// match on it needs a catch-all arm to keep compiling.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ConnectionEvent {
     /// A new observed address has been detected.
     NotifyObservedAddress {

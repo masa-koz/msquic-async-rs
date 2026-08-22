@@ -1973,6 +1973,20 @@ async fn test_datagram_state_changed_event() {
         ),
         "a datagram larger than any limit is refused"
     );
+
+    // Nothing polls for a while, and MTU discovery keeps raising the event — four
+    // times inside 25ms on loopback. Only the newest state means anything, so they
+    // coalesce onto the one queued entry rather than piling up on a connection whose
+    // application never drains them.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        conn.queued_event_count(|event| matches!(
+            event,
+            ConnectionEvent::DatagramStateChanged { .. }
+        )),
+        1,
+        "the datagram state is queued once however often it changes"
+    );
 }
 
 #[test(tokio::test)]
