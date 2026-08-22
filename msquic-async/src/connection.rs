@@ -1835,16 +1835,25 @@ pub enum ConnectionEvent {
     /// What the connection may send as a datagram has changed.
     ///
     /// Unlike the variants above, which the seera backend alone raises, this one
-    /// comes from an event every backend has. MsQuic re-evaluates it whenever the
-    /// answer moves: at the handshake, when the peer revises the limit it
-    /// advertised, and when the path MTU changes.
+    /// comes from an event every backend has. MsQuic evaluates it when the peer's
+    /// transport parameters arrive — that is where the peer's willingness to
+    /// receive datagrams, and its size limit, are settled once for the connection —
+    /// and again on every path MTU change, which is what moves the number
+    /// afterwards. Expect a run of these while MTU discovery probes upwards.
     ///
-    /// The connection acts on this itself — the same numbers are what
+    /// The connection acts on this itself: the same numbers are what
     /// [`Connection::send_datagram()`] checks a datagram against, refusing it with
     /// `DgramSendError::Denied` when sending is disabled and
     /// `DgramSendError::TooBig` when it is over the length. Observing the event is
-    /// for a sender that would rather size or hold back its datagrams than have
-    /// them rejected.
+    /// for a sender that would rather size its datagrams, or wait until it may send
+    /// at all, than have them rejected.
+    ///
+    /// It narrows that window rather than closing it. `send_datagram()` reads the
+    /// current state while this carries the state at the time it was raised, so a
+    /// consumer behind on its events can still size to a stale number — the limit
+    /// having grown is harmless, having shrunk is a `TooBig` on a datagram that
+    /// looked small enough. Draining the queue before acting keeps that as narrow
+    /// as it can be.
     ///
     /// `send_enabled` is false when the peer has not advertised datagram support,
     /// and `max_send_length` is the largest datagram that will be accepted.

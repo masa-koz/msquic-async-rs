@@ -1955,15 +1955,23 @@ async fn test_datagram_state_changed_event() {
     assert!(send_enabled, "the server enabled datagram receive");
     assert_ne!(max_send_length, 0, "a length comes with it");
 
-    // The event describes what the connection will really take.
+    // The reported length is a real limit, not just a number: a datagram of exactly
+    // it is accepted.
     conn.send_datagram(&Bytes::from(vec![0u8; max_send_length as usize]))
         .expect("a datagram of exactly the reported length is accepted");
+
+    // The refusal is checked with a length nothing could accept, rather than with
+    // `max_send_length + 1`. MTU discovery raises the event again as it probes
+    // upwards — over 50ms on loopback this fires four times, 1187 then 1219, 1299,
+    // 1379 — and `send_datagram()` checks the live limit, not the snapshot dequeued
+    // above. One byte over a stale snapshot is therefore acceptable by the time it
+    // is sent, whenever the second indication wins the race.
     assert!(
         matches!(
-            conn.send_datagram(&Bytes::from(vec![0u8; max_send_length as usize + 1])),
+            conn.send_datagram(&Bytes::from(vec![0u8; u16::MAX as usize + 1])),
             Err(DgramSendError::TooBig)
         ),
-        "one byte over is refused"
+        "a datagram larger than any limit is refused"
     );
 }
 
