@@ -1367,6 +1367,19 @@ impl ConnectionInner {
         let mut exclusive = self.exclusive.lock_poison_tolerant();
         exclusive.dgram_send_enabled = send_enabled;
         exclusive.dgram_max_send_length = max_send_length;
+        // Queued as well as recorded: send_datagram() reads the state, but a sender
+        // that wants to size its datagrams to the limit, or to know when sending
+        // became possible at all, has no way to see it change otherwise.
+        exclusive
+            .events
+            .push_back(ConnectionEvent::DatagramStateChanged {
+                send_enabled,
+                max_send_length,
+            });
+        exclusive
+            .event_waiters
+            .drain(..)
+            .for_each(|waker| waker.wake());
         Ok(())
     }
 
@@ -1818,6 +1831,26 @@ pub enum ConnectionEvent {
         peer_address: SocketAddr,
         path_id: u32,
         is_active: bool,
+    },
+    /// What the connection may send as a datagram has changed.
+    ///
+    /// Unlike the variants above, which the seera backend alone raises, this one
+    /// comes from an event every backend has. MsQuic re-evaluates it whenever the
+    /// answer moves: at the handshake, when the peer revises the limit it
+    /// advertised, and when the path MTU changes.
+    ///
+    /// The connection acts on this itself — the same numbers are what
+    /// [`Connection::send_datagram()`] checks a datagram against, refusing it with
+    /// `DgramSendError::Denied` when sending is disabled and
+    /// `DgramSendError::TooBig` when it is over the length. Observing the event is
+    /// for a sender that would rather size or hold back its datagrams than have
+    /// them rejected.
+    ///
+    /// `send_enabled` is false when the peer has not advertised datagram support,
+    /// and `max_send_length` is the largest datagram that will be accepted.
+    DatagramStateChanged {
+        send_enabled: bool,
+        max_send_length: u16,
     },
 }
 
