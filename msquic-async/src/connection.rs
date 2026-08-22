@@ -436,6 +436,103 @@ impl Connection {
             .map_err(ConnectionError::OtherError)
     }
 
+    /// Get statistics for each of the connection's paths.
+    ///
+    /// One entry per path, carrying that path's `PathId`, smoothed/min/max RTT, MTU and
+    /// network statistics. [`Connection::get_stats()`] and MsQuic's connection-wide
+    /// network statistics only ever describe the first path, so this is the way to see
+    /// the others on a connection built up with [`Connection::add_path()`]. It works
+    /// with or without multipath negotiated — a single-path connection returns one
+    /// entry.
+    ///
+    /// Paths with no path ID yet are not reported, having nothing to identify them by
+    /// and no congestion control to read. That means a path added before the connection
+    /// reaches its `Connected` state: [`Connection::add_path()`] leaves it pending, and
+    /// it gains an id when the handshake is confirmed. One added after that is opened —
+    /// and reported — straight away.
+    ///
+    /// Two properties of the entries are worth knowing, both of them MsQuic's:
+    ///
+    /// - **`PathId` does not identify an entry on its own.** Without multipath
+    ///   negotiated the core gives every added path the first path's path ID outright,
+    ///   so entries share an id for the connection's whole life; with multipath, a
+    ///   rebinding path is given the id of the one it replaces without it being
+    ///   cleared, so two entries carry the same id for the duration. Either way all of
+    ///   them are real paths, and sharing an id means sharing congestion control, so
+    ///   their `NetworkStatistics` agreeing is expected; `Rtt`, `MinRtt`, `MaxRtt` and
+    ///   `Mtu` are per path and tell them apart. A caller keying a map on `PathId`
+    ///   alone will lose paths.
+    /// - `MinRtt` and `MaxRtt` are zero until the path has produced an RTT sample,
+    ///   rather than carrying the sentinel `QUIC_STATISTICS_V2` exposes. `Rtt` starts
+    ///   from the configured initial RTT.
+    ///
+    /// The path count is not known ahead of time and changes over the connection's
+    /// life, so this starts from a buffer big enough for the paths MsQuic allows and
+    /// grows it if MsQuic ever asks for more, retrying a bounded number of times.
+    #[cfg(feature = "msquic-seera")]
+    pub fn get_path_statistics(
+        &self,
+    ) -> Result<Vec<msquic::ffi::QUIC_PATH_STATISTICS>, ConnectionError> {
+        const ENTRY_SIZE: usize = std::mem::size_of::<msquic::ffi::QUIC_PATH_STATISTICS>();
+        /// QUIC_MAX_PATH_COUNT in the core, so the first call is normally the only one.
+        const INITIAL_ENTRIES: usize = 4;
+        /// Bounded because growing is for a path appearing mid-call, not for a
+        /// connection that keeps adding them.
+        const ATTEMPTS: usize = 4;
+
+        // SAFETY: the handle is only used for the `get_param` calls below, which do not
+        // outlive this borrow of the connection.
+        let handle = unsafe { self.0.msquic_conn.as_raw() };
+        let mut entries = INITIAL_ENTRIES;
+        let mut last_status = None;
+
+        for _ in 0..ATTEMPTS {
+            let mut stats = Vec::<msquic::ffi::QUIC_PATH_STATISTICS>::with_capacity(entries);
+            let capacity_bytes = (entries * ENTRY_SIZE) as u32;
+            let mut length = capacity_bytes;
+
+            // SAFETY: `stats` has room for `length` bytes, and MsQuic writes at most
+            // that, reporting in `length` how much it wrote. On a short buffer it
+            // writes nothing and reports what it needs instead.
+            let result = unsafe {
+                msquic::Api::get_param(
+                    handle,
+                    msquic::ffi::QUIC_PARAM_CONN_PATH_STATISTICS,
+                    std::ptr::addr_of_mut!(length) as *const u32,
+                    stats.as_mut_ptr() as *mut c_void,
+                )
+            };
+
+            match result {
+                Ok(()) => {
+                    // SAFETY: MsQuic wrote `length` bytes of initialized entries, and
+                    // `length` on success is what it wrote, which is bounded by the
+                    // capacity passed in.
+                    unsafe { stats.set_len(length.min(capacity_bytes) as usize / ENTRY_SIZE) };
+                    return Ok(stats);
+                }
+                // Grow and retry when MsQuic asked for more room than was offered —
+                // which is the only reason it rewrites `length` upwards. The status is
+                // deliberately not consulted: QUIC_STATUS_BUFFER_TOO_SMALL is EOVERFLOW
+                // on POSIX, whose value differs between Linux and macOS while these
+                // bindings carry the Linux one on both, so matching on it would work on
+                // one platform and not the other.
+                Err(status) => {
+                    if length > capacity_bytes {
+                        entries = length as usize / ENTRY_SIZE;
+                        last_status = Some(status);
+                    } else {
+                        return Err(ConnectionError::OtherError(status));
+                    }
+                }
+            }
+        }
+
+        Err(ConnectionError::OtherError(last_status.expect(
+            "the loop only continues after recording the status it grew on",
+        )))
+    }
+
     /// Validate the peer's certificate yourself.
     ///
     /// The handler runs during the handshake, from the MsQuic thread, before the
