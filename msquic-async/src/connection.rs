@@ -436,6 +436,107 @@ impl Connection {
             .map_err(ConnectionError::OtherError)
     }
 
+    /// Get statistics for each of the connection's paths.
+    ///
+    /// One entry per path, carrying that path's `PathId`, smoothed/min/max RTT, MTU and
+    /// network statistics. [`Connection::get_stats()`] and MsQuic's connection-wide
+    /// network statistics only ever describe the first path, so this is the way to see
+    /// the others on a connection built up with [`Connection::add_path()`]. It works
+    /// with or without multipath negotiated — a single-path connection returns one
+    /// entry.
+    ///
+    /// Paths that have no path ID yet — added before the handshake is confirmed — are
+    /// not reported, having nothing to identify them by and no congestion control to
+    /// read.
+    ///
+    /// Two properties of the entries are worth knowing, both of them MsQuic's:
+    ///
+    /// - `PathId` is not unique while a path is rebinding. The core assigns the path ID
+    ///   to the rebound path without clearing it from the one being replaced, so two
+    ///   entries can carry the same id. Both are real paths, and sharing an id means
+    ///   sharing congestion control, so their `NetworkStatistics` agreeing is expected;
+    ///   `Rtt`, `MinRtt`, `MaxRtt` and `Mtu` are per path and tell them apart.
+    /// - `MinRtt` and `MaxRtt` are zero until the path has produced an RTT sample,
+    ///   rather than carrying the sentinel `QUIC_STATISTICS_V2` exposes. `Rtt` starts
+    ///   from the configured initial RTT.
+    ///
+    /// The path count is not known ahead of time and changes over the connection's
+    /// life, so this asks MsQuic for the size and then for the data. A path appearing
+    /// between the two is retried a few times before giving up with
+    /// `QUIC_STATUS_BUFFER_TOO_SMALL`.
+    #[cfg(feature = "msquic-seera")]
+    pub fn get_path_statistics(
+        &self,
+    ) -> Result<Vec<msquic::ffi::QUIC_PATH_STATISTICS>, ConnectionError> {
+        const ENTRY_SIZE: usize = std::mem::size_of::<msquic::ffi::QUIC_PATH_STATISTICS>();
+        /// Enough for a path or two to appear while asking. Bounded because the retry
+        /// exists for a race, not for a connection that keeps growing paths.
+        const ATTEMPTS: usize = 4;
+
+        // SAFETY: the handle is only used for the `get_param` calls below, which do not
+        // outlive this borrow of the connection.
+        let handle = unsafe { self.0.msquic_conn.as_raw() };
+        let mut last_status = None;
+
+        for _ in 0..ATTEMPTS {
+            // Ask for the size first. MsQuic answers `QUIC_STATUS_BUFFER_TOO_SMALL` and
+            // writes the byte count it needs, which is the entry count times the entry
+            // size.
+            let mut length: u32 = 0;
+            let sized = unsafe {
+                msquic::Api::get_param(
+                    handle,
+                    msquic::ffi::QUIC_PARAM_CONN_PATH_STATISTICS,
+                    std::ptr::addr_of_mut!(length) as *const u32,
+                    std::ptr::null_mut(),
+                )
+            };
+            match sized {
+                // A zero-length answer would mean no path had an id yet.
+                Ok(()) => return Ok(Vec::new()),
+                Err(status) => match status.try_as_status_code() {
+                    Ok(msquic::StatusCode::QUIC_STATUS_BUFFER_TOO_SMALL) => {}
+                    _ => return Err(ConnectionError::OtherError(status)),
+                },
+            }
+
+            let count = length as usize / ENTRY_SIZE;
+            let mut stats = Vec::<msquic::ffi::QUIC_PATH_STATISTICS>::with_capacity(count);
+            // SAFETY: `stats` has room for `count` entries, which is the size MsQuic
+            // just asked for, and it fills what it reports having written. `length` is
+            // updated to the byte count actually written, which is what bounds
+            // `set_len` below.
+            let filled = unsafe {
+                msquic::Api::get_param(
+                    handle,
+                    msquic::ffi::QUIC_PARAM_CONN_PATH_STATISTICS,
+                    std::ptr::addr_of_mut!(length) as *const u32,
+                    stats.as_mut_ptr() as *mut c_void,
+                )
+            };
+            match filled {
+                Ok(()) => {
+                    // SAFETY: MsQuic wrote `length` bytes of initialized entries, and
+                    // `length` cannot exceed what was allocated: it only grows when the
+                    // call fails with `QUIC_STATUS_BUFFER_TOO_SMALL`, handled below.
+                    unsafe { stats.set_len(length as usize / ENTRY_SIZE) };
+                    return Ok(stats);
+                }
+                Err(status) => match status.try_as_status_code() {
+                    // A path appeared between the two calls. Ask again.
+                    Ok(msquic::StatusCode::QUIC_STATUS_BUFFER_TOO_SMALL) => {
+                        last_status = Some(status);
+                    }
+                    _ => return Err(ConnectionError::OtherError(status)),
+                },
+            }
+        }
+
+        Err(ConnectionError::OtherError(last_status.expect(
+            "the loop only leaves `last_status` unset by returning",
+        )))
+    }
+
     /// Validate the peer's certificate yourself.
     ///
     /// The handler runs during the handshake, from the MsQuic thread, before the

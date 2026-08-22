@@ -2275,6 +2275,78 @@ async fn test_poll_event_waker_notification() {
     });
 }
 
+/// Test for ['Connection::get_path_statistics()'].
+///
+/// One entry before the second path is added, two after — which is the point of the
+/// API, since the connection-wide statistics only ever describe the first path. The
+/// second entry has to be the path [`ConnectionEvent::PathAdded`] reported, so the
+/// ids are checked against it rather than just counted.
+#[cfg(feature = "msquic-seera")]
+#[test(tokio::test)]
+async fn test_connection_get_path_statistics() {
+    use crate::ConnectionEvent;
+
+    let multipath = || {
+        msquic::Settings::new()
+            .set_IdleTimeoutMs(10000)
+            .set_MultipathEnabled()
+    };
+
+    let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let listener = new_server(&registration, &multipath()).unwrap();
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    listener
+        .start(&[msquic::BufferRef::from("test")], Some(addr))
+        .expect("listener start");
+    let server_addr = listener.local_addr().expect("listener local_addr");
+
+    let client_config = new_client_config(&registration, &multipath()).unwrap();
+    let conn = Connection::new(&registration).unwrap();
+    // Multipath identifies a connection by its source connection ID, which only a
+    // shared binding gives a non-zero length.
+    conn.set_share_binding(true).expect("set_share_binding");
+
+    let host = format!("{}", server_addr.ip());
+    let (started, accepted) = timeout(Duration::from_secs(10), async {
+        tokio::join!(
+            conn.start(&client_config, &host, server_addr.port()),
+            listener.accept(),
+        )
+    })
+    .await
+    .expect("connection was not established before the timeout");
+    started.expect("connection start");
+    let _server_conn = accepted.expect("accept");
+
+    let first = conn.get_path_statistics().expect("get_path_statistics");
+    assert_eq!(first.len(), 1, "the connection starts with one path");
+    let first_id = first[0].PathId;
+    assert_ne!(first[0].Mtu, 0, "a path in use has an MTU");
+
+    // Add a second path and wait for it to validate, which is when it gains the path
+    // ID that makes it reportable.
+    let local_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    conn.add_path(local_addr, server_addr).expect("add_path");
+    let added = timeout(Duration::from_secs(10), async {
+        loop {
+            let event = poll_fn(|cx| conn.poll_event(cx)).await.expect("poll_event");
+            if let ConnectionEvent::PathAdded { path_id, .. } = event {
+                return path_id;
+            }
+        }
+    })
+    .await
+    .expect("the path was never added");
+
+    let second = conn.get_path_statistics().expect("get_path_statistics");
+    assert_eq!(second.len(), 2, "both paths are reported");
+    let mut ids: Vec<u32> = second.iter().map(|stats| stats.PathId).collect();
+    ids.sort_unstable();
+    let mut expected = vec![first_id, added];
+    expected.sort_unstable();
+    assert_eq!(ids, expected, "the entries are the two paths in play");
+}
+
 /// Test for the multipath path events and ['Connection::set_path_status()'].
 ///
 /// Drives the whole round trip: the client adds a second path, both ends see it
