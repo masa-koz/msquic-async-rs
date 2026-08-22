@@ -445,17 +445,23 @@ impl Connection {
     /// with or without multipath negotiated — a single-path connection returns one
     /// entry.
     ///
-    /// Paths that have no path ID yet — added before the handshake is confirmed — are
-    /// not reported, having nothing to identify them by and no congestion control to
-    /// read.
+    /// Paths with no path ID yet are not reported, having nothing to identify them by
+    /// and no congestion control to read. That means a path added before the connection
+    /// reaches its `Connected` state: [`Connection::add_path()`] leaves it pending, and
+    /// it gains an id when the handshake is confirmed. One added after that is opened —
+    /// and reported — straight away.
     ///
     /// Two properties of the entries are worth knowing, both of them MsQuic's:
     ///
-    /// - `PathId` is not unique while a path is rebinding. The core assigns the path ID
-    ///   to the rebound path without clearing it from the one being replaced, so two
-    ///   entries can carry the same id. Both are real paths, and sharing an id means
-    ///   sharing congestion control, so their `NetworkStatistics` agreeing is expected;
-    ///   `Rtt`, `MinRtt`, `MaxRtt` and `Mtu` are per path and tell them apart.
+    /// - **`PathId` does not identify an entry on its own.** Without multipath
+    ///   negotiated the core gives every added path the first path's path ID outright,
+    ///   so entries share an id for the connection's whole life; with multipath, a
+    ///   rebinding path is given the id of the one it replaces without it being
+    ///   cleared, so two entries carry the same id for the duration. Either way all of
+    ///   them are real paths, and sharing an id means sharing congestion control, so
+    ///   their `NetworkStatistics` agreeing is expected; `Rtt`, `MinRtt`, `MaxRtt` and
+    ///   `Mtu` are per path and tell them apart. A caller keying a map on `PathId`
+    ///   alone will lose paths.
     /// - `MinRtt` and `MaxRtt` are zero until the path has produced an RTT sample,
     ///   rather than carrying the sentinel `QUIC_STATISTICS_V2` exposes. `Rtt` starts
     ///   from the configured initial RTT.
