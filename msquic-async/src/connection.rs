@@ -428,6 +428,19 @@ impl Connection {
         .map_err(ConnectionError::OtherError)
     }
 
+    /// How many events of this kind are waiting to be polled. Lets a test assert on
+    /// what the queue holds without draining it, which is how coalescing is checked.
+    #[cfg(test)]
+    pub(crate) fn queued_event_count(&self, matching: impl Fn(&ConnectionEvent) -> bool) -> usize {
+        self.0
+            .exclusive
+            .lock_poison_tolerant()
+            .events
+            .iter()
+            .filter(|event| matching(event))
+            .count()
+    }
+
     /// Get connection statistics (RTT, byte counters, loss, etc.).
     pub fn get_stats(&self) -> Result<msquic::ffi::QUIC_STATISTICS, ConnectionError> {
         self.0
@@ -1367,6 +1380,39 @@ impl ConnectionInner {
         let mut exclusive = self.exclusive.lock_poison_tolerant();
         exclusive.dgram_send_enabled = send_enabled;
         exclusive.dgram_max_send_length = max_send_length;
+        // Queued as well as recorded: send_datagram() reads the state, but a sender
+        // that wants to size its datagrams to the limit, or to know when sending
+        // became possible at all, has no way to see it change otherwise.
+        //
+        // Coalesced onto whichever entry is still waiting, rather than appended.
+        // Only the newest state means anything — an older entry describes a limit
+        // that no longer applies — and every connection reaches here, on every
+        // backend, several times as MTU discovery probes upwards. Appending would
+        // grow the queue for the whole life of a connection whose application never
+        // calls poll_event(), which is what h3-msquic-async does.
+        let queued = exclusive.events.iter_mut().find_map(|event| match event {
+            ConnectionEvent::DatagramStateChanged {
+                send_enabled,
+                max_send_length,
+            } => Some((send_enabled, max_send_length)),
+            _ => None,
+        });
+        match queued {
+            Some((queued_enabled, queued_length)) => {
+                *queued_enabled = send_enabled;
+                *queued_length = max_send_length;
+            }
+            None => exclusive
+                .events
+                .push_back(ConnectionEvent::DatagramStateChanged {
+                    send_enabled,
+                    max_send_length,
+                }),
+        }
+        exclusive
+            .event_waiters
+            .drain(..)
+            .for_each(|waker| waker.wake());
         Ok(())
     }
 
@@ -1769,7 +1815,11 @@ enum ConnectionState {
 }
 
 /// Events that can occur on a connection.
+///
+/// Marked `#[non_exhaustive]`: MsQuic gains events, and this enum follows it, so a
+/// match on it needs a catch-all arm to keep compiling.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ConnectionEvent {
     /// A new observed address has been detected.
     NotifyObservedAddress {
@@ -1818,6 +1868,35 @@ pub enum ConnectionEvent {
         peer_address: SocketAddr,
         path_id: u32,
         is_active: bool,
+    },
+    /// What the connection may send as a datagram has changed.
+    ///
+    /// Unlike the variants above, which the seera backend alone raises, this one
+    /// comes from an event every backend has. MsQuic evaluates it when the peer's
+    /// transport parameters arrive — that is where the peer's willingness to
+    /// receive datagrams, and its size limit, are settled once for the connection —
+    /// and again on every path MTU change, which is what moves the number
+    /// afterwards. Expect a run of these while MTU discovery probes upwards.
+    ///
+    /// The connection acts on this itself: the same numbers are what
+    /// [`Connection::send_datagram()`] checks a datagram against, refusing it with
+    /// `DgramSendError::Denied` when sending is disabled and
+    /// `DgramSendError::TooBig` when it is over the length. Observing the event is
+    /// for a sender that would rather size its datagrams, or wait until it may send
+    /// at all, than have them rejected.
+    ///
+    /// It narrows that window rather than closing it. `send_datagram()` reads the
+    /// current state while this carries the state at the time it was raised, so a
+    /// consumer behind on its events can still size to a stale number — the limit
+    /// having grown is harmless, having shrunk is a `TooBig` on a datagram that
+    /// looked small enough. Draining the queue before acting keeps that as narrow
+    /// as it can be.
+    ///
+    /// `send_enabled` is false when the peer has not advertised datagram support,
+    /// and `max_send_length` is the largest datagram that will be accepted.
+    DatagramStateChanged {
+        send_enabled: bool,
+        max_send_length: u16,
     },
 }
 

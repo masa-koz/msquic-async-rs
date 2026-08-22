@@ -1892,6 +1892,103 @@ fn test_stream_recv_buffers() {
     assert_eq!(dst[2].get(..), Some(&b"!"[..]));
 }
 
+/// Test for [`ConnectionEvent::DatagramStateChanged`].
+///
+/// The client learns what it may send from the event rather than by having a
+/// datagram refused, so the numbers it reports are checked against what
+/// `send_datagram()` actually accepts: a datagram of exactly `max_send_length` goes
+/// through, one byte more comes back as `TooBig`.
+#[test(tokio::test)]
+async fn test_datagram_state_changed_event() {
+    use crate::{ConnectionEvent, DgramSendError};
+
+    let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let listener = new_server(
+        &registration,
+        &msquic::Settings::new()
+            .set_IdleTimeoutMs(10000)
+            .set_DatagramReceiveEnabled(),
+    )
+    .unwrap();
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    listener
+        .start(&[msquic::BufferRef::from("test")], Some(addr))
+        .expect("listener start");
+    let server_addr = listener.local_addr().expect("listener local_addr");
+
+    let client_config = new_client_config(
+        &registration,
+        &msquic::Settings::new().set_IdleTimeoutMs(10000),
+    )
+    .unwrap();
+    let conn = Connection::new(&registration).unwrap();
+
+    let host = format!("{}", server_addr.ip());
+    let (started, accepted) = timeout(Duration::from_secs(10), async {
+        tokio::join!(
+            conn.start(&client_config, &host, server_addr.port()),
+            listener.accept(),
+        )
+    })
+    .await
+    .expect("connection was not established before the timeout");
+    started.expect("connection start");
+    let _server_conn = accepted.expect("accept");
+
+    // Raised during the handshake, so it is already queued by the time the
+    // connection is up; poll_event only starts handing events over once it is.
+    let (send_enabled, max_send_length) = timeout(Duration::from_secs(10), async {
+        loop {
+            let event = poll_fn(|cx| conn.poll_event(cx)).await.expect("poll_event");
+            if let ConnectionEvent::DatagramStateChanged {
+                send_enabled,
+                max_send_length,
+            } = event
+            {
+                return (send_enabled, max_send_length);
+            }
+        }
+    })
+    .await
+    .expect("the datagram state was never reported");
+
+    assert!(send_enabled, "the server enabled datagram receive");
+    assert_ne!(max_send_length, 0, "a length comes with it");
+
+    // The reported length is a real limit, not just a number: a datagram of exactly
+    // it is accepted.
+    conn.send_datagram(&Bytes::from(vec![0u8; max_send_length as usize]))
+        .expect("a datagram of exactly the reported length is accepted");
+
+    // The refusal is checked with a length nothing could accept, rather than with
+    // `max_send_length + 1`. MTU discovery raises the event again as it probes
+    // upwards — over 50ms on loopback this fires four times, 1187 then 1219, 1299,
+    // 1379 — and `send_datagram()` checks the live limit, not the snapshot dequeued
+    // above. One byte over a stale snapshot is therefore acceptable by the time it
+    // is sent, whenever the second indication wins the race.
+    assert!(
+        matches!(
+            conn.send_datagram(&Bytes::from(vec![0u8; u16::MAX as usize + 1])),
+            Err(DgramSendError::TooBig)
+        ),
+        "a datagram larger than any limit is refused"
+    );
+
+    // Nothing polls for a while, and MTU discovery keeps raising the event — four
+    // times inside 25ms on loopback. Only the newest state means anything, so they
+    // coalesce onto the one queued entry rather than piling up on a connection whose
+    // application never drains them.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        conn.queued_event_count(|event| matches!(
+            event,
+            ConnectionEvent::DatagramStateChanged { .. }
+        )),
+        1,
+        "the datagram state is queued once however often it changes"
+    );
+}
+
 #[test(tokio::test)]
 async fn datagram_validation() {
     let (client_tx, mut server_rx) = mpsc::channel::<()>(1);
