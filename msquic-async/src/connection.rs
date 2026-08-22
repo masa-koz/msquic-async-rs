@@ -461,52 +461,34 @@ impl Connection {
     ///   from the configured initial RTT.
     ///
     /// The path count is not known ahead of time and changes over the connection's
-    /// life, so this asks MsQuic for the size and then for the data. A path appearing
-    /// between the two is retried a few times before giving up with
-    /// `QUIC_STATUS_BUFFER_TOO_SMALL`.
+    /// life, so this starts from a buffer big enough for the paths MsQuic allows and
+    /// grows it if MsQuic ever asks for more, retrying a bounded number of times.
     #[cfg(feature = "msquic-seera")]
     pub fn get_path_statistics(
         &self,
     ) -> Result<Vec<msquic::ffi::QUIC_PATH_STATISTICS>, ConnectionError> {
         const ENTRY_SIZE: usize = std::mem::size_of::<msquic::ffi::QUIC_PATH_STATISTICS>();
-        /// Enough for a path or two to appear while asking. Bounded because the retry
-        /// exists for a race, not for a connection that keeps growing paths.
+        /// QUIC_MAX_PATH_COUNT in the core, so the first call is normally the only one.
+        const INITIAL_ENTRIES: usize = 4;
+        /// Bounded because growing is for a path appearing mid-call, not for a
+        /// connection that keeps adding them.
         const ATTEMPTS: usize = 4;
 
         // SAFETY: the handle is only used for the `get_param` calls below, which do not
         // outlive this borrow of the connection.
         let handle = unsafe { self.0.msquic_conn.as_raw() };
+        let mut entries = INITIAL_ENTRIES;
         let mut last_status = None;
 
         for _ in 0..ATTEMPTS {
-            // Ask for the size first. MsQuic answers `QUIC_STATUS_BUFFER_TOO_SMALL` and
-            // writes the byte count it needs, which is the entry count times the entry
-            // size.
-            let mut length: u32 = 0;
-            let sized = unsafe {
-                msquic::Api::get_param(
-                    handle,
-                    msquic::ffi::QUIC_PARAM_CONN_PATH_STATISTICS,
-                    std::ptr::addr_of_mut!(length) as *const u32,
-                    std::ptr::null_mut(),
-                )
-            };
-            match sized {
-                // A zero-length answer would mean no path had an id yet.
-                Ok(()) => return Ok(Vec::new()),
-                Err(status) => match status.try_as_status_code() {
-                    Ok(msquic::StatusCode::QUIC_STATUS_BUFFER_TOO_SMALL) => {}
-                    _ => return Err(ConnectionError::OtherError(status)),
-                },
-            }
+            let mut stats = Vec::<msquic::ffi::QUIC_PATH_STATISTICS>::with_capacity(entries);
+            let capacity_bytes = (entries * ENTRY_SIZE) as u32;
+            let mut length = capacity_bytes;
 
-            let count = length as usize / ENTRY_SIZE;
-            let mut stats = Vec::<msquic::ffi::QUIC_PATH_STATISTICS>::with_capacity(count);
-            // SAFETY: `stats` has room for `count` entries, which is the size MsQuic
-            // just asked for, and it fills what it reports having written. `length` is
-            // updated to the byte count actually written, which is what bounds
-            // `set_len` below.
-            let filled = unsafe {
+            // SAFETY: `stats` has room for `length` bytes, and MsQuic writes at most
+            // that, reporting in `length` how much it wrote. On a short buffer it
+            // writes nothing and reports what it needs instead.
+            let result = unsafe {
                 msquic::Api::get_param(
                     handle,
                     msquic::ffi::QUIC_PARAM_CONN_PATH_STATISTICS,
@@ -514,26 +496,34 @@ impl Connection {
                     stats.as_mut_ptr() as *mut c_void,
                 )
             };
-            match filled {
+
+            match result {
                 Ok(()) => {
                     // SAFETY: MsQuic wrote `length` bytes of initialized entries, and
-                    // `length` cannot exceed what was allocated: it only grows when the
-                    // call fails with `QUIC_STATUS_BUFFER_TOO_SMALL`, handled below.
-                    unsafe { stats.set_len(length as usize / ENTRY_SIZE) };
+                    // `length` on success is what it wrote, which is bounded by the
+                    // capacity passed in.
+                    unsafe { stats.set_len(length.min(capacity_bytes) as usize / ENTRY_SIZE) };
                     return Ok(stats);
                 }
-                Err(status) => match status.try_as_status_code() {
-                    // A path appeared between the two calls. Ask again.
-                    Ok(msquic::StatusCode::QUIC_STATUS_BUFFER_TOO_SMALL) => {
+                // Grow and retry when MsQuic asked for more room than was offered —
+                // which is the only reason it rewrites `length` upwards. The status is
+                // deliberately not consulted: QUIC_STATUS_BUFFER_TOO_SMALL is EOVERFLOW
+                // on POSIX, whose value differs between Linux and macOS while these
+                // bindings carry the Linux one on both, so matching on it would work on
+                // one platform and not the other.
+                Err(status) => {
+                    if length > capacity_bytes {
+                        entries = length as usize / ENTRY_SIZE;
                         last_status = Some(status);
+                    } else {
+                        return Err(ConnectionError::OtherError(status));
                     }
-                    _ => return Err(ConnectionError::OtherError(status)),
-                },
+                }
             }
         }
 
         Err(ConnectionError::OtherError(last_status.expect(
-            "the loop only leaves `last_status` unset by returning",
+            "the loop only continues after recording the status it grew on",
         )))
     }
 
