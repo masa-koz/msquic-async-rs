@@ -2450,6 +2450,88 @@ async fn test_connection_get_path_statistics() {
     assert_eq!(ids, expected, "the entries are the two paths in play");
 }
 
+/// Test for [`ConnectionEvent::PathValidated`] being opt-in.
+///
+/// seera#102 put the event behind `PathValidatedEventEnabled`, so what is checked
+/// here is the switch, not just the event: the same connection is made twice, and
+/// only the configuration carrying the setting reports its path validating.
+///
+/// It is watched on the server. For the initial path the event belongs to whichever
+/// side validates its peer's address, and a client's own path is marked validated
+/// when the connection is allocated (`connection.c:232`), so the client never sees
+/// one — the server raises it on the first Handshake packet it decrypts.
+#[cfg(feature = "msquic-seera")]
+#[test(tokio::test)]
+async fn test_path_validated_event_is_opt_in() {
+    use crate::ConnectionEvent;
+
+    /// Connects once and says whether the server reported PathValidated. The wait
+    /// is short because the event, when it comes at all, comes with the handshake.
+    async fn path_validated_reported(
+        registration: &crate::Registration,
+        server_settings: &msquic::Settings,
+    ) -> bool {
+        let listener = new_server(registration, server_settings).unwrap();
+        let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        listener
+            .start(&[msquic::BufferRef::from("test")], Some(addr))
+            .expect("listener start");
+        let server_addr = listener.local_addr().expect("listener local_addr");
+
+        let client_config = new_client_config(
+            registration,
+            &msquic::Settings::new().set_IdleTimeoutMs(10000),
+        )
+        .unwrap();
+        let conn = Connection::new(registration).unwrap();
+        let host = format!("{}", server_addr.ip());
+        let (started, accepted) = timeout(Duration::from_secs(10), async {
+            tokio::join!(
+                conn.start(&client_config, &host, server_addr.port()),
+                listener.accept(),
+            )
+        })
+        .await
+        .expect("connection was not established before the timeout");
+        started.expect("connection start");
+        let server_conn = accepted.expect("accept");
+
+        timeout(Duration::from_secs(2), async {
+            loop {
+                let event = poll_fn(|cx| server_conn.poll_event(cx))
+                    .await
+                    .expect("poll_event");
+                if matches!(event, ConnectionEvent::PathValidated { .. }) {
+                    return;
+                }
+            }
+        })
+        .await
+        .is_ok()
+    }
+
+    let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+
+    assert!(
+        path_validated_reported(
+            &registration,
+            &msquic::Settings::new()
+                .set_IdleTimeoutMs(10000)
+                .set_PathValidatedEventEnabled(),
+        )
+        .await,
+        "the setting is what asks for the event"
+    );
+    assert!(
+        !path_validated_reported(
+            &registration,
+            &msquic::Settings::new().set_IdleTimeoutMs(10000),
+        )
+        .await,
+        "without it the event stays off, as it is for every other application"
+    );
+}
+
 /// Test for the multipath path events and ['Connection::set_path_status()'].
 ///
 /// Drives the whole round trip: the client adds a second path, both ends see it
