@@ -1832,6 +1832,12 @@ pub enum ConnectionEvent {
         sequence_number: u64,
     },
     /// A path has been validated.
+    ///
+    /// Opt-in since seera-msquic 2.7.0-beta: MsQuic raises it only when
+    /// `QUIC_SETTINGS.PathValidatedEventEnabled` is set, having previously raised it
+    /// for every connection — including for the initial path during the handshake.
+    /// The settings builder has no setter for that field yet, so enabling it means
+    /// reaching for `msquic::ffi::QUIC_SETTINGS` directly.
     PathValidated {
         local_address: SocketAddr,
         remote_address: SocketAddr,
