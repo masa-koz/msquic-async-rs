@@ -1832,6 +1832,20 @@ pub enum ConnectionEvent {
         sequence_number: u64,
     },
     /// A path has been validated.
+    ///
+    /// Raised on the side that validated its peer's address over this path.
+    ///
+    /// For the initial path that is the server, on the first Handshake packet it
+    /// decrypts: a client's own path counts as validated the moment the connection
+    /// is allocated, so a client never sees one for it. A path added later is
+    /// validated by whichever side sent the PATH_CHALLENGE, so there the client
+    /// does.
+    ///
+    /// Opt-in since seera-msquic 2.7.0-beta: MsQuic raises it only for a connection
+    /// whose configuration carries `PathValidatedEventEnabled`, which
+    /// `msquic::Settings::set_PathValidatedEventEnabled()` sets. It used to be
+    /// raised for every connection, which delivered a fork-only event to
+    /// applications that had never asked for one.
     PathValidated {
         local_address: SocketAddr,
         remote_address: SocketAddr,
