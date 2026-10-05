@@ -205,6 +205,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.vec.version }}-${{ contains(matrix.vec.features, 'static') && 'static' || 'shared' }}
+      # msquic and seera-msquic build their C library with cmake, leaving the
+      # tree -- vendored OpenSSL and all -- in their OUT_DIR under target/.
+      # Restoring that from a cache makes OpenSSL regenerate configdata.pm and
+      # stop with "Please run the same make command again", which make reports as
+      # a failure. Dropping just those two packages rebuilds the C libraries from
+      # scratch while the Rust dependencies stay cached.
+      - name: Drop the cached C library builds
+        run: cargo clean -p msquic -p seera-msquic
       - name: cargo test
         uses: actions-rs/cargo@v1
         with:
