@@ -1982,8 +1982,16 @@ pub enum ConnectionEvent {
     },
     /// A path has been removed from the connection.
     ///
-    /// Indicated when the peer abandons the path, and when a path validation
-    /// times out.
+    /// Raised when either end abandons the path: on receiving the peer's
+    /// PATH_ABANDON, and on the peer acknowledging one of this connection's own.
+    /// A path validation timing out is one reason to send one.
+    ///
+    /// Since seera-msquic f88d4b7, loss detection is another. A path whose packets
+    /// go `DisconnectTimeoutMs` unacknowledged used to take the whole connection
+    /// down with it, however healthy the others were; under multipath it is now
+    /// abandoned instead, as long as the connection has another path the send side
+    /// would actually choose. The connection goes down only with its last usable
+    /// path.
     PathRemoved {
         local_address: SocketAddr,
         peer_address: SocketAddr,
