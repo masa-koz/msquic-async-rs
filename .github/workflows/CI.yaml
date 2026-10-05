@@ -195,7 +195,16 @@ jobs:
       - name: Set up MSVC dev environment
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
+      # Keyed per matrix entry. The default key is per job id and runner, which
+      # the four feature combinations above share, so whichever job saves first
+      # hands its target/ to the others. The vendored OpenSSL tree inside it is
+      # configured for the features it was built with, and restoring one built
+      # for different features makes its build stop with "Please run the same
+      # make command again" -- how this surfaced, as the macOS `--features
+      # static` job failing on #94 while the same job passed on main.
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.vec.version }}-${{ contains(matrix.vec.features, 'static') && 'static' || 'shared' }}
       - name: cargo test
         uses: actions-rs/cargo@v1
         with:
