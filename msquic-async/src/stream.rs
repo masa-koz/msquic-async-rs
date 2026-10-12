@@ -230,7 +230,37 @@ impl Stream {
         buf: &[u8],
         fin: bool,
     ) -> Poll<Result<usize, WriteError>> {
-        self.0.poll_write(cx, buf, fin)
+        self.0.poll_write(cx, buf, fin, msquic::SendFlags::NONE)
+    }
+
+    /// Poll to write to the stream from buf, giving up on the data if it is lost.
+    ///
+    /// The send carries `QUIC_SEND_FLAG_CANCEL_ON_LOSS`, so MsQuic never
+    /// retransmits it. The moment loss recovery would have to resend any of the
+    /// data, MsQuic aborts the stream in both directions instead, with the error
+    /// code the application supplies in the cancel-on-loss event; msquic-async
+    /// leaves that at MsQuic's default of `0`. The peer's reader then observes
+    /// [`ReadError::Reset`] with that code; on this side, reads and writes fail
+    /// with [`ReadError::CancelledOnLoss`] and [`WriteError::CancelledOnLoss`].
+    ///
+    /// # This switches the whole stream, and cannot be undone
+    ///
+    /// The name reads like a per-call option, but the flag is a property of the
+    /// stream. MsQuic puts it this way in `stream_send.c`: "If a send has the
+    /// 'cancel on loss' flag set, we irreversibly switch the associated stream
+    /// over to that behavior." Everything written afterwards, including writes
+    /// made through [`poll_write`](Self::poll_write) or
+    /// [`write_chunk`](Self::write_chunk), is left unretransmitted too, and any
+    /// loss tears the stream down. Open a separate stream for data that has to
+    /// arrive.
+    pub fn poll_write_no_retrans(
+        &mut self,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+        fin: bool,
+    ) -> Poll<Result<usize, WriteError>> {
+        self.0
+            .poll_write(cx, buf, fin, msquic::SendFlags::CANCEL_ON_LOSS)
     }
 
     /// Poll to write a bytes to the stream directly.
@@ -240,12 +270,38 @@ impl Stream {
         chunk: &Bytes,
         fin: bool,
     ) -> Poll<Result<usize, WriteError>> {
-        self.0.poll_write_chunk(cx, chunk, fin)
+        self.0
+            .poll_write_chunk(cx, chunk, fin, msquic::SendFlags::NONE)
+    }
+
+    /// Poll to write a bytes to the stream directly, giving up on it if it is lost.
+    ///
+    /// Like [`poll_write_no_retrans`](Self::poll_write_no_retrans), this sends with
+    /// `QUIC_SEND_FLAG_CANCEL_ON_LOSS`, which switches the whole stream over to
+    /// not retransmitting and cannot be undone. See that method for the details.
+    pub fn poll_write_chunk_no_retrans(
+        &mut self,
+        cx: &mut Context<'_>,
+        chunk: &Bytes,
+        fin: bool,
+    ) -> Poll<Result<usize, WriteError>> {
+        self.0
+            .poll_write_chunk(cx, chunk, fin, msquic::SendFlags::CANCEL_ON_LOSS)
     }
 
     /// Write a bytes to the stream directly.
     pub fn write_chunk<'a>(&'a mut self, chunk: &'a Bytes, fin: bool) -> WriteChunk<'a> {
-        self.0.write_chunk(chunk, fin)
+        self.0.write_chunk(chunk, fin, msquic::SendFlags::NONE)
+    }
+
+    /// Write a bytes to the stream directly, giving up on it if it is lost.
+    ///
+    /// Like [`poll_write_no_retrans`](Self::poll_write_no_retrans), this sends with
+    /// `QUIC_SEND_FLAG_CANCEL_ON_LOSS`, which switches the whole stream over to
+    /// not retransmitting and cannot be undone. See that method for the details.
+    pub fn write_chunk_no_retrans<'a>(&'a mut self, chunk: &'a Bytes, fin: bool) -> WriteChunk<'a> {
+        self.0
+            .write_chunk(chunk, fin, msquic::SendFlags::CANCEL_ON_LOSS)
     }
 
     /// Poll to write the list of bytes to the stream directly.
@@ -255,12 +311,42 @@ impl Stream {
         chunks: &[Bytes],
         fin: bool,
     ) -> Poll<Result<usize, WriteError>> {
-        self.0.poll_write_chunks(cx, chunks, fin)
+        self.0
+            .poll_write_chunks(cx, chunks, fin, msquic::SendFlags::NONE)
+    }
+
+    /// Poll to write the list of bytes to the stream directly, giving up on it if it is lost.
+    ///
+    /// Like [`poll_write_no_retrans`](Self::poll_write_no_retrans), this sends with
+    /// `QUIC_SEND_FLAG_CANCEL_ON_LOSS`, which switches the whole stream over to
+    /// not retransmitting and cannot be undone. See that method for the details.
+    pub fn poll_write_chunks_no_retrans(
+        &mut self,
+        cx: &mut Context<'_>,
+        chunks: &[Bytes],
+        fin: bool,
+    ) -> Poll<Result<usize, WriteError>> {
+        self.0
+            .poll_write_chunks(cx, chunks, fin, msquic::SendFlags::CANCEL_ON_LOSS)
     }
 
     /// Write the list of bytes to the stream directly.
     pub fn write_chunks<'a>(&'a mut self, chunks: &'a [Bytes], fin: bool) -> WriteChunks<'a> {
-        self.0.write_chunks(chunks, fin)
+        self.0.write_chunks(chunks, fin, msquic::SendFlags::NONE)
+    }
+
+    /// Write the list of bytes to the stream directly, giving up on it if it is lost.
+    ///
+    /// Like [`poll_write_no_retrans`](Self::poll_write_no_retrans), this sends with
+    /// `QUIC_SEND_FLAG_CANCEL_ON_LOSS`, which switches the whole stream over to
+    /// not retransmitting and cannot be undone. See that method for the details.
+    pub fn write_chunks_no_retrans<'a>(
+        &'a mut self,
+        chunks: &'a [Bytes],
+        fin: bool,
+    ) -> WriteChunks<'a> {
+        self.0
+            .write_chunks(chunks, fin, msquic::SendFlags::CANCEL_ON_LOSS)
     }
 
     /// Poll to finish writing to the stream.
@@ -370,7 +456,37 @@ impl WriteStream {
         buf: &[u8],
         fin: bool,
     ) -> Poll<Result<usize, WriteError>> {
-        self.0.poll_write(cx, buf, fin)
+        self.0.poll_write(cx, buf, fin, msquic::SendFlags::NONE)
+    }
+
+    /// Poll to write to the stream from buf, giving up on the data if it is lost.
+    ///
+    /// The send carries `QUIC_SEND_FLAG_CANCEL_ON_LOSS`, so MsQuic never
+    /// retransmits it. The moment loss recovery would have to resend any of the
+    /// data, MsQuic aborts the stream in both directions instead, with the error
+    /// code the application supplies in the cancel-on-loss event; msquic-async
+    /// leaves that at MsQuic's default of `0`. The peer's reader then observes
+    /// [`ReadError::Reset`] with that code; on this side, reads and writes fail
+    /// with [`ReadError::CancelledOnLoss`] and [`WriteError::CancelledOnLoss`].
+    ///
+    /// # This switches the whole stream, and cannot be undone
+    ///
+    /// The name reads like a per-call option, but the flag is a property of the
+    /// stream. MsQuic puts it this way in `stream_send.c`: "If a send has the
+    /// 'cancel on loss' flag set, we irreversibly switch the associated stream
+    /// over to that behavior." Everything written afterwards, including writes
+    /// made through [`poll_write`](Self::poll_write) or
+    /// [`write_chunk`](Self::write_chunk), is left unretransmitted too, and any
+    /// loss tears the stream down. Open a separate stream for data that has to
+    /// arrive.
+    pub fn poll_write_no_retrans(
+        &mut self,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+        fin: bool,
+    ) -> Poll<Result<usize, WriteError>> {
+        self.0
+            .poll_write(cx, buf, fin, msquic::SendFlags::CANCEL_ON_LOSS)
     }
 
     /// Poll to write a bytes to the stream directly.
@@ -380,12 +496,38 @@ impl WriteStream {
         chunk: &Bytes,
         fin: bool,
     ) -> Poll<Result<usize, WriteError>> {
-        self.0.poll_write_chunk(cx, chunk, fin)
+        self.0
+            .poll_write_chunk(cx, chunk, fin, msquic::SendFlags::NONE)
+    }
+
+    /// Poll to write a bytes to the stream directly, giving up on it if it is lost.
+    ///
+    /// Like [`poll_write_no_retrans`](Self::poll_write_no_retrans), this sends with
+    /// `QUIC_SEND_FLAG_CANCEL_ON_LOSS`, which switches the whole stream over to
+    /// not retransmitting and cannot be undone. See that method for the details.
+    pub fn poll_write_chunk_no_retrans(
+        &mut self,
+        cx: &mut Context<'_>,
+        chunk: &Bytes,
+        fin: bool,
+    ) -> Poll<Result<usize, WriteError>> {
+        self.0
+            .poll_write_chunk(cx, chunk, fin, msquic::SendFlags::CANCEL_ON_LOSS)
     }
 
     /// Write a bytes to the stream directly.
     pub fn write_chunk<'a>(&'a mut self, chunk: &'a Bytes, fin: bool) -> WriteChunk<'a> {
-        self.0.write_chunk(chunk, fin)
+        self.0.write_chunk(chunk, fin, msquic::SendFlags::NONE)
+    }
+
+    /// Write a bytes to the stream directly, giving up on it if it is lost.
+    ///
+    /// Like [`poll_write_no_retrans`](Self::poll_write_no_retrans), this sends with
+    /// `QUIC_SEND_FLAG_CANCEL_ON_LOSS`, which switches the whole stream over to
+    /// not retransmitting and cannot be undone. See that method for the details.
+    pub fn write_chunk_no_retrans<'a>(&'a mut self, chunk: &'a Bytes, fin: bool) -> WriteChunk<'a> {
+        self.0
+            .write_chunk(chunk, fin, msquic::SendFlags::CANCEL_ON_LOSS)
     }
 
     /// Poll to write the list of bytes to the stream directly.
@@ -395,12 +537,42 @@ impl WriteStream {
         chunks: &[Bytes],
         fin: bool,
     ) -> Poll<Result<usize, WriteError>> {
-        self.0.poll_write_chunks(cx, chunks, fin)
+        self.0
+            .poll_write_chunks(cx, chunks, fin, msquic::SendFlags::NONE)
+    }
+
+    /// Poll to write the list of bytes to the stream directly, giving up on it if it is lost.
+    ///
+    /// Like [`poll_write_no_retrans`](Self::poll_write_no_retrans), this sends with
+    /// `QUIC_SEND_FLAG_CANCEL_ON_LOSS`, which switches the whole stream over to
+    /// not retransmitting and cannot be undone. See that method for the details.
+    pub fn poll_write_chunks_no_retrans(
+        &mut self,
+        cx: &mut Context<'_>,
+        chunks: &[Bytes],
+        fin: bool,
+    ) -> Poll<Result<usize, WriteError>> {
+        self.0
+            .poll_write_chunks(cx, chunks, fin, msquic::SendFlags::CANCEL_ON_LOSS)
     }
 
     /// Write the list of bytes to the stream directly.
     pub fn write_chunks<'a>(&'a mut self, chunks: &'a [Bytes], fin: bool) -> WriteChunks<'a> {
-        self.0.write_chunks(chunks, fin)
+        self.0.write_chunks(chunks, fin, msquic::SendFlags::NONE)
+    }
+
+    /// Write the list of bytes to the stream directly, giving up on it if it is lost.
+    ///
+    /// Like [`poll_write_no_retrans`](Self::poll_write_no_retrans), this sends with
+    /// `QUIC_SEND_FLAG_CANCEL_ON_LOSS`, which switches the whole stream over to
+    /// not retransmitting and cannot be undone. See that method for the details.
+    pub fn write_chunks_no_retrans<'a>(
+        &'a mut self,
+        chunks: &'a [Bytes],
+        fin: bool,
+    ) -> WriteChunks<'a> {
+        self.0
+            .write_chunks(chunks, fin, msquic::SendFlags::CANCEL_ON_LOSS)
     }
 
     /// Poll to finish writing to the stream.
@@ -589,6 +761,8 @@ impl StreamInstance {
                 StreamRecvState::ShutdownComplete => {
                     if let Some(conn_error) = &exclusive.conn_error {
                         return Poll::Ready(Err(ReadError::ConnectionLost(conn_error.clone())));
+                    } else if exclusive.cancelled_on_loss {
+                        return Poll::Ready(Err(ReadError::CancelledOnLoss));
                     } else if let Some(error_code) = &exclusive.recv_error_code {
                         return Poll::Ready(Err(ReadError::Reset(*error_code)));
                     } else {
@@ -621,8 +795,9 @@ impl StreamInstance {
         cx: &mut Context<'_>,
         buf: &[u8],
         fin: bool,
+        extra_flags: msquic::SendFlags,
     ) -> Poll<Result<usize, WriteError>> {
-        self.poll_write_generic(cx, |write_buf| {
+        self.poll_write_generic(cx, extra_flags, |write_buf| {
             let written = write_buf.put_slice(buf);
             if written == buf.len() && !fin {
                 WriteStatus::Writable(written)
@@ -638,8 +813,9 @@ impl StreamInstance {
         cx: &mut Context<'_>,
         chunk: &Bytes,
         fin: bool,
+        extra_flags: msquic::SendFlags,
     ) -> Poll<Result<usize, WriteError>> {
-        self.poll_write_generic(cx, |write_buf| {
+        self.poll_write_generic(cx, extra_flags, |write_buf| {
             let written = write_buf.put_zerocopy(chunk);
             if written == chunk.len() && !fin {
                 WriteStatus::Writable(written)
@@ -650,11 +826,17 @@ impl StreamInstance {
         .map(|res| res.map(|x| x.unwrap_or(0)))
     }
 
-    fn write_chunk<'a>(&'a self, chunk: &'a Bytes, fin: bool) -> WriteChunk<'a> {
+    fn write_chunk<'a>(
+        &'a self,
+        chunk: &'a Bytes,
+        fin: bool,
+        extra_flags: msquic::SendFlags,
+    ) -> WriteChunk<'a> {
         WriteChunk {
             stream: self,
             chunk,
             fin,
+            extra_flags,
         }
     }
 
@@ -663,8 +845,9 @@ impl StreamInstance {
         cx: &mut Context<'_>,
         chunks: &[Bytes],
         fin: bool,
+        extra_flags: msquic::SendFlags,
     ) -> Poll<Result<usize, WriteError>> {
-        self.poll_write_generic(cx, |write_buf| {
+        self.poll_write_generic(cx, extra_flags, |write_buf| {
             let (mut total_len, mut total_written) = (0, 0);
             for buf in chunks {
                 total_len += buf.len();
@@ -679,17 +862,28 @@ impl StreamInstance {
         .map(|res| res.map(|x| x.unwrap_or(0)))
     }
 
-    fn write_chunks<'a>(&'a self, chunks: &'a [Bytes], fin: bool) -> WriteChunks<'a> {
+    fn write_chunks<'a>(
+        &'a self,
+        chunks: &'a [Bytes],
+        fin: bool,
+        extra_flags: msquic::SendFlags,
+    ) -> WriteChunks<'a> {
         WriteChunks {
             stream: self,
             chunks,
             fin,
+            extra_flags,
         }
     }
 
+    /// Queue a send on the stream.
+    ///
+    /// `extra_flags` is OR'ed into the flags MsQuic is called with. Callers that
+    /// want plain, reliable sends pass [`msquic::SendFlags::NONE`].
     fn poll_write_generic<T, U>(
         &self,
-        _cx: &mut Context<'_>,
+        cx: &mut Context<'_>,
+        extra_flags: msquic::SendFlags,
         mut write_fn: T,
     ) -> Poll<Result<Option<U>, WriteError>>
     where
@@ -701,7 +895,7 @@ impl StreamInstance {
                 return Poll::Ready(Err(WriteError::Closed));
             }
             StreamSendState::Start => {
-                exclusive.start_waiters.push(_cx.waker().clone());
+                register_waker(&mut exclusive.start_waiters, cx);
                 return Poll::Pending;
             }
             StreamSendState::StartComplete => {}
@@ -711,6 +905,8 @@ impl StreamInstance {
             StreamSendState::ShutdownComplete => {
                 if let Some(conn_error) = &exclusive.conn_error {
                     return Poll::Ready(Err(WriteError::ConnectionLost(conn_error.clone())));
+                } else if exclusive.cancelled_on_loss {
+                    return Poll::Ready(Err(WriteError::CancelledOnLoss));
                 } else if let Some(error_code) = &exclusive.send_error_code {
                     return Poll::Ready(Err(WriteError::Stopped(*error_code)));
                 } else {
@@ -726,10 +922,10 @@ impl StreamInstance {
         };
         let (send_flags, val, finish) = match status {
             WriteStatus::Writable(val) | WriteStatus::Blocked(Some(val)) => {
-                (msquic::SendFlags::NONE, Some(val), false)
+                (extra_flags, Some(val), false)
             }
             WriteStatus::Blocked(None) => unreachable!(),
-            WriteStatus::Finished(val) => (msquic::SendFlags::FIN, val, true),
+            WriteStatus::Finished(val) => (msquic::SendFlags::FIN | extra_flags, val, true),
         };
         // Ownership of `write_buf` is handed to MsQuic, which returns it in the
         // SendComplete callback. On an error MsQuic never took it and no
@@ -780,6 +976,8 @@ impl StreamInstance {
             StreamSendState::ShutdownComplete => {
                 if let Some(conn_error) = &exclusive.conn_error {
                     return Poll::Ready(Err(WriteError::ConnectionLost(conn_error.clone())));
+                } else if exclusive.cancelled_on_loss {
+                    return Poll::Ready(Err(WriteError::CancelledOnLoss));
                 } else if let Some(error_code) = &exclusive.send_error_code {
                     return Poll::Ready(Err(WriteError::Stopped(*error_code)));
                 } else {
@@ -973,6 +1171,11 @@ struct StreamInnerExclusive {
     write_pool: Vec<WriteBuffer>,
     recv_error_code: Option<u64>,
     send_error_code: Option<u64>,
+    /// Set when MsQuic tore the stream down because data sent with
+    /// `CANCEL_ON_LOSS` was lost. The abort it performs afterwards carries no
+    /// error code of its own, so without this the local side would see the
+    /// teardown as a graceful finish.
+    cancelled_on_loss: bool,
     conn_error: Option<ConnectionError>,
     start_waiters: Vec<Waker>,
     read_waiters: Vec<Waker>,
@@ -1076,6 +1279,7 @@ impl StreamInner {
                 write_pool: Vec::new(),
                 recv_error_code: None,
                 send_error_code: None,
+                cancelled_on_loss: false,
                 conn_error: None,
                 start_waiters: Vec::new(),
                 read_waiters: Vec::new(),
@@ -1339,6 +1543,34 @@ impl StreamInner {
         Ok(())
     }
 
+    /// MsQuic is about to abandon the stream because data sent with
+    /// `CANCEL_ON_LOSS` was lost.
+    ///
+    /// The event's `error_code` is an out parameter: MsQuic initializes it to 0
+    /// and then aborts the stream in both directions with whatever the
+    /// application leaves there. msquic-async takes the value by copy and never
+    /// writes to it, so the abort always carries 0; the peer sees
+    /// [`ReadError::Reset`]`(0)`.
+    ///
+    /// The abort MsQuic performs right after this call drives the usual
+    /// `SEND_SHUTDOWN_COMPLETE` and `SHUTDOWN_COMPLETE` events, which wake the
+    /// local waiters. Those carry no error code, though: the abort is our own
+    /// stack's doing, not the peer's, so `send_error_code` and `recv_error_code`
+    /// stay unset and the teardown would otherwise be indistinguishable from the
+    /// application's own graceful finish. Record it here instead, so reads fail
+    /// with [`ReadError::CancelledOnLoss`] and writes with
+    /// [`WriteError::CancelledOnLoss`] rather than reporting a clean EOF.
+    fn handle_event_cancel_on_loss(&self, error_code: u64) -> Result<(), msquic::Status> {
+        trace!(
+            "StreamInner({:p}, id={:?}) Cancel on loss, error_code={}",
+            self,
+            self.shared.id.read(),
+            error_code
+        );
+        self.exclusive.lock_poison_tolerant().cancelled_on_loss = true;
+        Ok(())
+    }
+
     fn handle_event_peer_accepted(&self) -> Result<(), msquic::Status> {
         trace!(
             "StreamInner({:p}, id={:?}) Peer accepted",
@@ -1425,6 +1657,14 @@ impl StreamInner {
                 self.handle_event_ideal_send_buffer_size(byte_count)
             }
             msquic::StreamEvent::PeerAccepted => self.handle_event_peer_accepted(),
+            msquic::StreamEvent::CancelOnLoss { error_code } => {
+                self.handle_event_cancel_on_loss(*error_code)
+            }
+            // Every variant the three backends define today is handled above,
+            // so this arm is unreachable. `StreamEvent` is not non_exhaustive,
+            // so keep it anyway: a bindings bump that adds a variant should
+            // show up as a trace line here, not as a build break.
+            #[allow(unreachable_patterns)]
             _ => {
                 trace!("StreamInner({:p}) Other callback", self);
                 Ok(())
@@ -1473,13 +1713,15 @@ pub struct WriteChunk<'a> {
     stream: &'a StreamInstance,
     chunk: &'a Bytes,
     fin: bool,
+    extra_flags: msquic::SendFlags,
 }
 
 impl Future for WriteChunk<'_> {
     type Output = Result<usize, WriteError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.stream.poll_write_chunk(cx, self.chunk, self.fin)
+        self.stream
+            .poll_write_chunk(cx, self.chunk, self.fin, self.extra_flags)
     }
 }
 
@@ -1487,13 +1729,15 @@ pub struct WriteChunks<'a> {
     stream: &'a StreamInstance,
     chunks: &'a [Bytes],
     fin: bool,
+    extra_flags: msquic::SendFlags,
 }
 
 impl Future for WriteChunks<'_> {
     type Output = Result<usize, WriteError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.stream.poll_write_chunks(cx, self.chunks, self.fin)
+        self.stream
+            .poll_write_chunks(cx, self.chunks, self.fin, self.extra_flags)
     }
 }
 
@@ -1673,6 +1917,12 @@ pub enum ReadError {
     Closed,
     #[error("stream reset by peer: error {0}")]
     Reset(u64),
+    /// MsQuic abandoned the stream because data written with one of the
+    /// `_no_retrans` entry points was lost.
+    ///
+    /// What was already received may be incomplete, and no more will arrive.
+    #[error("stream cancelled on loss")]
+    CancelledOnLoss,
     #[error("connection lost")]
     ConnectionLost(#[from] ConnectionError),
     #[error("other error: status {0:?}")]
@@ -1684,6 +1934,7 @@ impl From<ReadError> for std::io::Error {
         let kind = match e {
             ReadError::Closed => std::io::ErrorKind::NotConnected,
             ReadError::Reset(_) => std::io::ErrorKind::ConnectionReset,
+            ReadError::CancelledOnLoss => std::io::ErrorKind::ConnectionAborted,
             ReadError::ConnectionLost(ConnectionError::ConnectionClosed) => {
                 std::io::ErrorKind::NotConnected
             }
@@ -1702,6 +1953,13 @@ pub enum WriteError {
     Finished,
     #[error("stream stopped by peer: error {0}")]
     Stopped(u64),
+    /// MsQuic abandoned the stream because data written with one of the
+    /// `_no_retrans` entry points was lost.
+    ///
+    /// Some of what was written never reached the peer, and nothing more can be
+    /// written on this stream.
+    #[error("stream cancelled on loss")]
+    CancelledOnLoss,
     #[error("connection lost")]
     ConnectionLost(#[from] ConnectionError),
     #[error("other error: status {0:?}")]
@@ -1717,6 +1975,7 @@ impl From<WriteError> for std::io::Error {
                 std::io::ErrorKind::NotConnected
             }
             WriteError::Stopped(_) => std::io::ErrorKind::ConnectionReset,
+            WriteError::CancelledOnLoss => std::io::ErrorKind::ConnectionAborted,
             WriteError::ConnectionLost(_) => std::io::ErrorKind::ConnectionAborted,
             WriteError::OtherError(_) => std::io::ErrorKind::Other,
         };
