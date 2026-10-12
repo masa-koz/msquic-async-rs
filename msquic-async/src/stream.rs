@@ -240,7 +240,8 @@ impl Stream {
     /// data, MsQuic aborts the stream in both directions instead, with the error
     /// code the application supplies in the cancel-on-loss event; msquic-async
     /// leaves that at MsQuic's default of `0`. The peer's reader then observes
-    /// [`ReadError::Reset`] with that code.
+    /// [`ReadError::Reset`] with that code; on this side, reads and writes fail
+    /// with [`ReadError::CancelledOnLoss`] and [`WriteError::CancelledOnLoss`].
     ///
     /// # This switches the whole stream, and cannot be undone
     ///
@@ -465,7 +466,8 @@ impl WriteStream {
     /// data, MsQuic aborts the stream in both directions instead, with the error
     /// code the application supplies in the cancel-on-loss event; msquic-async
     /// leaves that at MsQuic's default of `0`. The peer's reader then observes
-    /// [`ReadError::Reset`] with that code.
+    /// [`ReadError::Reset`] with that code; on this side, reads and writes fail
+    /// with [`ReadError::CancelledOnLoss`] and [`WriteError::CancelledOnLoss`].
     ///
     /// # This switches the whole stream, and cannot be undone
     ///
@@ -759,6 +761,8 @@ impl StreamInstance {
                 StreamRecvState::ShutdownComplete => {
                     if let Some(conn_error) = &exclusive.conn_error {
                         return Poll::Ready(Err(ReadError::ConnectionLost(conn_error.clone())));
+                    } else if exclusive.cancelled_on_loss {
+                        return Poll::Ready(Err(ReadError::CancelledOnLoss));
                     } else if let Some(error_code) = &exclusive.recv_error_code {
                         return Poll::Ready(Err(ReadError::Reset(*error_code)));
                     } else {
@@ -901,6 +905,8 @@ impl StreamInstance {
             StreamSendState::ShutdownComplete => {
                 if let Some(conn_error) = &exclusive.conn_error {
                     return Poll::Ready(Err(WriteError::ConnectionLost(conn_error.clone())));
+                } else if exclusive.cancelled_on_loss {
+                    return Poll::Ready(Err(WriteError::CancelledOnLoss));
                 } else if let Some(error_code) = &exclusive.send_error_code {
                     return Poll::Ready(Err(WriteError::Stopped(*error_code)));
                 } else {
@@ -970,6 +976,8 @@ impl StreamInstance {
             StreamSendState::ShutdownComplete => {
                 if let Some(conn_error) = &exclusive.conn_error {
                     return Poll::Ready(Err(WriteError::ConnectionLost(conn_error.clone())));
+                } else if exclusive.cancelled_on_loss {
+                    return Poll::Ready(Err(WriteError::CancelledOnLoss));
                 } else if let Some(error_code) = &exclusive.send_error_code {
                     return Poll::Ready(Err(WriteError::Stopped(*error_code)));
                 } else {
@@ -1163,6 +1171,11 @@ struct StreamInnerExclusive {
     write_pool: Vec<WriteBuffer>,
     recv_error_code: Option<u64>,
     send_error_code: Option<u64>,
+    /// Set when MsQuic tore the stream down because data sent with
+    /// `CANCEL_ON_LOSS` was lost. The abort it performs afterwards carries no
+    /// error code of its own, so without this the local side would see the
+    /// teardown as a graceful finish.
+    cancelled_on_loss: bool,
     conn_error: Option<ConnectionError>,
     start_waiters: Vec<Waker>,
     read_waiters: Vec<Waker>,
@@ -1266,6 +1279,7 @@ impl StreamInner {
                 write_pool: Vec::new(),
                 recv_error_code: None,
                 send_error_code: None,
+                cancelled_on_loss: false,
                 conn_error: None,
                 start_waiters: Vec::new(),
                 read_waiters: Vec::new(),
@@ -1538,9 +1552,14 @@ impl StreamInner {
     /// writes to it, so the abort always carries 0; the peer sees
     /// [`ReadError::Reset`]`(0)`.
     ///
-    /// Our own state needs no update here. The abort MsQuic performs right after
-    /// this call drives the usual `SEND_SHUTDOWN_COMPLETE` and
-    /// `SHUTDOWN_COMPLETE` events, which wake the local waiters.
+    /// The abort MsQuic performs right after this call drives the usual
+    /// `SEND_SHUTDOWN_COMPLETE` and `SHUTDOWN_COMPLETE` events, which wake the
+    /// local waiters. Those carry no error code, though: the abort is our own
+    /// stack's doing, not the peer's, so `send_error_code` and `recv_error_code`
+    /// stay unset and the teardown would otherwise be indistinguishable from the
+    /// application's own graceful finish. Record it here instead, so reads fail
+    /// with [`ReadError::CancelledOnLoss`] and writes with
+    /// [`WriteError::CancelledOnLoss`] rather than reporting a clean EOF.
     fn handle_event_cancel_on_loss(&self, error_code: u64) -> Result<(), msquic::Status> {
         trace!(
             "StreamInner({:p}, id={:?}) Cancel on loss, error_code={}",
@@ -1548,6 +1567,7 @@ impl StreamInner {
             self.shared.id.read(),
             error_code
         );
+        self.exclusive.lock_poison_tolerant().cancelled_on_loss = true;
         Ok(())
     }
 
@@ -1640,10 +1660,10 @@ impl StreamInner {
             msquic::StreamEvent::CancelOnLoss { error_code } => {
                 self.handle_event_cancel_on_loss(*error_code)
             }
-            // Every variant the bindings define is handled above, but the three
-            // supported backends do not define the same set, and a submodule
-            // bump can add one. Keep the arm so that stays a trace line rather
-            // than a build break.
+            // Every variant the three backends define today is handled above,
+            // so this arm is unreachable. `StreamEvent` is not non_exhaustive,
+            // so keep it anyway: a bindings bump that adds a variant should
+            // show up as a trace line here, not as a build break.
             #[allow(unreachable_patterns)]
             _ => {
                 trace!("StreamInner({:p}) Other callback", self);
@@ -1897,6 +1917,12 @@ pub enum ReadError {
     Closed,
     #[error("stream reset by peer: error {0}")]
     Reset(u64),
+    /// MsQuic abandoned the stream because data written with one of the
+    /// `_no_retrans` entry points was lost.
+    ///
+    /// What was already received may be incomplete, and no more will arrive.
+    #[error("stream cancelled on loss")]
+    CancelledOnLoss,
     #[error("connection lost")]
     ConnectionLost(#[from] ConnectionError),
     #[error("other error: status {0:?}")]
@@ -1908,6 +1934,7 @@ impl From<ReadError> for std::io::Error {
         let kind = match e {
             ReadError::Closed => std::io::ErrorKind::NotConnected,
             ReadError::Reset(_) => std::io::ErrorKind::ConnectionReset,
+            ReadError::CancelledOnLoss => std::io::ErrorKind::ConnectionAborted,
             ReadError::ConnectionLost(ConnectionError::ConnectionClosed) => {
                 std::io::ErrorKind::NotConnected
             }
@@ -1926,6 +1953,13 @@ pub enum WriteError {
     Finished,
     #[error("stream stopped by peer: error {0}")]
     Stopped(u64),
+    /// MsQuic abandoned the stream because data written with one of the
+    /// `_no_retrans` entry points was lost.
+    ///
+    /// Some of what was written never reached the peer, and nothing more can be
+    /// written on this stream.
+    #[error("stream cancelled on loss")]
+    CancelledOnLoss,
     #[error("connection lost")]
     ConnectionLost(#[from] ConnectionError),
     #[error("other error: status {0:?}")]
@@ -1941,6 +1975,7 @@ impl From<WriteError> for std::io::Error {
                 std::io::ErrorKind::NotConnected
             }
             WriteError::Stopped(_) => std::io::ErrorKind::ConnectionReset,
+            WriteError::CancelledOnLoss => std::io::ErrorKind::ConnectionAborted,
             WriteError::ConnectionLost(_) => std::io::ErrorKind::ConnectionAborted,
             WriteError::OtherError(_) => std::io::ErrorKind::Other,
         };

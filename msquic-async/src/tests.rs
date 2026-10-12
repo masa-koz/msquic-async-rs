@@ -1096,11 +1096,14 @@ async fn test_write_chunks() {
 /// Test for the `_no_retrans` write entry points.
 ///
 /// Loss is not reproducible over loopback, so this only pins down the plumbing:
-/// every entry point accepts the extra send flag and the bytes still arrive in
-/// order. It also writes plainly after a `_no_retrans` write, which MsQuic
-/// accepts even though the stream has already switched over irreversibly.
+/// all twelve entry points accept the extra send flag and the bytes still arrive
+/// in order. Each stream also takes a plain write after a `_no_retrans` one,
+/// which MsQuic accepts even though the stream has already switched over
+/// irreversibly.
 #[test(tokio::test)]
 async fn test_write_no_retrans() {
+    const EXPECTED: &[u8] = b"onetwothreefourfivesixseveneight";
+
     let (server_tx, mut client_rx) = mpsc::channel::<()>(1);
 
     let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
@@ -1109,7 +1112,7 @@ async fn test_write_no_retrans() {
         &registration,
         &msquic::Settings::new()
             .set_IdleTimeoutMs(10000)
-            .set_PeerUnidiStreamCount(1),
+            .set_PeerUnidiStreamCount(2),
     )
     .unwrap();
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
@@ -1122,18 +1125,22 @@ async fn test_write_no_retrans() {
 
     set.spawn(async move {
         let conn = listener.accept().await.unwrap();
-        let mut stream = conn.accept_inbound_uni_stream().await.unwrap();
-        let mut received = Vec::new();
-        let mut buf = [0; 1024];
-        loop {
-            let read = poll_fn(|cx| stream.poll_read(cx, &mut buf)).await.unwrap();
-            if read == 0 {
-                break;
+        let mut streams = Vec::new();
+        for _ in 0..2 {
+            let mut stream = conn.accept_inbound_uni_stream().await.unwrap();
+            let mut received = Vec::new();
+            let mut buf = [0; 1024];
+            loop {
+                let read = poll_fn(|cx| stream.poll_read(cx, &mut buf)).await.unwrap();
+                if read == 0 {
+                    break;
+                }
+                received.extend_from_slice(&buf[..read]);
             }
-            received.extend_from_slice(&buf[..read]);
+            streams.push(received);
         }
         server_tx.send(()).await.unwrap();
-        received
+        streams
     });
 
     let client_config = new_client_config(
@@ -1150,6 +1157,7 @@ async fn test_write_no_retrans() {
     .await
     .unwrap();
     set.spawn(async move {
+        // The six entry points on `Stream`.
         let mut stream = conn
             .open_outbound_stream(crate::StreamType::Unidirectional, false)
             .await
@@ -1159,18 +1167,57 @@ async fn test_write_no_retrans() {
         assert_eq!(res.unwrap(), 3);
 
         let chunk = Bytes::from("two");
-        let res = stream.write_chunk_no_retrans(&chunk, false).await;
+        let res = poll_fn(|cx| stream.poll_write_chunk_no_retrans(cx, &chunk, false)).await;
         assert_eq!(res.unwrap(), 3);
 
-        let chunks = [Bytes::from("three"), Bytes::from("four")];
+        let chunk = Bytes::from("three");
+        let res = stream.write_chunk_no_retrans(&chunk, false).await;
+        assert_eq!(res.unwrap(), 5);
+
+        let chunks = [Bytes::from("four"), Bytes::from("five")];
+        let res = poll_fn(|cx| stream.poll_write_chunks_no_retrans(cx, &chunks, false)).await;
+        assert_eq!(res.unwrap(), 8);
+
+        let chunks = [Bytes::from("six"), Bytes::from("seven")];
         let res = stream.write_chunks_no_retrans(&chunks, false).await;
-        assert_eq!(res.unwrap(), 9);
+        assert_eq!(res.unwrap(), 8);
 
         // The stream has already switched to cancel-on-loss, so this write is
         // not retransmitted either, but it is still accepted.
-        let chunk = Bytes::from("five");
+        let chunk = Bytes::from("eight");
         let res = stream.write_chunk(&chunk, true).await;
-        assert_eq!(res.unwrap(), 4);
+        assert_eq!(res.unwrap(), 5);
+
+        // The same six on `WriteStream`.
+        let stream = conn
+            .open_outbound_stream(crate::StreamType::Unidirectional, false)
+            .await
+            .unwrap();
+        let (_, write_stream) = stream.split();
+        let mut write_stream = write_stream.expect("outbound uni stream has a write half");
+
+        let res = poll_fn(|cx| write_stream.poll_write_no_retrans(cx, b"one", false)).await;
+        assert_eq!(res.unwrap(), 3);
+
+        let chunk = Bytes::from("two");
+        let res = poll_fn(|cx| write_stream.poll_write_chunk_no_retrans(cx, &chunk, false)).await;
+        assert_eq!(res.unwrap(), 3);
+
+        let chunk = Bytes::from("three");
+        let res = write_stream.write_chunk_no_retrans(&chunk, false).await;
+        assert_eq!(res.unwrap(), 5);
+
+        let chunks = [Bytes::from("four"), Bytes::from("five")];
+        let res = poll_fn(|cx| write_stream.poll_write_chunks_no_retrans(cx, &chunks, false)).await;
+        assert_eq!(res.unwrap(), 8);
+
+        let chunks = [Bytes::from("six"), Bytes::from("seven")];
+        let res = write_stream.write_chunks_no_retrans(&chunks, false).await;
+        assert_eq!(res.unwrap(), 8);
+
+        let chunk = Bytes::from("eight");
+        let res = write_stream.write_chunk(&chunk, true).await;
+        assert_eq!(res.unwrap(), 5);
 
         client_rx.recv().await.unwrap();
         Vec::new()
@@ -1190,7 +1237,7 @@ async fn test_write_no_retrans() {
             }
         }
     });
-    assert_eq!(received, b"onetwothreefourfive");
+    assert_eq!(received, vec![EXPECTED.to_vec(), EXPECTED.to_vec()]);
 }
 
 /// Test for ['Stream::poll_finish_write']
