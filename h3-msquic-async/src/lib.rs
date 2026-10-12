@@ -464,7 +464,11 @@ fn convert_read_error_to_stream_error(error: msquic_async::ReadError) -> StreamE
                 connection_error: convert_connection_error(connection_error),
             }
         }
+        // CancelledOnLoss cannot reach here: it only happens on a stream
+        // written through msquic-async's `_no_retrans` entry points, which h3
+        // never uses.
         error @ msquic_async::ReadError::Closed
+        | error @ msquic_async::ReadError::CancelledOnLoss
         | error @ msquic_async::ReadError::OtherError(_) => {
             StreamErrorIncoming::Unknown(Box::new(error))
         }
@@ -615,8 +619,11 @@ fn convert_write_error_to_stream_error(error: msquic_async::WriteError) -> Strea
                 connection_error: convert_connection_error(connection_error),
             }
         }
+        // CancelledOnLoss cannot reach here: see
+        // convert_read_error_to_stream_error.
         error @ msquic_async::WriteError::Closed
         | error @ msquic_async::WriteError::Finished
+        | error @ msquic_async::WriteError::CancelledOnLoss
         | error @ msquic_async::WriteError::OtherError(_) => {
             StreamErrorIncoming::Unknown(Box::new(error))
         }
