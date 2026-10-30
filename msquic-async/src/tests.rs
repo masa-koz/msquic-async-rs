@@ -514,6 +514,59 @@ async fn test_listener_accept_waker_not_accumulated() {
     );
 }
 
+/// Test for ['Listener::local_addr'] and ['Listener::local_port'] on a listener
+/// started without an address family.
+///
+/// `start_on_port()` asks for `QUIC_ADDRESS_FAMILY_UNSPEC` so the listener
+/// serves both families, and `start(.., None)` leaves the address zeroed, which
+/// is the same family. MsQuic fills in the port it bound to but not the family,
+/// so `local_addr()` has no `SocketAddr` to return and must say so rather than
+/// panic, while `local_port()` still answers.
+#[test(tokio::test)]
+async fn test_listener_local_addr_unspecified_family() {
+    let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let settings = msquic::Settings::new().set_IdleTimeoutMs(10000);
+
+    let on_port = new_server(&registration, &settings).unwrap();
+    on_port
+        .start_on_port(&[msquic::BufferRef::from("test")], Some(0))
+        .expect("listener start_on_port");
+
+    assert!(
+        matches!(
+            on_port.local_addr(),
+            Err(ListenError::UnspecifiedLocalAddress)
+        ),
+        "an unspecified family has no SocketAddr to report"
+    );
+    assert_ne!(
+        on_port.local_port().expect("listener local_port"),
+        0,
+        "the port MsQuic bound to is still available"
+    );
+
+    let no_address = new_server(&registration, &settings).unwrap();
+    no_address
+        .start(&[msquic::BufferRef::from("test")], None)
+        .expect("listener start");
+
+    assert!(matches!(
+        no_address.local_addr(),
+        Err(ListenError::UnspecifiedLocalAddress)
+    ));
+    assert_ne!(no_address.local_port().expect("listener local_port"), 0);
+
+    // A listener given a real address still reports it.
+    let bound = new_server(&registration, &settings).unwrap();
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    bound
+        .start(&[msquic::BufferRef::from("test")], Some(addr))
+        .expect("listener start");
+    let local_addr = bound.local_addr().expect("listener local_addr");
+    assert_eq!(local_addr.ip(), addr.ip());
+    assert_eq!(local_addr.port(), bound.local_port().unwrap());
+}
+
 /// Test for ['Connection::open_outbound_stream()']
 #[test(tokio::test)]
 async fn test_open_outbound_stream() {

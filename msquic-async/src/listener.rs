@@ -167,14 +167,26 @@ impl Listener {
     }
 
     /// Get the local address the listener is bound to.
+    ///
+    /// Fails with [`ListenError::UnspecifiedLocalAddress`] when the listener was
+    /// started without an address family: [`start_on_port()`](Self::start_on_port)
+    /// asks for `QUIC_ADDRESS_FAMILY_UNSPEC` on purpose, so that the listener
+    /// serves both families, and passing `None` to either start method leaves the
+    /// address zeroed, which is the same family. MsQuic fills in the port it bound
+    /// to but never the family, so there is no `SocketAddr` to return and
+    /// [`local_port()`](Self::local_port) is the getter to use.
     pub fn local_addr(&self) -> Result<SocketAddr, ListenError> {
         self.msquic_listener
             .get_local_addr()
-            .map(|addr| addr.as_socket().expect("not a socket address"))
-            .map_err(|_| ListenError::Failed)
+            .map_err(|_| ListenError::Failed)?
+            .as_socket()
+            .ok_or(ListenError::UnspecifiedLocalAddress)
     }
 
     /// Get the port the listener is bound to.
+    ///
+    /// Unlike [`local_addr()`](Self::local_addr), this works whatever family the
+    /// listener was started with.
     pub fn local_port(&self) -> Result<u16, ListenError> {
         self.msquic_listener
             .get_local_addr()
@@ -419,6 +431,12 @@ pub enum ListenError {
     Finished,
     #[error("failed")]
     Failed,
+    /// The listener's local address has no address family, so it cannot be
+    /// expressed as a [`SocketAddr`].
+    ///
+    /// See [`Listener::local_addr()`].
+    #[error("local address has an unspecified address family; use local_port()")]
+    UnspecifiedLocalAddress,
     #[error("SSL key log file already set")]
     SslKeyLogFileAlreadySet,
     #[error("other error: status {0:?}")]
