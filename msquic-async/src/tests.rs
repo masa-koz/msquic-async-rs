@@ -521,13 +521,19 @@ async fn test_listener_accept_waker_not_accumulated() {
 /// serves both families, and `start(.., None)` leaves the address zeroed, which
 /// is the same family. MsQuic fills in the port it bound to but not the family,
 /// so `local_addr()` has no `SocketAddr` to return and must say so rather than
-/// panic, while `local_port()` still answers.
+/// panic, while `local_port()` still answers. Before the start, where MsQuic
+/// answers from the zeroed listener handle, both report `NotStarted`.
 #[test(tokio::test)]
 async fn test_listener_local_addr_unspecified_family() {
     let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
     let settings = msquic::Settings::new().set_IdleTimeoutMs(10000);
 
     let on_port = new_server(&registration, &settings).unwrap();
+
+    // Before the start, MsQuic would answer from the zeroed listener handle.
+    assert!(matches!(on_port.local_addr(), Err(ListenError::NotStarted)));
+    assert!(matches!(on_port.local_port(), Err(ListenError::NotStarted)));
+
     on_port
         .start_on_port(&[msquic::BufferRef::from("test")], Some(0))
         .expect("listener start_on_port");

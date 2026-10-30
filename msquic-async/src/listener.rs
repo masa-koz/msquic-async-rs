@@ -166,6 +166,21 @@ impl Listener {
         Poll::Pending
     }
 
+    /// Check that the listener has been started.
+    ///
+    /// MsQuic zeroes the listener handle when it is opened and answers
+    /// `QUIC_PARAM_LISTENER_LOCAL_ADDRESS` from that field with no state check of
+    /// its own, so without this the address getters would report a zeroed address
+    /// as if it were a bound one.
+    fn ensure_started(&self) -> Result<(), ListenError> {
+        match self.inner.exclusive.lock().unwrap().state {
+            ListenerState::Open => Err(ListenError::NotStarted),
+            ListenerState::StartComplete
+            | ListenerState::Shutdown
+            | ListenerState::ShutdownComplete => Ok(()),
+        }
+    }
+
     /// Get the local address the listener is bound to.
     ///
     /// Fails with [`ListenError::UnspecifiedLocalAddress`] when the listener was
@@ -175,7 +190,11 @@ impl Listener {
     /// address zeroed, which is the same family. MsQuic fills in the port it bound
     /// to but never the family, so there is no `SocketAddr` to return and
     /// [`local_port()`](Self::local_port) is the getter to use.
+    ///
+    /// Fails with [`ListenError::NotStarted`] before the listener is started,
+    /// where MsQuic would hand back the handle's zeroed address.
     pub fn local_addr(&self) -> Result<SocketAddr, ListenError> {
+        self.ensure_started()?;
         self.msquic_listener
             .get_local_addr()
             .map_err(|_| ListenError::Failed)?
@@ -186,8 +205,11 @@ impl Listener {
     /// Get the port the listener is bound to.
     ///
     /// Unlike [`local_addr()`](Self::local_addr), this works whatever family the
-    /// listener was started with.
+    /// listener was started with. It fails the same way with
+    /// [`ListenError::NotStarted`] before the listener is started, rather than
+    /// reporting the zeroed address's port 0 as a bound one.
     pub fn local_port(&self) -> Result<u16, ListenError> {
+        self.ensure_started()?;
         self.msquic_listener
             .get_local_addr()
             .map(|addr| addr.port())
