@@ -18,7 +18,7 @@ pub use seera_msquic as msquic;
 pub use buffer::StreamRecvBuffer;
 pub use connection::{
     AcceptInboundStream, AcceptInboundUniStream, Connection, ConnectionError, ConnectionEvent,
-    DgramReceiveError, DgramSendError, EventError, OpenOutboundStream,
+    DgramReceiveError, DgramSendError, EventError, LostPath, OpenOutboundStream,
     ShutdownError as ConnectionShutdownError, StartError as ConnectionStartError,
 };
 pub use listener::{ListenError, Listener};

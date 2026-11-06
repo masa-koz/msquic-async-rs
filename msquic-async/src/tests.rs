@@ -3285,3 +3285,60 @@ fn new_client_config_with_custom_cert_validation(
     configuration.load_credential(&cred_config).unwrap();
     Ok(configuration)
 }
+
+/// Test for the conversion behind [`crate::ConnectionEvent::LocalAddressesChanged`].
+///
+/// What MsQuic raises borrows the library's stack: `added` and `removed` hold
+/// their addresses inline, but each lost path holds two raw *pointers*, so the
+/// conversion has to read those out rather than copy the element, which would
+/// copy pointers that dangle the moment the callback returns. The arrays here
+/// are owned by locals, which is exactly their lifetime in a real callback.
+#[cfg(feature = "msquic-seera")]
+#[test]
+fn test_local_addresses_changed_conversion() {
+    use crate::{ConnectionEvent, LostPath};
+
+    let sock = |s: &str| s.parse::<SocketAddr>().unwrap();
+
+    let added = [
+        msquic::Addr::from(sock("127.0.0.2:0")),
+        msquic::Addr::from(sock("127.0.0.3:0")),
+    ];
+    let removed = [msquic::Addr::from(sock("127.0.0.4:0"))];
+    let mut lost_local = msquic::Addr::from(sock("127.0.0.4:4433"));
+    let mut lost_remote = msquic::Addr::from(sock("127.0.0.1:443"));
+    let lost_paths = [msquic::ffi::QUIC_PATH_PARAM {
+        LocalAddress: &mut lost_local as *mut _ as *mut _,
+        RemoteAddress: &mut lost_remote as *mut _ as *mut _,
+    }];
+
+    let event = crate::connection::local_addresses_changed_event(&added, &removed, &lost_paths);
+
+    assert_eq!(
+        event,
+        ConnectionEvent::LocalAddressesChanged {
+            added: vec![sock("127.0.0.2:0"), sock("127.0.0.3:0")],
+            removed: vec![sock("127.0.0.4:0")],
+            // Both addresses read out whole, ports included: that is what
+            // `Connection::remove_path()` takes.
+            lost_paths: vec![LostPath {
+                local_address: sock("127.0.0.4:4433"),
+                remote_address: sock("127.0.0.1:443"),
+            }],
+        }
+    );
+
+    // Each list is independently empty -- a route-only change has no additions,
+    // no removals and no lost paths -- and the bindings hand a null pointer with
+    // a zero count over as an empty slice.
+    let empty = crate::connection::local_addresses_changed_event(&[], &[], &[]);
+
+    assert_eq!(
+        empty,
+        ConnectionEvent::LocalAddressesChanged {
+            added: Vec::new(),
+            removed: Vec::new(),
+            lost_paths: Vec::new(),
+        }
+    );
+}
