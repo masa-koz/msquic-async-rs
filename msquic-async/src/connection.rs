@@ -1457,6 +1457,31 @@ impl ConnectionInner {
     }
 
     #[cfg(feature = "msquic-seera")]
+    fn handle_event_local_addresses_changed(
+        &self,
+        added: &[msquic::Addr],
+        removed: &[msquic::Addr],
+        lost_paths: &[msquic::ffi::QUIC_PATH_PARAM],
+    ) -> Result<(), msquic::Status> {
+        let event = local_addresses_changed_event(added, removed, lost_paths);
+        trace!(
+            "ConnectionInner({:p}) Local addresses changed {:?}",
+            self,
+            event
+        );
+        let mut exclusive = self.exclusive.lock_poison_tolerant();
+        // Each indication is queued rather than coalesced with a pending one:
+        // `removed` is a delta for that change alone, which a later event does
+        // not repeat.
+        exclusive.events.push_back(event);
+        exclusive
+            .event_waiters
+            .drain(..)
+            .for_each(|waker| waker.wake());
+        Ok(())
+    }
+
+    #[cfg(feature = "msquic-seera")]
     fn handle_event_notify_observed_address(
         &self,
         local_address: &msquic::Addr,
@@ -1755,6 +1780,12 @@ impl ConnectionInner {
                 observed_address,
             } => self.handle_event_notify_observed_address(local_address, observed_address),
             #[cfg(feature = "msquic-seera")]
+            msquic::ConnectionEvent::LocalAddressesChanged {
+                added,
+                removed,
+                lost_paths,
+            } => self.handle_event_local_addresses_changed(added, removed, lost_paths),
+            #[cfg(feature = "msquic-seera")]
             msquic::ConnectionEvent::NotifyRemoteAddressAdded {
                 address,
                 sequence_number,
@@ -1814,6 +1845,84 @@ enum ConnectionState {
     ShutdownComplete,
 }
 
+/// Builds a [`ConnectionEvent::LocalAddressesChanged`] that owns its addresses.
+///
+/// Everything the event carries borrows memory that lives only for the duration
+/// of the MsQuic callback, and `lost_paths` is the sharp one: each element holds
+/// two raw pointers into the library's own stack frame, so copying the element
+/// would copy dangling pointers. Both addresses are read out here instead.
+///
+/// An address that cannot be expressed as a `SocketAddr` is dropped with a
+/// warning rather than losing the whole event; MsQuic does not produce one here,
+/// since these come from the host's address list.
+#[cfg(feature = "msquic-seera")]
+pub(crate) fn local_addresses_changed_event(
+    added: &[msquic::Addr],
+    removed: &[msquic::Addr],
+    lost_paths: &[msquic::ffi::QUIC_PATH_PARAM],
+) -> ConnectionEvent {
+    fn to_sockets(addrs: &[msquic::Addr], which: &str) -> Vec<SocketAddr> {
+        addrs
+            .iter()
+            .filter_map(|addr| {
+                let socket = addr.as_socket();
+                if socket.is_none() {
+                    tracing::warn!("Local addresses changed: non-socket address in {}", which);
+                }
+                socket
+            })
+            .collect()
+    }
+
+    let lost_paths = lost_paths
+        .iter()
+        .filter_map(|path| {
+            // SAFETY: MsQuic fills both pointers with addresses that live for
+            // the duration of the callback this runs in, and they are read, not
+            // retained. A null pointer is not expected; it is handled rather
+            // than dereferenced.
+            let addrs = unsafe {
+                (
+                    (path.LocalAddress as *const msquic::Addr).as_ref(),
+                    (path.RemoteAddress as *const msquic::Addr).as_ref(),
+                )
+            };
+            let (Some(local), Some(remote)) = addrs else {
+                tracing::warn!("Local addresses changed: lost path without an address");
+                return None;
+            };
+            let (Some(local_address), Some(remote_address)) =
+                (local.as_socket(), remote.as_socket())
+            else {
+                tracing::warn!("Local addresses changed: lost path with a non-socket address");
+                return None;
+            };
+            Some(LostPath {
+                local_address,
+                remote_address,
+            })
+        })
+        .collect();
+
+    ConnectionEvent::LocalAddressesChanged {
+        added: to_sockets(added, "added"),
+        removed: to_sockets(removed, "removed"),
+        lost_paths,
+    }
+}
+
+/// A path of this connection whose local address the host no longer has.
+///
+/// Carried by [`ConnectionEvent::LocalAddressesChanged`], in the form
+/// `Connection::remove_path()` takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LostPath {
+    /// The address the path was sending from, which the host no longer has.
+    pub local_address: SocketAddr,
+    /// The peer address the path was sending to.
+    pub remote_address: SocketAddr,
+}
+
 /// Events that can occur on a connection.
 ///
 /// Marked `#[non_exhaustive]`: MsQuic gains events, and this enum follows it, so a
@@ -1821,6 +1930,39 @@ enum ConnectionState {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ConnectionEvent {
+    /// The host's set of local addresses changed.
+    ///
+    /// Only raised while the connection is in
+    /// `msquic::LocalAddressChangeMode::Notify`, the mode in which the library
+    /// reports what changed and leaves the decision to the application. `Auto`
+    /// never raises it: there the connection acts for itself and reports what it
+    /// did, through [`ConnectionEvent::PathAdded`] and
+    /// [`ConnectionEvent::PathRemoved`] on a multipath connection.
+    ///
+    /// Act on it with `Connection::add_path()`, `Connection::activate_path()` and
+    /// `Connection::remove_path()`. The C API warns that calling those from
+    /// inside the callback re-enters the handler, because `SetParam` runs inline
+    /// there; that cannot happen here, since the event is queued and handed over
+    /// by [`Connection::poll_event()`] well outside the callback.
+    LocalAddressesChanged {
+        /// Addresses the host has that this connection is not already sending
+        /// from, so the ones a new path could use. The port is always 0.
+        ///
+        /// A complete view of the present rather than a delta: it replaces what
+        /// an earlier event reported instead of adding to it, since an address
+        /// the host has since dropped is no longer listed.
+        added: Vec<SocketAddr>,
+        /// Addresses the host no longer has, as of this change. The port is
+        /// always 0.
+        ///
+        /// A delta, and the one list that can be incomplete: it covers only the
+        /// most recent change, so a burst of changes that collapses into a single
+        /// event reports only its last step. `lost_paths` is the list to act on.
+        removed: Vec<SocketAddr>,
+        /// This connection's paths whose local address is gone, which is always
+        /// complete.
+        lost_paths: Vec<LostPath>,
+    },
     /// A new observed address has been detected.
     NotifyObservedAddress {
         local_address: SocketAddr,
