@@ -1932,12 +1932,16 @@ pub struct LostPath {
 pub enum ConnectionEvent {
     /// The host's set of local addresses changed.
     ///
-    /// Only raised while the connection is in
-    /// `msquic::LocalAddressChangeMode::Notify`, the mode in which the library
-    /// reports what changed and leaves the decision to the application. `Auto`
-    /// never raises it: there the connection acts for itself and reports what it
-    /// did, through [`ConnectionEvent::PathAdded`] and
+    /// Only raised while the connection is in `msquic::AddAddressMode::Manual`,
+    /// the mode in which the library reports what changed and leaves every
+    /// decision to the application. The default, `Auto`, never raises it: there
+    /// the connection tracks the addresses and manages its paths itself, and
+    /// reports what it did through [`ConnectionEvent::PathAdded`] and
     /// [`ConnectionEvent::PathRemoved`] on a multipath connection.
+    /// `NatTraversal` behaves as `Auto` for this purpose.
+    ///
+    /// `msquic::LocalAddressChangeMode`, which used to be the switch for this,
+    /// is deprecated: MsQuic accepts the setting and ignores it.
     ///
     /// Act on it with `Connection::add_path()`, `Connection::activate_path()` and
     /// `Connection::remove_path()`. The C API warns that calling those from
