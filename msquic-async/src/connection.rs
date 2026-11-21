@@ -2107,13 +2107,13 @@ impl LocalAddressPolicyAction {
     }
 
     fn from_raw(raw: u8) -> Option<Self> {
-        if raw as u32
-            == msquic::ffi::QUIC_LOCAL_ADDRESS_POLICY_ACTION_QUIC_LOCAL_ADDRESS_POLICY_EXCLUDE
-        {
-            Some(Self::Exclude)
-        } else {
-            None
-        }
+        // Compared in the `u8` the struct field is, through `as_raw()`, rather
+        // than against the ffi constant directly: that constant's own integer
+        // type is bindgen's view of the C enum, which is `u32` on Linux and
+        // `i32` on Windows, so neither side of a direct comparison is portable.
+        [Self::Exclude]
+            .into_iter()
+            .find(|action| action.as_raw() == raw)
     }
 }
 
