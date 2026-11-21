@@ -21,6 +21,8 @@ pub use connection::{
     DgramReceiveError, DgramSendError, EventError, LostPath, OpenOutboundStream,
     ShutdownError as ConnectionShutdownError, StartError as ConnectionStartError,
 };
+#[cfg(feature = "msquic-seera")]
+pub use connection::{LocalAddressPolicy, LocalAddressPolicyAction};
 pub use listener::{ListenError, Listener};
 pub use registration::{Registration, WaitIdle};
 pub use stream::{

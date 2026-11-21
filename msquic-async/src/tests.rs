@@ -3342,3 +3342,96 @@ fn test_local_addresses_changed_conversion() {
         }
     );
 }
+
+/// Test for ['Connection::add_local_address_policy'],
+/// ['Connection::remove_local_address_policy'] and
+/// ['Connection::get_local_address_policies'].
+///
+/// The policies are a client-side setting that MsQuic accepts before the
+/// connection is started, so no peer is needed. The assertions pin the parts
+/// that are easy to get wrong in the plumbing: the order policies come back in,
+/// the port being cleared, an IPv4-mapped address being unmapped before its
+/// prefix is checked, and the round trip through the two-call sizing of the
+/// getter.
+#[cfg(feature = "msquic-seera")]
+#[test(tokio::test)]
+async fn test_local_address_policies() {
+    use crate::{LocalAddressPolicy, LocalAddressPolicyAction};
+
+    let sock = |s: &str| s.parse::<SocketAddr>().unwrap();
+
+    let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let conn = Connection::new(&registration).unwrap();
+
+    assert_eq!(
+        conn.get_local_address_policies().expect("policies"),
+        Vec::new(),
+        "a connection starts with none, which MsQuic answers without a buffer"
+    );
+
+    // The port is ignored, and comes back cleared.
+    conn.add_local_address_policy(sock("10.0.0.0:443"), 8, LocalAddressPolicyAction::Exclude)
+        .expect("add 10.0.0.0/8");
+    conn.add_local_address_policy(
+        sock("[2001:db8::]:0"),
+        32,
+        LocalAddressPolicyAction::Exclude,
+    )
+    .expect("add 2001:db8::/32");
+
+    // The same address, prefix and action again is a duplicate.
+    assert!(conn
+        .add_local_address_policy(sock("10.0.0.0:0"), 8, LocalAddressPolicyAction::Exclude)
+        .is_err());
+
+    // An overlapping prefix is a different policy, not a duplicate.
+    conn.add_local_address_policy(sock("10.1.0.0:0"), 16, LocalAddressPolicyAction::Exclude)
+        .expect("add 10.1.0.0/16");
+
+    // Unmapped before the prefix is checked, so 128 is too long for what is
+    // really an IPv4 address.
+    assert!(conn
+        .add_local_address_policy(
+            sock("[::ffff:10.1.2.3]:0"),
+            128,
+            LocalAddressPolicyAction::Exclude
+        )
+        .is_err());
+
+    assert_eq!(
+        conn.get_local_address_policies().expect("policies"),
+        vec![
+            LocalAddressPolicy {
+                address: sock("10.0.0.0:0"),
+                prefix_length: 8,
+                action: LocalAddressPolicyAction::Exclude,
+            },
+            LocalAddressPolicy {
+                address: sock("[2001:db8::]:0"),
+                prefix_length: 32,
+                action: LocalAddressPolicyAction::Exclude,
+            },
+            LocalAddressPolicy {
+                address: sock("10.1.0.0:0"),
+                prefix_length: 16,
+                action: LocalAddressPolicyAction::Exclude,
+            },
+        ],
+        "reported in the order they were added, with the ports cleared"
+    );
+
+    // Matched on address, prefix and action together.
+    assert!(conn
+        .remove_local_address_policy(sock("10.0.0.0:0"), 16, LocalAddressPolicyAction::Exclude)
+        .is_err());
+    conn.remove_local_address_policy(sock("10.0.0.0:999"), 8, LocalAddressPolicyAction::Exclude)
+        .expect("remove 10.0.0.0/8");
+    assert!(conn
+        .remove_local_address_policy(sock("10.0.0.0:0"), 8, LocalAddressPolicyAction::Exclude)
+        .is_err());
+
+    let policies = conn.get_local_address_policies().expect("policies");
+    assert_eq!(policies.len(), 2);
+    assert_eq!(policies[0].address, sock("[2001:db8::]:0"));
+    assert_eq!(policies[1].address, sock("10.1.0.0:0"));
+}
