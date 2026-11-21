@@ -940,6 +940,178 @@ impl Connection {
         .map_err(ConnectionError::OtherError)
     }
 
+    /// Add a policy about the host's own addresses.
+    ///
+    /// `AUTO` pairs every address the host has with every remote the connection
+    /// knows and opens paths from the top of that table. A policy takes addresses
+    /// out of that: [`LocalAddressPolicyAction::Exclude`] over
+    /// `address`/`prefix_length` keeps them from ever being picked automatically.
+    /// An address the application names itself, with
+    /// [`Connection::add_path()`](Connection::add_path), is not affected.
+    ///
+    /// The port is ignored — a policy is about addresses — and MsQuic stores the
+    /// address with the port cleared, which is how
+    /// [`get_local_address_policies()`](Connection::get_local_address_policies)
+    /// reports it back.
+    ///
+    /// An IPv4-mapped IPv6 address is unmapped before anything is decided about
+    /// it, so `prefix_length` is then checked against IPv4: `::ffff:10.1.2.3/32`
+    /// is the whole of `10.1.2.3`, and `/128` is rejected rather than registered
+    /// as a rule that could never match.
+    ///
+    /// # Errors
+    ///
+    /// - `QUIC_STATUS_INVALID_STATE` on a server connection, or after the
+    ///   connection has been closed locally.
+    /// - `QUIC_STATUS_INVALID_PARAMETER` for a prefix longer than the family
+    ///   allows (32 for IPv4, 128 for IPv6) or an unspecified family — a policy
+    ///   has to say which family it is about, and "every address" is what a zero
+    ///   prefix length already says.
+    /// - `QUIC_STATUS_ADDRESS_IN_USE` for a policy already registered. Address,
+    ///   prefix and action are compared together, so `10.0.0.0/8` and
+    ///   `10.1.0.0/16` are two policies rather than a duplicate.
+    /// - `QUIC_STATUS_PATH_LIMIT_REACHED` once 16 policies are registered.
+    #[cfg(feature = "msquic-seera")]
+    pub fn add_local_address_policy(
+        &self,
+        address: SocketAddr,
+        prefix_length: u8,
+        action: LocalAddressPolicyAction,
+    ) -> Result<(), ConnectionError> {
+        self.set_local_address_policy(
+            msquic::ffi::QUIC_PARAM_CONN_ADD_LOCAL_ADDRESS_POLICY,
+            address,
+            prefix_length,
+            action,
+        )
+    }
+
+    /// Remove a policy added with
+    /// [`add_local_address_policy()`](Connection::add_local_address_policy).
+    ///
+    /// The policy to remove is matched on its address, prefix length and action
+    /// together, the same way a duplicate is detected on the way in, and the port
+    /// is ignored here too. Fails with `QUIC_STATUS_NOT_FOUND` if no policy
+    /// matches, and like the adder with `QUIC_STATUS_INVALID_STATE` on a server
+    /// connection or after a local close.
+    #[cfg(feature = "msquic-seera")]
+    pub fn remove_local_address_policy(
+        &self,
+        address: SocketAddr,
+        prefix_length: u8,
+        action: LocalAddressPolicyAction,
+    ) -> Result<(), ConnectionError> {
+        self.set_local_address_policy(
+            msquic::ffi::QUIC_PARAM_CONN_REMOVE_LOCAL_ADDRESS_POLICY,
+            address,
+            prefix_length,
+            action,
+        )
+    }
+
+    /// The policies registered on this connection, in the order they were added.
+    ///
+    /// Empty when none are. The addresses come back with the port cleared, which
+    /// is what the policies match on.
+    ///
+    /// The number of policies is not known ahead of time, so this asks MsQuic for
+    /// the size it needs and then for the policies, retrying a bounded number of
+    /// times in case one is added in between.
+    #[cfg(feature = "msquic-seera")]
+    pub fn get_local_address_policies(&self) -> Result<Vec<LocalAddressPolicy>, ConnectionError> {
+        /// Bounded because growing is for a policy added mid-call, not for a
+        /// connection that keeps adding them; 16 is MsQuic's limit anyway.
+        const ATTEMPTS: usize = 4;
+
+        // SAFETY: the handle is only used for the `get_param` calls below, which do
+        // not outlive this borrow of the connection.
+        let handle = unsafe { self.0.msquic_conn.as_raw() };
+        // `u64` rather than `u8` for the alignment: the first thing in each entry
+        // is a pointer, and MsQuic writes the addresses at a pointer-aligned
+        // offset after them.
+        let mut buffer = Vec::<u64>::new();
+        let mut capacity_bytes = 0u32;
+        let mut last_status = None;
+
+        for _ in 0..ATTEMPTS {
+            let mut length = capacity_bytes;
+            let pointer = if capacity_bytes == 0 {
+                // MsQuic answers the empty case, and reports the size it wants,
+                // without looking at the buffer.
+                std::ptr::null_mut()
+            } else {
+                buffer.as_mut_ptr() as *mut c_void
+            };
+
+            // SAFETY: `buffer` holds `capacity_bytes`, and MsQuic writes at most
+            // that, reporting in `length` how much it wrote. On a short buffer it
+            // writes nothing and reports what it needs instead.
+            let result = unsafe {
+                msquic::Api::get_param(
+                    handle,
+                    msquic::ffi::QUIC_PARAM_CONN_LOCAL_ADDRESS_POLICIES,
+                    std::ptr::addr_of_mut!(length) as *const u32,
+                    pointer,
+                )
+            };
+
+            match result {
+                // SAFETY: MsQuic wrote `length` bytes, bounded by the capacity
+                // passed in, in the layout `local_address_policies()` reads.
+                Ok(()) => {
+                    return Ok(unsafe {
+                        local_address_policies(&buffer, length.min(capacity_bytes) as usize)
+                    })
+                }
+                // Grow and retry when MsQuic asked for more room than was offered —
+                // the only reason it rewrites `length` upwards. The status is
+                // deliberately not consulted: QUIC_STATUS_BUFFER_TOO_SMALL is
+                // EOVERFLOW on POSIX, whose value differs between Linux and macOS
+                // while these bindings carry the Linux one on both.
+                Err(status) => {
+                    if length > capacity_bytes {
+                        capacity_bytes = length;
+                        buffer = vec![0u64; (length as usize).div_ceil(8)];
+                        last_status = Some(status);
+                    } else {
+                        return Err(ConnectionError::OtherError(status));
+                    }
+                }
+            }
+        }
+
+        Err(ConnectionError::OtherError(last_status.expect(
+            "the loop only continues after recording the status it grew on",
+        )))
+    }
+
+    #[cfg(feature = "msquic-seera")]
+    fn set_local_address_policy(
+        &self,
+        param: u32,
+        address: SocketAddr,
+        prefix_length: u8,
+        action: LocalAddressPolicyAction,
+    ) -> Result<(), ConnectionError> {
+        let mut address = msquic::Addr::from(address);
+        let policy = msquic::ffi::QUIC_LOCAL_ADDRESS_POLICY {
+            Address: &mut address as *mut _ as *mut _,
+            PrefixLength: prefix_length,
+            Action: action.as_raw(),
+        };
+        // SAFETY: `policy` and the address it points at both outlive the call, and
+        // MsQuic copies what it keeps.
+        unsafe {
+            msquic::Api::set_param(
+                self.0.msquic_conn.as_raw(),
+                param,
+                std::mem::size_of::<msquic::ffi::QUIC_LOCAL_ADDRESS_POLICY>() as u32,
+                &policy as *const _ as *const _,
+            )
+        }
+        .map_err(ConnectionError::OtherError)
+    }
+
     /// Poll to receive events on the connection.
     pub fn poll_event(&self, cx: &mut Context<'_>) -> Poll<Result<ConnectionEvent, EventError>> {
         let mut exclusive = self.0.exclusive.lock_poison_tolerant();
@@ -2026,6 +2198,129 @@ pub(crate) fn local_addresses_changed_event(
         removed: to_sockets(removed, "removed"),
         lost_paths,
     }
+}
+
+/// What a local address policy does to the addresses it matches.
+///
+/// Carried by [`LocalAddressPolicy`], and the `action` of
+/// [`Connection::add_local_address_policy()`].
+#[cfg(feature = "msquic-seera")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum LocalAddressPolicyAction {
+    /// Never pick a matching address automatically.
+    Exclude,
+}
+
+#[cfg(feature = "msquic-seera")]
+impl LocalAddressPolicyAction {
+    fn as_raw(self) -> u8 {
+        match self {
+            Self::Exclude => {
+                msquic::ffi::QUIC_LOCAL_ADDRESS_POLICY_ACTION_QUIC_LOCAL_ADDRESS_POLICY_EXCLUDE
+                    as u8
+            }
+        }
+    }
+
+    fn from_raw(raw: u8) -> Option<Self> {
+        // Compared in the `u8` the struct field is, through `as_raw()`, rather
+        // than against the ffi constant directly: that constant's own integer
+        // type is bindgen's view of the C enum, which is `u32` on Linux and
+        // `i32` on Windows, so neither side of a direct comparison is portable.
+        [Self::Exclude]
+            .into_iter()
+            .find(|action| action.as_raw() == raw)
+    }
+}
+
+/// One rule about the host's own addresses, as
+/// [`Connection::get_local_address_policies()`] reports it.
+#[cfg(feature = "msquic-seera")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct LocalAddressPolicy {
+    /// The address the rule matches, with the port cleared. An IPv4-mapped
+    /// address is reported unmapped, which is what it matches on.
+    pub address: SocketAddr,
+    /// How many leading bits of `address` have to match: 0-32 for IPv4, 0-128
+    /// for IPv6.
+    pub prefix_length: u8,
+    /// What happens to an address the rule matches.
+    pub action: LocalAddressPolicyAction,
+}
+
+/// Reads the policies out of what `QUIC_PARAM_CONN_LOCAL_ADDRESS_POLICIES` wrote.
+///
+/// The parameter writes `n` structs and then the `n` addresses they point at, so
+/// the buffer is self-contained but not relocatable: each `Address` points inside
+/// it. What the addresses say is copied out here; where they point is not kept.
+///
+/// A policy whose address or action cannot be represented is dropped with a
+/// warning rather than losing the rest — MsQuic produces neither today.
+///
+/// # Safety
+///
+/// `length` bytes of `buffer` must be what MsQuic wrote for this parameter.
+#[cfg(feature = "msquic-seera")]
+unsafe fn local_address_policies(buffer: &[u64], length: usize) -> Vec<LocalAddressPolicy> {
+    const ENTRY_SIZE: usize = std::mem::size_of::<msquic::ffi::QUIC_LOCAL_ADDRESS_POLICY>()
+        + std::mem::size_of::<msquic::Addr>();
+
+    // `ENTRY_SIZE` has to be what the C computed, or the reads below land between
+    // entries and dereference whatever they find there. The struct half bindgen
+    // checks for us; the address half it cannot, because `ffi::QUIC_ADDR` is an
+    // opaque `c_void` and `msquic::Addr` is written by hand against it. The
+    // bindings do pin its size, but inside a `#[cfg(test)]` module of their own,
+    // which never compiles here.
+    const _: () = assert!(std::mem::size_of::<msquic::Addr>() == 28);
+
+    // MsQuic writes exactly `Count * ENTRY_SIZE` bytes, so a remainder means the
+    // stride above is wrong -- the one thing the assertion cannot catch, a change
+    // on the C side. Report nothing rather than read at the wrong offsets.
+    if length % ENTRY_SIZE != 0 {
+        error!(
+            "Local address policies: {} bytes is not a whole number of {}-byte entries",
+            length, ENTRY_SIZE
+        );
+        return Vec::new();
+    }
+
+    let count = length / ENTRY_SIZE;
+    let policies = buffer.as_ptr() as *const msquic::ffi::QUIC_LOCAL_ADDRESS_POLICY;
+    let mut out = Vec::with_capacity(count);
+
+    for i in 0..count {
+        // SAFETY: the caller guarantees `length` bytes written by MsQuic, which
+        // are `count` structs followed by their addresses, and `i < count`.
+        let policy = unsafe { *policies.add(i) };
+        // SAFETY: MsQuic points each struct at an address inside this same
+        // buffer, which outlives the read. A null pointer is not expected; it is
+        // handled rather than dereferenced.
+        let address = unsafe { (policy.Address as *const msquic::Addr).as_ref() };
+        let Some(address) = address else {
+            tracing::warn!("Local address policy without an address");
+            continue;
+        };
+        let Some(address) = address.as_socket() else {
+            tracing::warn!("Local address policy with a non-socket address");
+            continue;
+        };
+        let Some(action) = LocalAddressPolicyAction::from_raw(policy.Action) else {
+            tracing::warn!(
+                "Local address policy with an unknown action {}",
+                policy.Action
+            );
+            continue;
+        };
+        out.push(LocalAddressPolicy {
+            address,
+            prefix_length: policy.PrefixLength,
+            action,
+        });
+    }
+
+    out
 }
 
 /// A path of this connection whose local address the host no longer has.
