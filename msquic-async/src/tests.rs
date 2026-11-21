@@ -3398,6 +3398,15 @@ async fn test_local_address_policies() {
         )
         .is_err());
 
+    // The same address with a prefix the unmapped family allows is accepted, and
+    // comes back unmapped: 32 bits is the whole of 10.1.2.3.
+    conn.add_local_address_policy(
+        sock("[::ffff:10.1.2.3]:0"),
+        32,
+        LocalAddressPolicyAction::Exclude,
+    )
+    .expect("add ::ffff:10.1.2.3/32");
+
     assert_eq!(
         conn.get_local_address_policies().expect("policies"),
         vec![
@@ -3416,8 +3425,14 @@ async fn test_local_address_policies() {
                 prefix_length: 16,
                 action: LocalAddressPolicyAction::Exclude,
             },
+            LocalAddressPolicy {
+                address: sock("10.1.2.3:0"),
+                prefix_length: 32,
+                action: LocalAddressPolicyAction::Exclude,
+            },
         ],
-        "reported in the order they were added, with the ports cleared"
+        "reported in the order they were added, with the ports cleared and the \
+         mapped address unmapped"
     );
 
     // Matched on address, prefix and action together.
@@ -3431,7 +3446,48 @@ async fn test_local_address_policies() {
         .is_err());
 
     let policies = conn.get_local_address_policies().expect("policies");
-    assert_eq!(policies.len(), 2);
+    assert_eq!(policies.len(), 3);
     assert_eq!(policies[0].address, sock("[2001:db8::]:0"));
     assert_eq!(policies[1].address, sock("10.1.0.0:0"));
+    assert_eq!(policies[2].address, sock("10.1.2.3:0"));
+}
+
+/// Test for the limit ['Connection::add_local_address_policy'] reports.
+///
+/// MsQuic keeps at most QUIC_MAX_LOCAL_ADDRESS_POLICIES (16) of them, and the
+/// getter has to read a full set back -- which is the buffer size its first call
+/// learns rather than guesses.
+#[cfg(feature = "msquic-seera")]
+#[test(tokio::test)]
+async fn test_local_address_policy_limit() {
+    use crate::LocalAddressPolicyAction;
+
+    let registration = crate::Registration::new(&msquic::RegistrationConfig::default()).unwrap();
+    let conn = Connection::new(&registration).unwrap();
+
+    for i in 0..16u8 {
+        conn.add_local_address_policy(
+            SocketAddr::from(([10, i, 0, 0], 0)),
+            16,
+            LocalAddressPolicyAction::Exclude,
+        )
+        .unwrap_or_else(|e| panic!("add 10.{i}.0.0/16: {e}"));
+    }
+
+    assert!(
+        conn.add_local_address_policy(
+            SocketAddr::from(([10, 16, 0, 0], 0)),
+            16,
+            LocalAddressPolicyAction::Exclude,
+        )
+        .is_err(),
+        "the 17th policy does not fit"
+    );
+
+    let policies = conn.get_local_address_policies().expect("policies");
+    assert_eq!(policies.len(), 16);
+    for (i, policy) in policies.iter().enumerate() {
+        assert_eq!(policy.address, SocketAddr::from(([10, i as u8, 0, 0], 0)));
+        assert_eq!(policy.prefix_length, 16);
+    }
 }

@@ -2121,6 +2121,7 @@ impl LocalAddressPolicyAction {
 /// [`Connection::get_local_address_policies()`] reports it.
 #[cfg(feature = "msquic-seera")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct LocalAddressPolicy {
     /// The address the rule matches, with the port cleared. An IPv4-mapped
     /// address is reported unmapped, which is what it matches on.
@@ -2148,6 +2149,25 @@ pub struct LocalAddressPolicy {
 unsafe fn local_address_policies(buffer: &[u64], length: usize) -> Vec<LocalAddressPolicy> {
     const ENTRY_SIZE: usize = std::mem::size_of::<msquic::ffi::QUIC_LOCAL_ADDRESS_POLICY>()
         + std::mem::size_of::<msquic::Addr>();
+
+    // `ENTRY_SIZE` has to be what the C computed, or the reads below land between
+    // entries and dereference whatever they find there. The struct half bindgen
+    // checks for us; the address half it cannot, because `ffi::QUIC_ADDR` is an
+    // opaque `c_void` and `msquic::Addr` is written by hand against it. The
+    // bindings do pin its size, but inside a `#[cfg(test)]` module of their own,
+    // which never compiles here.
+    const _: () = assert!(std::mem::size_of::<msquic::Addr>() == 28);
+
+    // MsQuic writes exactly `Count * ENTRY_SIZE` bytes, so a remainder means the
+    // stride above is wrong -- the one thing the assertion cannot catch, a change
+    // on the C side. Report nothing rather than read at the wrong offsets.
+    if length % ENTRY_SIZE != 0 {
+        error!(
+            "Local address policies: {} bytes is not a whole number of {}-byte entries",
+            length, ENTRY_SIZE
+        );
+        return Vec::new();
+    }
 
     let count = length / ENTRY_SIZE;
     let policies = buffer.as_ptr() as *const msquic::ffi::QUIC_LOCAL_ADDRESS_POLICY;
