@@ -21,7 +21,6 @@ use std::task::{Context, Poll, Waker};
 
 use bytes::Bytes;
 use libc::c_void;
-use msquic::ffi::QUIC_TLS_SECRETS__bindgen_ty_1;
 use thiserror::Error;
 use tracing::{error, info, trace};
 
@@ -1096,20 +1095,18 @@ impl Connection {
             return Err(ConnectionError::SslKeyLogFileAlreadySet);
         }
         if exclusive.tls_secrets.is_none() {
-            exclusive.tls_secrets = Some(Box::new(msquic::ffi::QUIC_TLS_SECRETS {
-                SecretLength: 0,
-                ClientRandom: [0; 32],
-                IsSet: QUIC_TLS_SECRETS__bindgen_ty_1 {
-                    _bitfield_align_1: [0; 0],
-                    _bitfield_1: QUIC_TLS_SECRETS__bindgen_ty_1::new_bitfield_1(
-                        0u8, 0u8, 0u8, 0u8, 0u8, 0u8,
-                    ),
-                },
-                ClientEarlyTrafficSecret: [0; 64],
-                ClientHandshakeTrafficSecret: [0; 64],
-                ServerHandshakeTrafficSecret: [0; 64],
-                ClientTrafficSecret0: [0; 64],
-                ServerTrafficSecret0: [0; 64],
+            // Zeroed as a whole rather than field by field: every field starts at
+            // zero anyway, and `IsSet` is a bindgen bitfield whose shape is the
+            // generator's business -- bindgen 0.73 dropped the zero-sized
+            // `_bitfield_align_1` that 0.72 emitted, so naming its fields only
+            // compiles against one of the backends this crate supports.
+            //
+            // SAFETY: QUIC_TLS_SECRETS is a repr(C) aggregate of integers, byte
+            // arrays and that bitfield, for all of which all-zero is a valid
+            // value. It is what MsQuic expects to be handed, too: the parameter
+            // takes an empty structure to fill in.
+            exclusive.tls_secrets = Some(Box::new(unsafe {
+                std::mem::zeroed::<msquic::ffi::QUIC_TLS_SECRETS>()
             }));
             unsafe {
                 msquic::Api::set_param(

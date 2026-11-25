@@ -326,22 +326,15 @@ impl ListenerInner {
             if sslkeylog_file.is_none() {
                 (None, None)
             } else {
-                // Create a QUIC_TLS_SECRETS structure with zeroed fields
-                let tls_secrets = Box::new(msquic::ffi::QUIC_TLS_SECRETS {
-                    SecretLength: 0,
-                    ClientRandom: [0; 32],
-                    IsSet: msquic::ffi::QUIC_TLS_SECRETS__bindgen_ty_1 {
-                        _bitfield_align_1: [0; 0],
-                        _bitfield_1: msquic::ffi::QUIC_TLS_SECRETS__bindgen_ty_1::new_bitfield_1(
-                            0u8, 0u8, 0u8, 0u8, 0u8, 0u8,
-                        ),
-                    },
-                    ClientEarlyTrafficSecret: [0; 64],
-                    ClientHandshakeTrafficSecret: [0; 64],
-                    ServerHandshakeTrafficSecret: [0; 64],
-                    ClientTrafficSecret0: [0; 64],
-                    ServerTrafficSecret0: [0; 64],
-                });
+                // A QUIC_TLS_SECRETS for MsQuic to fill in, zeroed as a whole
+                // rather than field by field: `IsSet` is a bindgen bitfield
+                // whose shape is the generator's business, and bindgen 0.73
+                // dropped the zero-sized `_bitfield_align_1` that 0.72 emitted.
+                //
+                // SAFETY: repr(C) aggregate of integers, byte arrays and that
+                // bitfield, for all of which all-zero is a valid value.
+                let tls_secrets =
+                    Box::new(unsafe { std::mem::zeroed::<msquic::ffi::QUIC_TLS_SECRETS>() });
                 unsafe {
                     msquic::Api::set_param(
                         connection.as_raw(),
