@@ -16,7 +16,7 @@ h3-datagram = { git = "https://github.com/hyperium/h3", rev = "c916ed5af1c6818c7
 hex = "0.4"
 http = "1"
 libc = "0.2.153"
-msquic = { version = "2.6.0-beta", path = "./msquic" }
+msquic = { version = "2.7.0-beta", path = "./msquic" }
 msquic-v2-5 = { package = "msquic", version = "2.5.1-beta" }
 seera-msquic = { version = "2.7.0-beta", path = "./seera-msquic" }
 msquic-async = { version = "0.5.0", path = "./msquic-async", default-features = false }
