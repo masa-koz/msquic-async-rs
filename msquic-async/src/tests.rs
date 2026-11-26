@@ -21,6 +21,41 @@ use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 
+/// How long a test's spawned tasks get to finish.
+///
+/// Generous on purpose: the whole suite runs in about two and a half seconds,
+/// so this is not a budget for a slow test but a bound on a stuck one.
+const DRAIN_DEADLINE: Duration = Duration::from_secs(60);
+
+/// Waits for every task in `set`, under [`DRAIN_DEADLINE`], and returns what
+/// they produced.
+///
+/// Draining without a deadline is how a single stuck task parks the whole
+/// suite: libtest names the test that has been running for over 60 seconds and
+/// then says nothing more, and the CI job sits there until something kills it.
+/// Both hangs recorded in #114 ended that way, neither reproducible, so the
+/// deadline is what turns the next one into a failure with a message instead of
+/// a silence.
+///
+/// A task that panicked has its panic resumed here, which is what every caller
+/// did with the results it collected; a task cancelled without panicking is
+/// ignored, as before.
+async fn drain_tasks<T: 'static>(set: &mut JoinSet<T>) -> Vec<T> {
+    let mut results = Vec::new();
+    loop {
+        match timeout(DRAIN_DEADLINE, set.join_next()).await {
+            Ok(None) => return results,
+            Ok(Some(Ok(value))) => results.push(value),
+            Ok(Some(Err(err))) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
+            Ok(Some(Err(_))) => {}
+            Err(_) => panic!(
+                "a spawned task was still running after {DRAIN_DEADLINE:?}; \
+                 the test is stuck rather than slow (see #114)"
+            ),
+        }
+    }
+}
+
 /// Test for ['Connection::start()']
 #[test(tokio::test)]
 async fn test_connection_start() {
@@ -87,17 +122,7 @@ async fn test_connection_start() {
         }
     });
 
-    let mut results = Vec::new();
-    while let Some(res) = set.join_next().await {
-        results.push(res);
-    }
-    results.into_iter().for_each(|res| {
-        if let Err(err) = res {
-            if err.is_panic() {
-                std::panic::resume_unwind(err.into_panic());
-            }
-        }
-    });
+    drain_tasks(&mut set).await;
 }
 
 /// Test for ['Connection::set_peer_certificate_received_callback()'] - accepting.
@@ -204,17 +229,7 @@ async fn test_connection_custom_cert_validation_success() {
     // shutdown instead of reporting the failure.
     let reported = timeout(Duration::from_secs(10), cert_rx.recv()).await;
 
-    let mut results = Vec::new();
-    while let Some(res) = set.join_next().await {
-        results.push(res);
-    }
-    results.into_iter().for_each(|res| {
-        if let Err(err) = res {
-            if err.is_panic() {
-                std::panic::resume_unwind(err.into_panic());
-            }
-        }
-    });
+    drain_tasks(&mut set).await;
 
     // The handler ran, and saw the certificate the server was configured with.
     let common_name = reported
@@ -283,17 +298,7 @@ async fn test_connection_custom_cert_validation_fail() {
         client_rx.recv().await.unwrap();
     });
 
-    let mut results = Vec::new();
-    while let Some(res) = set.join_next().await {
-        results.push(res);
-    }
-    results.into_iter().for_each(|res| {
-        if let Err(err) = res {
-            if err.is_panic() {
-                std::panic::resume_unwind(err.into_panic());
-            }
-        }
-    });
+    drain_tasks(&mut set).await;
 }
 
 /// Test for ['Connection::shutdown()']
@@ -350,17 +355,7 @@ async fn test_connection_poll_shutdown() {
         client_tx.send(()).await.expect("send");
     });
 
-    let mut results = Vec::new();
-    while let Some(res) = set.join_next().await {
-        results.push(res);
-    }
-    results.into_iter().for_each(|res| {
-        if let Err(err) = res {
-            if err.is_panic() {
-                std::panic::resume_unwind(err.into_panic());
-            }
-        }
-    });
+    drain_tasks(&mut set).await;
 }
 
 /// Test for ['Listener::accept()']
@@ -408,17 +403,7 @@ async fn test_listener_accept() {
         )
         .await;
 
-    let mut results = Vec::new();
-    while let Some(res) = set.join_next().await {
-        results.push(res);
-    }
-    results.into_iter().for_each(|res| {
-        if let Err(err) = res {
-            if err.is_panic() {
-                std::panic::resume_unwind(err.into_panic());
-            }
-        }
-    });
+    drain_tasks(&mut set).await;
 }
 
 /// Test for ['Connection::set_remote_addr()'].
@@ -651,17 +636,7 @@ async fn test_open_outbound_stream() {
         client_rx.recv().await.expect("recv");
     });
 
-    let mut results = Vec::new();
-    while let Some(res) = set.join_next().await {
-        results.push(res);
-    }
-    results.into_iter().for_each(|res| {
-        if let Err(err) = res {
-            if err.is_panic() {
-                std::panic::resume_unwind(err.into_panic());
-            }
-        }
-    });
+    drain_tasks(&mut set).await;
 }
 
 /// Test for ['Connection::open_outbound_stream']
@@ -770,17 +745,7 @@ async fn test_open_outbound_stream_exceed_limit() -> Result<(), anyhow::Error> {
         Ok::<_, anyhow::Error>(())
     });
 
-    let mut results = Vec::new();
-    while let Some(res) = set.join_next().await {
-        results.push(res);
-    }
-    results.into_iter().for_each(|res| {
-        if let Err(err) = res {
-            if err.is_panic() {
-                std::panic::resume_unwind(err.into_panic());
-            }
-        }
-    });
+    drain_tasks(&mut set).await;
 
     Ok(())
 }
@@ -912,17 +877,7 @@ async fn test_open_outbound_stream_exceed_limit_and_accepted() {
         client_rx.recv().await.unwrap();
     });
 
-    let mut results = Vec::new();
-    while let Some(res) = set.join_next().await {
-        results.push(res);
-    }
-    results.into_iter().for_each(|res| {
-        if let Err(err) = res {
-            if err.is_panic() {
-                std::panic::resume_unwind(err.into_panic());
-            }
-        }
-    });
+    drain_tasks(&mut set).await;
 }
 
 /// Test for ['Stream::poll_write']
@@ -989,17 +944,7 @@ async fn test_poll_write() {
         client_rx.recv().await.expect("recv");
     });
 
-    let mut results = Vec::new();
-    while let Some(res) = set.join_next().await {
-        results.push(res);
-    }
-    results.into_iter().for_each(|res| {
-        if let Err(err) = res {
-            if err.is_panic() {
-                std::panic::resume_unwind(err.into_panic());
-            }
-        }
-    });
+    drain_tasks(&mut set).await;
 }
 
 /// Test for ['Stream::write_chunk']
@@ -1064,17 +1009,7 @@ async fn test_write_chunk() {
         client_rx.recv().await.unwrap();
     });
 
-    let mut results = Vec::new();
-    while let Some(res) = set.join_next().await {
-        results.push(res);
-    }
-    results.into_iter().for_each(|res| {
-        if let Err(err) = res {
-            if err.is_panic() {
-                std::panic::resume_unwind(err.into_panic());
-            }
-        }
-    });
+    drain_tasks(&mut set).await;
 }
 
 /// Test for ['Stream::write_chunks']
@@ -1139,17 +1074,7 @@ async fn test_write_chunks() {
         client_rx.recv().await.unwrap();
     });
 
-    let mut results = Vec::new();
-    while let Some(res) = set.join_next().await {
-        results.push(res);
-    }
-    results.into_iter().for_each(|res| {
-        if let Err(err) = res {
-            if err.is_panic() {
-                std::panic::resume_unwind(err.into_panic());
-            }
-        }
-    });
+    drain_tasks(&mut set).await;
 }
 
 /// Test for the `_no_retrans` write entry points.
@@ -1282,20 +1207,12 @@ async fn test_write_no_retrans() {
         Vec::new()
     });
 
-    let mut results = Vec::new();
-    while let Some(res) = set.join_next().await {
-        results.push(res);
-    }
-    let mut received = Vec::new();
-    results.into_iter().for_each(|res| match res {
-        Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
-        Err(_) => {}
-        Ok(data) => {
-            if !data.is_empty() {
-                received = data;
-            }
-        }
-    });
+    // The server task is the one that returns anything; the client's is empty.
+    let received = drain_tasks(&mut set)
+        .await
+        .into_iter()
+        .find(|streams: &Vec<Vec<u8>>| !streams.is_empty())
+        .unwrap_or_default();
     assert_eq!(received, vec![EXPECTED.to_vec(), EXPECTED.to_vec()]);
 }
 
@@ -1362,17 +1279,7 @@ async fn test_poll_finish_write() {
         client_rx.recv().await.expect("recv");
     });
 
-    let mut results = Vec::new();
-    while let Some(res) = set.join_next().await {
-        results.push(res);
-    }
-    results.into_iter().for_each(|res| {
-        if let Err(err) = res {
-            if err.is_panic() {
-                std::panic::resume_unwind(err.into_panic());
-            }
-        }
-    });
+    drain_tasks(&mut set).await;
 }
 
 /// Test for ['Stream::poll_abort_write']
@@ -1438,17 +1345,7 @@ async fn test_poll_abort_write() {
         client_rx.recv().await.expect("recv");
     });
 
-    let mut results = Vec::new();
-    while let Some(res) = set.join_next().await {
-        results.push(res);
-    }
-    results.into_iter().for_each(|res| {
-        if let Err(err) = res {
-            if err.is_panic() {
-                std::panic::resume_unwind(err.into_panic());
-            }
-        }
-    });
+    drain_tasks(&mut set).await;
 }
 
 /// Test for [`Stream::poll_read()`]
@@ -1514,17 +1411,7 @@ async fn test_poll_read() {
         client_rx.recv().await.expect("recv");
     });
 
-    let mut results = Vec::new();
-    while let Some(res) = set.join_next().await {
-        results.push(res);
-    }
-    results.into_iter().for_each(|res| {
-        if let Err(err) = res {
-            if err.is_panic() {
-                std::panic::resume_unwind(err.into_panic());
-            }
-        }
-    });
+    drain_tasks(&mut set).await;
 }
 
 /// Test for [`Stream::read_chunk()`]
@@ -1617,17 +1504,7 @@ async fn test_read_chunk() {
         client_rx.recv().await.expect("recv");
     });
 
-    let mut results = Vec::new();
-    while let Some(res) = set.join_next().await {
-        results.push(res);
-    }
-    results.into_iter().for_each(|res| {
-        if let Err(err) = res {
-            if err.is_panic() {
-                std::panic::resume_unwind(err.into_panic());
-            }
-        }
-    });
+    drain_tasks(&mut set).await;
 }
 
 /// Test for [`Stream::read_chunk()`]
@@ -1711,17 +1588,7 @@ async fn test_read_chunk_empty_fin() {
         client_rx.recv().await.expect("recv");
     });
 
-    let mut results = Vec::new();
-    while let Some(res) = set.join_next().await {
-        results.push(res);
-    }
-    results.into_iter().for_each(|res| {
-        if let Err(err) = res {
-            if err.is_panic() {
-                std::panic::resume_unwind(err.into_panic());
-            }
-        }
-    });
+    drain_tasks(&mut set).await;
 }
 
 /// Test for [`Stream::read_chunk()`]
@@ -1813,17 +1680,7 @@ async fn test_read_chunk_multi_recv() {
         client_rx.recv().await.expect("recv");
     });
 
-    let mut results = Vec::new();
-    while let Some(res) = set.join_next().await {
-        results.push(res);
-    }
-    results.into_iter().for_each(|res| {
-        if let Err(err) = res {
-            if err.is_panic() {
-                std::panic::resume_unwind(err.into_panic());
-            }
-        }
-    });
+    drain_tasks(&mut set).await;
 }
 
 /// Test for [`Stream::poll_abort_read()`]
@@ -1893,17 +1750,7 @@ async fn test_poll_abort_read() {
         client_tx.send(()).await.unwrap();
     });
 
-    let mut results = Vec::new();
-    while let Some(res) = set.join_next().await {
-        results.push(res);
-    }
-    results.into_iter().for_each(|res| {
-        if let Err(err) = res {
-            if err.is_panic() {
-                std::panic::resume_unwind(err.into_panic());
-            }
-        }
-    });
+    drain_tasks(&mut set).await;
 }
 
 /// Test for ['Connection::start()']
@@ -1962,17 +1809,7 @@ async fn test_get_local_addr() {
         client_rx.recv().await.unwrap();
     });
 
-    let mut results = Vec::new();
-    while let Some(res) = set.join_next().await {
-        results.push(res);
-    }
-    results.into_iter().for_each(|res| {
-        if let Err(err) = res {
-            if err.is_panic() {
-                std::panic::resume_unwind(err.into_panic());
-            }
-        }
-    });
+    drain_tasks(&mut set).await;
 }
 
 /// Test for ['Connection::start()']
@@ -2031,17 +1868,7 @@ async fn test_get_remote_addr() {
         client_rx.recv().await.unwrap();
     });
 
-    let mut results = Vec::new();
-    while let Some(res) = set.join_next().await {
-        results.push(res);
-    }
-    results.into_iter().for_each(|res| {
-        if let Err(err) = res {
-            if err.is_panic() {
-                std::panic::resume_unwind(err.into_panic());
-            }
-        }
-    });
+    drain_tasks(&mut set).await;
 }
 
 #[test]
@@ -2274,17 +2101,7 @@ async fn datagram_validation() {
         Ok::<_, anyhow::Error>(())
     });
 
-    let mut results = Vec::new();
-    while let Some(res) = set.join_next().await {
-        results.push(res);
-    }
-    results.into_iter().for_each(|res| {
-        if let Err(err) = res {
-            if err.is_panic() {
-                std::panic::resume_unwind(err.into_panic());
-            }
-        }
-    });
+    drain_tasks(&mut set).await;
 }
 
 #[test(tokio::test)]
@@ -2344,17 +2161,7 @@ async fn recv_datagram_after_peer_shutdown() {
     client_rx.recv().await.expect("recv");
     conn.shutdown(0).unwrap();
 
-    let mut results = Vec::new();
-    while let Some(res) = set.join_next().await {
-        results.push(res);
-    }
-    results.into_iter().for_each(|res| {
-        if let Err(err) = res {
-            if err.is_panic() {
-                std::panic::resume_unwind(err.into_panic());
-            }
-        }
-    });
+    drain_tasks(&mut set).await;
 }
 
 #[test(tokio::test)]
@@ -2413,17 +2220,7 @@ async fn recv_datagram_after_local_shutdown() {
         .await;
     client_rx.recv().await.expect("recv");
 
-    let mut results = Vec::new();
-    while let Some(res) = set.join_next().await {
-        results.push(res);
-    }
-    results.into_iter().for_each(|res| {
-        if let Err(err) = res {
-            if err.is_panic() {
-                std::panic::resume_unwind(err.into_panic());
-            }
-        }
-    });
+    drain_tasks(&mut set).await;
 }
 
 /// Test for ['Connection::poll_event()'] - events are queued correctly
@@ -2497,17 +2294,7 @@ async fn test_poll_event_queuing() {
         Ok::<_, anyhow::Error>(())
     });
 
-    let mut results = Vec::new();
-    while let Some(res) = set.join_next().await {
-        results.push(res);
-    }
-    results.into_iter().for_each(|res| {
-        if let Err(err) = res {
-            if err.is_panic() {
-                std::panic::resume_unwind(err.into_panic());
-            }
-        }
-    });
+    drain_tasks(&mut set).await;
 }
 
 /// Test for ['Connection::poll_event()'] - wakers are notified when events arrive
@@ -2577,17 +2364,7 @@ async fn test_poll_event_waker_notification() {
         Ok::<_, anyhow::Error>(())
     });
 
-    let mut results = Vec::new();
-    while let Some(res) = set.join_next().await {
-        results.push(res);
-    }
-    results.into_iter().for_each(|res| {
-        if let Err(err) = res {
-            if err.is_panic() {
-                std::panic::resume_unwind(err.into_panic());
-            }
-        }
-    });
+    drain_tasks(&mut set).await;
 }
 
 /// Test for ['Connection::get_path_statistics()'].
@@ -2904,17 +2681,7 @@ async fn test_poll_event_connection_lost_on_shutdown() {
         Ok::<_, anyhow::Error>(())
     });
 
-    let mut results = Vec::new();
-    while let Some(res) = set.join_next().await {
-        results.push(res);
-    }
-    results.into_iter().for_each(|res| {
-        if let Err(err) = res {
-            if err.is_panic() {
-                std::panic::resume_unwind(err.into_panic());
-            }
-        }
-    });
+    drain_tasks(&mut set).await;
 }
 
 const WAIT_IDLE_BUSY: Duration = Duration::from_millis(200);
