@@ -26,6 +26,7 @@ jobs:
   ci-pass:
     name: CI is green
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs:
       - style
       - lint
@@ -39,6 +40,7 @@ jobs:
   style:
     name: Check Style
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3
         with:
@@ -68,6 +70,7 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3
         with:
@@ -98,6 +101,7 @@ jobs:
     name: Check MSRV
     needs: [style]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3
         with:
@@ -127,6 +131,7 @@ jobs:
     name: Check MSRV of `h3-msquic-async`
     needs: [style]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3
         with:
@@ -165,6 +170,7 @@ jobs:
           { version: "msquic-seera", tls: "quictls", features: "--no-default-features --features tokio,msquic-seera,msquic-seera-static" },
         ]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     steps:
       - name: Checkout repository
         uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3
@@ -223,6 +229,7 @@ jobs:
     name: Build docs
     needs: [style]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3
         with:
