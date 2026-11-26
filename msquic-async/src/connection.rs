@@ -809,8 +809,14 @@ impl Connection {
     /// Declare a path available or backup to the peer.
     ///
     /// `path_id` is the one carried by [`ConnectionEvent::PathAdded`]. Marking a path
-    /// active sends a PATH_AVAILABLE frame, marking it inactive a PATH_BACKUP one; a
-    /// call that does not change the status sends nothing.
+    /// active sends a PATH_AVAILABLE frame, marking it inactive a PATH_BACKUP one.
+    ///
+    /// What the frame is compared against is what the peer was last told, not whether
+    /// the path is in use, so a status can be declared before the path is validated —
+    /// holding a path back the moment it exists, rather than having to wait for
+    /// validation to make it available first. A path the peer has never been told
+    /// about is already one it may use, so declaring such a path available sends
+    /// nothing; so does repeating a status the peer already has.
     ///
     /// Requires multipath to have been negotiated, and fails with
     /// `QUIC_STATUS_INVALID_STATE` otherwise. An unknown `path_id` — one never seen, or
